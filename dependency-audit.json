@@ -42,9 +42,9 @@
         "ecosystem_specific": {
           "affected_functions": null,
           "affects": {
+            "functions": [],
             "os": [],
-            "arch": [],
-            "functions": []
+            "arch": []
           }
         },
         "database_specific": {
@@ -151,7 +151,6 @@
           }
         ],
         "ecosystem_specific": {
-          "affected_functions": null,
           "affects": {
             "arch": [],
             "functions": [
@@ -162,7 +161,8 @@
               "glib::VariantStrIter::nth_back"
             ],
             "os": []
-          }
+          },
+          "affected_functions": null
         },
         "database_specific": {
           "categories": [],
@@ -224,10 +224,10 @@
           }
         },
         "database_specific": {
-          "categories": [],
           "cvss": null,
           "informational": "unmaintained",
-          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2024-0436.json"
+          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2024-0436.json",
+          "categories": []
         }
       }
     ],
@@ -282,10 +282,10 @@
           "affected_functions": null
         },
         "database_specific": {
-          "categories": [],
           "cvss": null,
           "informational": "unmaintained",
-          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2024-0370.json"
+          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2024-0370.json",
+          "categories": []
         }
       }
     ],
@@ -351,12 +351,12 @@
           "affected_functions": null
         },
         "database_specific": {
-          "informational": null,
-          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2026-0194.json",
           "categories": [
             "denial-of-service"
           ],
-          "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+          "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+          "informational": null,
+          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2026-0194.json"
         }
       }
     ],
@@ -595,10 +595,10 @@
           "affected_functions": null
         },
         "database_specific": {
-          "cvss": null,
           "informational": "unsound",
           "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2026-0097.json",
-          "categories": []
+          "categories": [],
+          "cvss": null
         }
       }
     ],

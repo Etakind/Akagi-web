@@ -1,92 +1,10 @@
-# Logger Module
+# 日志与隐私
 
-Structured text + binary logging built on [`tracing`](https://crates.io/crates/tracing) and [`tracing-appender`](https://crates.io/crates/tracing-appender).
+`Session` 管理每次运行的日志目录；文本、JSON、流日志、二进制日志和 Inspector 实时广播经过统一隐私边界。
+原始 WebSocket 帧及完整协议载荷不记录；仅保留时间、方向、消息类型、编号和长度。HTTP URL 去掉用户信息、查询与片段，认证头、Cookie、正文不记录。
 
-## Files
+`src/privacy.rs` 负责元数据归一化与脱敏。解析器仍在内存处理真实帧，MJAI、分析结果及历史按原流程保存。
+敏感配置使用脱敏 Debug；不要将带有请求内容的外部错误直接打印到日志。
 
-- `mod.rs` — `init(log_root, default_level, all_level, targets)` entry point.
-- `session.rs` — `Session` (active log session + binary logger registry) and `LogTarget`.
-- `binary.rs` — `BinaryLogger` for raw byte streams (e.g. captured WS frames).
-- `flow.rs` — `FlowLogger` for one text log file per logical "flow" (e.g. one Majsoul WS connection).
-
-## Session layout
-
-`logger::init` creates a session directory:
-
-```
-<log_root>/<YYYYMMDD-HHMMSS>/
-├── all.log              # every event from every target
-├── proxy.log            # one file per LogTarget (filtered by tracing target prefix)
-├── proxy.binlog         # binary frames written via BinaryLogger
-├── majsoul/             # one subdir per platform (FlowLogger)
-│   ├── 000001-gateway.log                # one file per WS flow: <id:06>-<uri-slug>.log
-│   ├── 000002-game-gateway.log
-│   └── majsoul_<ts>.mjai.jsonl          # one file per game: emitted MjaiEvents
-└── ...
-```
-
-`log_root` resolution mirrors `ca_dir` (see `src/proxy/README.md`): exe-adjacent first, then CWD, else create.
-
-## Text log format
-
-Each line carries: timestamp, level, tracing target, source `file:line`, message. ANSI colour is stripped in files. Console (stderr) keeps colour.
-
-File outputs (`all.log`, per-target `*.log`) use a custom `CompactNoSpans` formatter that **omits the parent-span list**. Third-party crates (e.g. `hudsucker`) wrap our handlers in nested `#[instrument]` spans whose rendered prefix is longer than the actual event — the file format drops them. Console keeps the default `Full` formatter so span context stays visible interactively.
-
-The console layer uses `EnvFilter` honouring `RUST_LOG`; if unset, falls back to `default_level` (from `[logging] level`). The combined `all.log` is severity-filtered by `all_level` (from `[logging] all_level`, same `EnvFilter` syntax — e.g. `"info"` or `"akagi=debug,hyper=warn"`) so you can suppress trace/debug noise. Per-target files always capture every event so you can grep historic runs without re-running.
-
-## Adding a new target file
-
-In `lib.rs::run`, append a `LogTarget` to the slice passed to `logger::init`:
-
-```rust
-&[
-    logger::LogTarget::new("proxy", "akagi::proxy"),
-    logger::LogTarget::new("ai",    "akagi::ai"),
-]
-```
-
-`prefix` is matched against each event's tracing target (longest-prefix). Module path is the default target, so any `tracing::info!` inside `src/ai/` lands in `ai.log`.
-
-## Binary logging
-
-```rust
-let bin = session.binary_logger("proxy")?;     // get-or-create proxy.binlog
-bin.write(0, &bytes);                           // tag 0 = upstream, 1 = downstream (caller convention)
-```
-
-Frame format (little-endian):
-
-```
-[u64 micros_since_epoch][u8 tag][u32 len][bytes; len]
-```
-
-`BinaryLogger::write` swallows write errors via `tracing::warn`. Use `BinaryLogger::log` if you need the `Result`.
-
-## Per-flow text logging
-
-```rust
-let flow = session.flow_logger(
-    "majsoul",
-    "000001-gateway.log",
-    "majsoul 127.0.0.1:54170 wss://.../gateway",
-)?;
-flow.writeln(&serde_json::to_string(&parsed)?);
-```
-
-Each call to `Session::flow_logger` opens a fresh file at
-`<session>/<subdir>/<file_name>` (subdir auto-created; caller supplies the
-full filename including extension, so the same logger handles `.log`,
-`.mjai.jsonl`, etc.). The proxy handler generates one per WebSocket
-upgrade and hands the resulting `Arc<FlowLogger>` to
-`bridge::for_platform`. Every parsed message gets written as a JSON line.
-When all references drop (both directions of the WS exit), the file
-closes.
-
-`MajsoulBridge` opens an additional `majsoul_<ts>.mjai.jsonl` file every
-time it emits a `start_game` event — one file per game on the same flow,
-each line a serialized `MjaiEvent`.
-
-## Lifetime
-
-`Session` owns the `tracing-appender` `WorkerGuard`s. Drop it only at app shutdown — dropping flushes + closes the file appenders. `lib.rs` keeps the `Arc<Session>` alive for the full Tauri runtime.
+新目录经 private_fs 创建；Unix 目录 0700、文件 0600，拒绝不安全链接及所有者。Windows 等效 ACL 保护尚待专项验收。
+旧日志不会自动清理或改写，用户导出的副本也不受追溯保护。测试以虚构凭据检查所有输出文件及广播，参见 `tests/privacy_outputs.rs`。

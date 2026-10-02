@@ -1,38 +1,7 @@
-# Schema Module
+# 数据类型
 
-Shared types used across the project. Anything that crosses module boundaries
-— protocol events, backend↔frontend IPC payloads, persisted records — lives
-here so it isn't owned by a single subsystem.
+`mjai/` 定义机器人与牌局之间的通用事件；`ipc.rs` 定义桌面命令/事件；`history.rs` 定义持久化历史；`inspector.rs` 定义脱敏诊断记录。
 
-## Existing schemas
-
-- `mjai/` — `MjaiEvent` enum covering all 15 mjai event variants from the
-  mjai protocol spec **plus** the 3p-only `Kita` variant
-  (北抜き / nukidora). Used by
-  `bridge::Bridge` to expose parsed game events, and by anything
-  downstream that consumes them (AI bots, loggers, frontend HUD). Tiles
-  are kept as `String`. JSON serialization uses `#[serde(tag = "type")]`,
-  so `"type"` is always the first key. Player-shaped fields (`names`,
-  `scores`, `tehais`, `deltas`) are `Vec<T>` of native length; `StartGame`
-  and `StartKyoku` carry `num_players: u8` (serde default `4` for
-  backward-compat with pre-3p log lines).
-
-## Adding a new schema
-
-1. Create `src/schema/<name>/mod.rs` (or `src/schema/<name>.rs`) with your
-   types. Derive `Serialize`/`Deserialize` so the type is usable on both
-   sides of any boundary it might cross.
-2. Register the module in `src/schema/mod.rs` and re-export the main type.
-3. If the schema is consumed by `tauri` IPC commands, also derive
-   `tauri::specta::Type` (or whatever binding generator is in use) so the
-   frontend gets a typed definition.
-
-## Conventions
-
-- Keep schemas decoupled from runtime/library types (e.g. don't use a
-  third-party `Tile` struct here — use `String`). The schema module should
-  not pull in heavy deps.
-- For tagged enums that go to JSON, prefer `#[serde(tag = "type", rename_all = "snake_case")]`
-  so the discriminant is a stable, predictable string.
-- Prefer `serde_with::skip_serializing_none` over hand-written
-  `skip_serializing_if` attributes when an enum has many `Option` fields.
+运行采集 kind 只有 chromium。配置游戏选择只有 Majsoul，但历史 Platform / MatchInfo 保留旧标签以读取既有记录；这不表示存在其他游戏运行实现。
+Inspector 的 CaptureSource::Mitm 仅用于旧文件兼容；FrameRaw 保留旧 text/binary 读取能力，当前写入 redacted 及省略原因。
+修改这些格式必须同步前端 `types.ts`、读取逻辑和序列化测试；不能只改一个语言的类型。
