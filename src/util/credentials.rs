@@ -1,5 +1,7 @@
 //! Local manual acceptance only. No Debug implementation or data-bearing errors.
-use std::{fs::OpenOptions, io::Read, path::Path};
+use std::path::Path;
+#[cfg(unix)]
+use std::{fs::OpenOptions, io::Read};
 pub struct Credentials {
     pub email: String,
     pub password: String,
@@ -18,7 +20,7 @@ impl Credentials {
         #[cfg(not(unix))]
         {
             let _ = path;
-            return Err(Rejected);
+            Err(Rejected)
         }
         #[cfg(unix)]
         {
@@ -42,6 +44,7 @@ impl Credentials {
             Self::parse(&s)
         }
     }
+    #[cfg(any(unix, test))]
     fn parse(s: &str) -> Result<Self, Rejected> {
         let mut lines = s.split_inclusive('\n');
         fn trim_newline(s: &str) -> &str {

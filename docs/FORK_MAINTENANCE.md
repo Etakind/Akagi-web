@@ -166,7 +166,7 @@ cargo build --locked --release --features custom-protocol
 - 本机为 macOS x86_64 开发环境：release 命令行和禁用采集/机器人/自动操作的临时目录进程启动检查通过；正式产物目标仍为 Apple Silicon 与 Windows x64，本次不生成或发布安装包。
 - 临时独立 Edge 使用实际 Chromium 后端启动并订阅官方雀魂页面成功，随后关闭并清理临时目录。常用 Edge 的 9222 接口本次不可用，附加实机验收未完成；相关连接、授权失败、发现/重连和唯一页面边界由自动测试覆盖。
 - 本次未登录真实账号、开局或执行自动点击；Windows 实机、真实对局和自动点击保持未验收。此前真实使用记录仅见历史安全记录。
-- 远端双平台 CI 以本功能分支 PR 的当前提交为准；通过后才合入 dev，结果链接随交付记录。
+- 远端双平台 CI 以 [PR #1](https://github.com/Etakind/Akagi/pull/1) 当前提交为准；通过后才合入 dev。首轮 macOS/前端/工具检查通过，Windows 严格 Clippy 发现凭据工具的 Unix 专用导入及 Windows 测试的多余 clone；已通过条件编译和等价测试写法修正，不放宽告警或凭据读取保护。最终结果见 PR 检查记录。
 
 ### 本次依赖审计适用条件
 
