@@ -1,14 +1,4 @@
-//! Chromium capture backend.
-//!
-//! Launches a Chromium-family browser with `--user-data-dir` (so it
-//! doesn't collide with the user's existing Chrome) and a remote debugging port,
-//! then connects to it via the Chrome DevTools Protocol and intercepts
-//! `Network.webSocketFrameReceived/Sent` for binary frames. Frames are
-//! routed into the platform [`crate::bridge::Bridge`] just as the
-//! hudsucker backend does.
-//!
-//! No CA cert. No system proxy. The user just plays the game in the
-//! Akagi-spawned browser window.
+//! 雀魂浏览器采集。支持附加回环调试接口或启动独立配置目录，不安装证书、不修改系统代理。
 
 pub mod cdp;
 pub mod cft;
@@ -92,7 +82,6 @@ impl CaptureBackend for ChromiumBackend {
                             notify: Some(ctx.notify_bus.clone()),
                             time_budget: ctx.autoplay.as_ref().map(|a| a.time_budget.clone()),
                             input_watch: ctx.autoplay.as_ref().map(|a| a.input_watch.clone()),
-                            ..Default::default()
                         },
                     ));
                     info!("attaching existing local browser; official Majsoul pages only");
@@ -182,10 +171,6 @@ impl CaptureBackend for ChromiumBackend {
             .map(|a| crate::bridge::BridgeHooks {
                 time_budget: Some(a.time_budget.clone()),
                 input_watch: Some(a.input_watch.clone()),
-                tenhou_state: Some(a.tenhou_state.clone()),
-                // Chromium has no injection relay; Riichi City autoplay
-                // only runs on the MITM path.
-                riichi_inject: None,
                 notify: None,
             })
             .unwrap_or_default();
@@ -204,7 +189,7 @@ impl CaptureBackend for ChromiumBackend {
             ctx.autoplay.clone(),
             ctx.http.clone(),
             ctx.notify_bus.clone(),
-            false,
+            true,
         );
         let mut cdp_fut = Box::pin(cdp_run);
         let shutdown_fut = shutdown.wait();

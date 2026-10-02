@@ -30,13 +30,6 @@ use tracing_subscriber::{
     EnvFilter, Layer, Registry,
 };
 
-/// Compact event formatter for file outputs.
-///
-/// Renders `TIMESTAMP LEVEL target file:line: fields` — deliberately drops
-/// the span ancestry list that the default `Full` formatter prefixes onto
-/// every event. Third-party crates (e.g. `hudsucker`) wrap our handlers in
-/// nested `#[instrument]` spans, producing prefixes longer than the actual
-/// message; we don't need them in the file.
 struct CompactNoSpans {
     timer: ChronoLocal,
 }

@@ -1,13 +1,4 @@
-//! Per-WebSocket-flow bridge ownership map, generic over the flow key.
-//!
-//! Both capture backends face the same problem: each WebSocket connection
-//! needs a fresh [`crate::bridge::Bridge`] instance because the parser's
-//! request/response correlation is per-connection. The hudsucker handler
-//! historically keyed by `SocketAddr`; the Chromium backend keys by
-//! `(sessionId, requestId)`.
-//!
-//! `FlowBridges<K>` lifts that pattern out so both backends share one
-//! lazy-create + ref-count-clean-up implementation.
+//! 按 WebSocket 流管理雀魂解析器，原始数据只在内存中处理，记录副本统一脱敏。
 
 use crate::bridge::{self, Bridge, BridgeHooks};
 use crate::config::Platform;
@@ -28,8 +19,6 @@ pub type SharedBridge = Arc<StdMutex<Box<dyn Bridge>>>;
 pub struct FlowBridges<K> {
     session: Arc<Session>,
     platform: Platform,
-    /// Autoplay's shared slots, handed to every bridge this map creates.
-    /// Empty when the backend has no autoplay context (MITM proxy).
     hooks: BridgeHooks,
     map: StdMutex<HashMap<K, SharedBridge>>,
     next_flow_id: AtomicU64,

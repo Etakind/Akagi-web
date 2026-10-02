@@ -92,14 +92,8 @@ pub async fn update_config(
 
     // Snapshot the *previous* capture-relevant fields before we overwrite,
     // so we can decide whether the supervisor needs a swap.
-    let (prev_capture, prev_proxy, prev_platform) = {
-        let cfg = state.config.read().await;
-        (cfg.capture.clone(), cfg.proxy.clone(), cfg.platform.kind)
-    };
-    let capture_changed = prev_capture != new_config.capture;
-    let proxy_changed = prev_proxy != new_config.proxy;
-    let platform_changed = prev_platform != new_config.platform.kind;
-    let new_platform = new_config.platform.kind;
+    let capture_changed = state.config.read().await.capture != new_config.capture;
+    let capture_enabled = new_config.capture.enabled;
     let bot_now_enabled = new_config.bot.enabled;
     let autoplay_now_enabled = new_config.autoplay.enabled;
     let new_overlay = new_config.overlay.clone();
@@ -108,35 +102,27 @@ pub async fn update_config(
     // Open / close / retune the overlay window to match what was just saved.
     overlay::reconcile(&app, &new_overlay);
 
-    // Sync the history recorder's platform tag immediately. Subsequent
-    // finalised games are stamped with the new tag; the in-flight buffer
-    // (if any) keeps the tag it had at start_game — acceptable, since
-    // mid-game platform switches are not a real workflow.
-    if platform_changed {
-        *state
-            .history_platform
-            .write()
-            .expect("history platform lock poisoned") = crate::schema::Platform::from(new_platform);
-    }
-
-    if capture_changed || proxy_changed || platform_changed {
+    if capture_changed {
         // Run the restart in the background — `update_config` returns
         // promptly so the UI doesn't hang on slow shutdowns.
         let st = (*state).clone();
         tauri::async_runtime::spawn(async move {
+            if !capture_enabled {
+                crate::ipc::capture_supervisor::stop_and_wait(
+                    &st,
+                    std::time::Duration::from_secs(2),
+                )
+                .await;
+                return;
+            }
             if let Err(e) = restart_capture_inner(st).await {
                 let _ = ();
                 tracing::error!("auto-restart capture failed: {e:#}");
             }
         });
-        let body = if platform_changed {
-            "Applied platform / capture / proxy config changes."
-        } else {
-            "Applied capture / proxy config changes."
-        };
         let _ = state
             .notify_bus
-            .send(Notification::info("Capture restarted").body(body));
+            .send(Notification::info("采集配置已更新").body("已应用浏览器采集配置。"));
     } else {
         let _ = state.notify_bus.send(
             Notification::success("Config saved")
@@ -619,21 +605,12 @@ pub async fn remove_chrome_for_testing(
     Ok(())
 }
 
-/// Stop the running capture backend. Kicks in-flight WebSocket flows
-/// (MITM mode) and signals the supervisor to tear down. Returns Err if
-/// nothing is running.
 #[tauri::command]
 pub async fn stop_capture(state: State<'_, AppState>) -> CmdResult<()> {
-    let (stop, force_close) = {
+    let stop = {
         let mut ctl = state.capture_control.lock().await;
-        (ctl.stop.take(), ctl.force_close.clone())
+        ctl.stop.take()
     };
-    // Kick in-flight WS flows first so the game client actually
-    // disconnects. Without this, hudsucker's graceful shutdown only
-    // blocks new connections; existing ones drain naturally and the
-    // user sees comm "still working" even after stop. (Chromium backend
-    // ignores this — its shutdown closes the browser process directly.)
-    force_close.notify_waiters();
     match stop {
         Some(tx) => {
             // Receiver dropped means the task already exited — that's fine,
@@ -696,8 +673,6 @@ pub async fn open_log_folder(session: Option<String>, state: State<'_, AppState>
 }
 
 fn open_path(path: &Path) -> CmdResult<()> {
-    #[cfg(target_os = "linux")]
-    let cmd = "xdg-open";
     #[cfg(target_os = "macos")]
     let cmd = "open";
     #[cfg(target_os = "windows")]
@@ -718,7 +693,7 @@ fn open_path(path: &Path) -> CmdResult<()> {
 /// a generic process spawn.
 ///
 /// Goes through the `opener` crate (ShellExecuteW on Windows, `open` on
-/// macOS, xdg-open on Linux) rather than spawning `explorer <url>`:
+/// macOS) rather than spawning `explorer <url>`:
 /// explorer.exe silently opens the Documents folder instead of the browser
 /// when the URL carries a query string (e.g. PayPal's `?token=...`).
 #[tauri::command]
@@ -1818,7 +1793,7 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.bot.active_4p = "mortal".into();
         cfg.bot.active_3p = "mortal_3p".into();
-        cfg.proxy.addr = "127.0.0.1:9999".into();
+        cfg.capture.chromium.attach_port = 9999;
 
         persist_config(&cfg, &path).unwrap();
 
@@ -1826,7 +1801,7 @@ mod tests {
         let back: AppConfig = toml::from_str(&body).unwrap();
         assert_eq!(back.bot.active_4p, "mortal");
         assert_eq!(back.bot.active_3p, "mortal_3p");
-        assert_eq!(back.proxy.addr, "127.0.0.1:9999");
+        assert_eq!(back.capture.chromium.attach_port, 9999);
     }
 
     /// Regression: a save used to serialise `AppConfig` over the whole file,

@@ -54,7 +54,7 @@ export type BotStatus =
   | { state: 'error'; bot: string; error: string }
   | { state: 'stopped'; bot: string }
 
-export type CaptureKind = 'mitm' | 'chromium'
+export type CaptureKind = 'chromium'
 
 export type CaptureStatus =
   | { state: 'stopped' }
@@ -70,7 +70,7 @@ export type Notification = {
   id?: string
 }
 
-export type CaptureMode = 'mitm' | 'chromium'
+export type CaptureMode = 'chromium'
 
 export type ChromiumConfig = {
   attach_port?: number
@@ -84,6 +84,9 @@ export type ChromiumConfig = {
 
 export type CaptureConfig = {
   mode: CaptureMode
+  enabled: boolean
+  unavailable_reason?: string | null
+  http: { record_all: boolean; bodies: boolean; max_body_bytes: number; static_assets: boolean }
   chromium: ChromiumConfig
 }
 
@@ -96,7 +99,7 @@ export type DetectedBrowser = {
 /// share names but the schema enum carries extra archive-only variants).
 /// Mirrors `src/config/platform.rs::Platform` (`#[derive(Serialize)]` →
 /// PascalCase JSON: `"Majsoul"`, `"Tenhou"`).
-export type PlatformKind = 'Majsoul' | 'Tenhou' | 'RiichiCity'
+export type PlatformKind = 'Majsoul'
 
 export type MajsoulAutoplayConfig = {
   pre_click_delay_min_ms: number
@@ -199,7 +202,6 @@ export type AppConfig = {
   general: { first_run_completed: boolean; developer_mode: boolean }
   logging: { dir: string; level: string; all_level: string }
   platform: { kind: PlatformKind }
-  proxy: { enabled: boolean; addr: string; ca_dir: string; block_telemetry: boolean }
   bot: {
     enabled: boolean
     active_4p: string
@@ -740,7 +742,7 @@ export type BotReactionPayload = {
 }
 
 /** Which capture backend observed an event. */
-export type CaptureSource = 'mitm' | 'chromium'
+export type CaptureSource = 'chromium'
 
 export type HttpPhase = 'request' | 'response'
 

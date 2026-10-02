@@ -33,10 +33,6 @@
 //! new project, or a second game therefore needs no code change — which
 //! is not hypothetical, the second deployment was decoded without one.
 //!
-//! Riichi City ships the same vendor, so this recognizer covers it in
-//! principle. In practice its client rejects our MITM certificate for the
-//! telemetry host, so those beacons never reach us at all — a capture
-//! problem, not a decoding one.
 
 use crate::schema::HttpAnnotation;
 

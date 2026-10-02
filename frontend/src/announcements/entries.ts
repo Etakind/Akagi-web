@@ -1,8 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
-import { AppWindow, Bot, CloudCog, CreditCard, Download, Gamepad2, SearchCheck, Zap } from 'lucide-react'
+import { CloudCog, CreditCard, Download, SearchCheck } from 'lucide-react'
 
-import { AKAGIMS_DOWNLOAD_URL } from '@/lib/external'
-import akagimsScreenshot from '@/assets/akagims-fullauto.jpg'
 import mjotlogodarkbg from '@/assets/mjot-logo-dark-bg.png'
 
 /** One feature highlight inside an announcement's expanded view. */
@@ -51,7 +49,6 @@ export const ANNOUNCEMENTS: AnnouncementEntry[] = [
     date: '2026-08-25',
     version: '3.7.0',
     features: [
-      { icon: Bot, key: 'rc_autoplay' },
       { icon: SearchCheck, key: 'review' },
     ],
   },
@@ -60,7 +57,6 @@ export const ANNOUNCEMENTS: AnnouncementEntry[] = [
     date: '2026-08-14',
     version: '3.6.0',
     features: [
-      { icon: Bot, key: 'tenhou_autoplay' },
       { icon: Download, key: 'update_source' },
     ],
   },
@@ -72,18 +68,6 @@ export const ANNOUNCEMENTS: AnnouncementEntry[] = [
     features: [
       { icon: CreditCard, key: 'checkout' },
       { icon: CloudCog, key: 'health' },
-    ],
-  },
-  {
-    id: 'akagims',
-    date: '2026-08-09',
-    image: akagimsScreenshot,
-    link: AKAGIMS_DOWNLOAD_URL,
-    features: [
-      { icon: Gamepad2, key: 'majsoul' },
-      { icon: AppWindow, key: 'embedded' },
-      { icon: Bot, key: 'fullauto' },
-      { icon: Zap, key: 'zero_setup' },
     ],
   },
 ]

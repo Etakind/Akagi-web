@@ -24,14 +24,10 @@ import {
   MAJSOUL_LOBBY_4P,
   type MajsoulDan,
   type MajsoulLobby,
-  TENHOU_3P,
-  TENHOU_4P,
-  type TenhouDan,
 } from '@/lib/ptTables'
 
 export type PtRule =
   | { kind: 'majsoul'; lobby: MajsoulLobby; dan: MajsoulDan }
-  | { kind: 'tenhou'; dan: TenhouDan }
   | {
       kind: 'custom'
       /** [+1st, +2nd, +3rd, +4th] for 4p, [+1st, +2nd, +3rd] for 3p. */
@@ -71,8 +67,6 @@ export function computePt(record: GameRecord, rule: PtRule): number {
   switch (rule.kind) {
     case 'majsoul':
       return majsoulPt(record, rule, rank, modeIdx, np)
-    case 'tenhou':
-      return tenhouPt(record, rule, rank, modeIdx, np)
     case 'custom':
       return customPt(record, rule, rank, np)
   }
@@ -111,18 +105,6 @@ function majsoulPt(
     danBonus = MAJSOUL_DAN_PENALTY_4P[rule.dan][modeIdx]
   }
   return Math.ceil(baseTerm + uma + danBonus)
-}
-
-function tenhouPt(
-  _record: GameRecord,
-  rule: Extract<PtRule, { kind: 'tenhou' }>,
-  rank: number,
-  modeIdx: 0 | 1,
-  np: number,
-): number {
-  const table = np === 3 ? TENHOU_3P[rule.dan] : TENHOU_4P[rule.dan]
-  const cells = table[modeIdx]
-  return cells[rank - 1] ?? 0
 }
 
 function customPt(

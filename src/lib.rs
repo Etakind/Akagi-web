@@ -1,3 +1,5 @@
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+compile_error!("此维护版应用仅支持 macOS 和 Windows；Linux 仅用于通用工具检查。");
 pub mod analysis;
 pub mod autoplay;
 pub mod bot;
@@ -12,9 +14,7 @@ pub mod history;
 pub mod inspector;
 pub mod ipc;
 pub mod logger;
-pub mod platform;
 pub mod privacy;
-pub mod proxy;
 pub mod schema;
 pub mod updater;
 pub mod util;
@@ -26,14 +26,12 @@ use tauri::Manager;
 use tracing::{error, info, warn};
 
 pub fn run() {
-    platform::setup();
-
     let args = cli::Cli::parse();
     let (cfg, config_path) = config::load_config(args.config.as_deref());
 
     let log_dir = util::resolve_dir(&cfg.logging.dir);
     let targets = [
-        logger::LogTarget::new("proxy", "akagi::proxy"),
+        logger::LogTarget::new("capture", "akagi::capture"),
         logger::LogTarget::new("bot", "akagi::bot"),
     ];
     let session = match logger::init(
@@ -110,7 +108,8 @@ pub fn run() {
     info!("History store at {}", history_root.display());
 
     let bot_enabled = cfg.bot.enabled;
-    let proxy_enabled = cfg.proxy.enabled;
+    let capture_enabled = cfg.capture.enabled;
+    let capture_unavailable = cfg.capture.unavailable_reason.clone();
     let autoplay_enabled = cfg.autoplay.enabled;
     let overlay_cfg = cfg.overlay.clone();
 
@@ -335,7 +334,10 @@ pub fn run() {
                     });
                 }
 
-                if proxy_enabled {
+                if let Some(reason) = &capture_unavailable {
+                    let _ = state.notify_bus.send(schema::Notification::warn(reason.clone()));
+                }
+                if capture_enabled {
                     let state_for_capture = state.clone();
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) =

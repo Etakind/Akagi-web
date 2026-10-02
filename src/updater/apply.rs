@@ -161,7 +161,7 @@ pub async fn download_and_apply(
 /// Returns true if `dir` looks writable. We do an explicit write-probe
 /// rather than relying on `metadata().permissions().readonly()` because
 /// (a) on Unix permissions don't capture mount-level read-only flags
-/// (squashfs, AppImage), and (b) on Windows readonly directories are
+/// (read-only volumes), and (b) on Windows readonly directories are
 /// not actually a thing — ACLs are richer.
 fn is_dir_writable(dir: &Path) -> bool {
     let probe = dir.join(".akagi-write-probe");
@@ -228,10 +228,10 @@ mod tests {
         make_zip(
             &zip,
             &[
-                ("akagi-3.0.12-linux-x64/akagi", b"#!/bin/sh\nexit 0\n"),
-                ("akagi-3.0.12-linux-x64/README.txt", b"hello"),
+                ("akagi-3.0.12-macos-arm64/akagi", b"#!/bin/sh\nexit 0\n"),
+                ("akagi-3.0.12-macos-arm64/README.txt", b"hello"),
                 (
-                    "akagi-3.0.12-linux-x64/runtime/python/keep.txt",
+                    "akagi-3.0.12-macos-arm64/runtime/python/keep.txt",
                     b"not the binary",
                 ),
             ],
@@ -240,14 +240,18 @@ mod tests {
         extract_zip_safe(&zip, out.path()).unwrap();
         let found = find_binary(out.path(), std::ffi::OsStr::new("akagi"))
             .expect("should find the binary one level down");
-        assert!(found.ends_with("akagi-3.0.12-linux-x64/akagi"));
+        assert!(found.ends_with("akagi-3.0.12-macos-arm64/akagi"));
     }
 
     #[test]
     fn find_binary_returns_none_when_absent() {
         let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(tmp.path().join("akagi-3.0.12-linux-x64")).unwrap();
-        std::fs::write(tmp.path().join("akagi-3.0.12-linux-x64/README.txt"), b"hi").unwrap();
+        std::fs::create_dir_all(tmp.path().join("akagi-3.0.12-macos-arm64")).unwrap();
+        std::fs::write(
+            tmp.path().join("akagi-3.0.12-macos-arm64/README.txt"),
+            b"hi",
+        )
+        .unwrap();
         assert!(find_binary(tmp.path(), std::ffi::OsStr::new("akagi")).is_none());
     }
 

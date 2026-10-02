@@ -9,11 +9,7 @@
 //! build produces, and leave every other key, comment and blank line where it
 //! is.
 //!
-//! Known limit: a section the user hand-wrote as an *inline* table
-//! (`bot = { enabled = true }`) is replaced wholesale rather than merged, so
-//! unknown keys inside it are still lost. Every file Akagi writes uses header
-//! tables, so this only bites a hand-written file that also mixes in keys we
-//! don't declare.
+//! 内联表在需要递归合并时转换为普通表，未知字段继续保留。
 
 use toml_edit::{DocumentMut, Item, Table, Value};
 
@@ -43,6 +39,28 @@ pub fn merge_into<T: serde::Serialize>(config: &T, existing: &str) -> Result<Str
         .parse()
         .map_err(|e| format!("{e}"))?;
     merge_table(doc.as_table_mut(), fresh.as_table(), &mut Vec::new());
+    // Remove only retired known settings; retain unknown user keys/comments.
+    if let Some(table) = doc.get_mut("proxy").and_then(Item::as_table_like_mut) {
+        for key in [
+            "enabled",
+            "addr",
+            "ca_dir",
+            "rewrite_certificate_report",
+            "block_telemetry",
+        ] {
+            table.remove(key);
+        }
+        if table.is_empty() {
+            doc.remove("proxy");
+        }
+    }
+    if let Some(table) = doc.get_mut("autoplay").and_then(Item::as_table_like_mut) {
+        table.remove("tenhou");
+        table.remove("riichi_city");
+    }
+    if let Some(table) = doc.get_mut("capture").and_then(Item::as_table_like_mut) {
+        table.remove("unavailable_reason");
+    }
     Ok(doc.to_string())
 }
 
@@ -52,6 +70,13 @@ fn merge_table(target: &mut Table, fresh: &Table, path: &mut Vec<String>) {
     for (key, fresh_item) in fresh.iter() {
         path.push(key.to_string());
 
+        // Normalize an old inline table before recursive merge so unknown
+        // user keys survive alongside the new capture settings.
+        if fresh_item.is_table() && !is_opaque(path) {
+            if let Some(Item::Value(Value::InlineTable(old))) = target.get(key) {
+                target.insert(key, Item::Table(old.clone().into_table()));
+            }
+        }
         // Recurse only where both sides are header tables and the table isn't
         // one we replace wholesale; anything else is a plain overwrite.
         let recurse = !is_opaque(path)

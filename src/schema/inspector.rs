@@ -31,7 +31,7 @@ pub enum FrameDirection {
     Down,
 }
 
-/// Raw wire bytes of a WS frame, in the form Chrome / hudsucker delivered.
+/// Raw wire bytes of a WS frame, in the form Chrome CDP delivered.
 ///
 /// `Text` carries opcode-1 frames as their literal UTF-8 string (Tenhou's
 /// `{tag:…}` JSON, the `<Z/>` heartbeat). `Binary` carries opcode-2 frames
@@ -85,7 +85,7 @@ pub struct BotReaction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CaptureSource {
-    /// `proxy::ProxyHandler` — the MITM leg.
+    /// 仅兼容旧 Inspector 文件；当前版本不会生成该来源。
     Mitm,
     /// `capture::chromium::cdp` — the `Network` domain.
     Chromium,

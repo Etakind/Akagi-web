@@ -1,17 +1,16 @@
-//! Capture-mode configuration: which transport supplies WebSocket frames
-//! to the bridge layer.
-//!
-//! Two modes:
-//! - `Mitm` (default): hudsucker MITM proxy — see `[proxy]`.
-//! - `Chromium`: a Chromium browser launched and controlled by Akagi via
-//!   the Chrome DevTools Protocol.
+//! 雀魂网页端采集配置。唯一运行模式为 Chromium；旧模式由配置读取层拒绝。
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CaptureConfig {
     pub mode: CaptureMode,
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
+    /// 旧配置的不可用原因；由配置读取层生成，不接受 IPC 写入。
+    #[serde(default, skip_deserializing)]
+    pub unavailable_reason: Option<String>,
     pub chromium: ChromiumConfig,
     pub http: HttpCaptureConfig,
 }
@@ -54,21 +53,10 @@ impl Default for HttpCaptureConfig {
     }
 }
 
-impl HttpCaptureConfig {
-    pub fn policy(&self) -> crate::capture::http::HttpCapturePolicy {
-        crate::capture::http::HttpCapturePolicy {
-            record_all: self.record_all,
-            bodies: false,
-            max_body_bytes: self.max_body_bytes,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CaptureMode {
     #[default]
-    Mitm,
     Chromium,
 }
 
@@ -82,8 +70,7 @@ pub struct ChromiumConfig {
     pub attach_port: u16,
     /// In attach mode, reads only DevToolsActivePort here; never mutates the profile.
     /// Otherwise user-data-dir for the controlled profile. `""` = exe-adjacent
-    /// `chrome-profile/` (resolved via `util::resolve_dir`, with an
-    /// AppImage / read-only fallback to `<user_config_root>/chrome-profile`).
+    /// `chrome-profile/` (resolved via `util::resolve_dir`).
     pub user_data_dir: String,
     /// URL to navigate to on launch. `""` = don't auto-navigate (open new tab page).
     pub start_url: String,
@@ -122,6 +109,21 @@ impl Default for ChromiumConfig {
     }
 }
 
+fn enabled_by_default() -> bool {
+    true
+}
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            mode: CaptureMode::Chromium,
+            enabled: true,
+            unavailable_reason: None,
+            chromium: Default::default(),
+            http: Default::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,7 +133,7 @@ mod tests {
         let cfg = CaptureConfig::default();
         let s = toml::to_string(&cfg).unwrap();
         let back: CaptureConfig = toml::from_str(&s).unwrap();
-        assert_eq!(back.mode, CaptureMode::Mitm);
+        assert_eq!(back.mode, CaptureMode::Chromium);
         assert_eq!(back.chromium.cft_channel, "stable");
     }
 
@@ -139,6 +141,8 @@ mod tests {
     fn mode_serialises_lowercase() {
         let cfg = CaptureConfig {
             mode: CaptureMode::Chromium,
+            enabled: true,
+            unavailable_reason: None,
             chromium: Default::default(),
             http: Default::default(),
         };
@@ -164,6 +168,8 @@ mod tests {
     fn chromium_config_round_trip() {
         let original = CaptureConfig {
             mode: CaptureMode::Chromium,
+            enabled: true,
+            unavailable_reason: None,
             chromium: ChromiumConfig {
                 executable: "/opt/chrome/chrome".into(),
                 attach_port: 0,
@@ -193,6 +199,6 @@ mod tests {
         }
         let s = "";
         let w: Wrap = toml::from_str(s).unwrap();
-        assert_eq!(w.capture.mode, CaptureMode::Mitm);
+        assert_eq!(w.capture.mode, CaptureMode::Chromium);
     }
 }

@@ -366,7 +366,6 @@
     "proxy": "プロキシ",
     "enabled": "有効",
     "address": "アドレス",
-    "ca_dir": "CA ディレクトリ",
     "logging": "ログ",
     "directory": "ディレクトリ",
     "app_log_level": "アプリログレベル",
@@ -393,15 +392,7 @@
     "platform_game_label": "ゲーム",
     "platform_game_hint": "どのゲームの WebSocket プロトコルを解析するか選択します。保存すると capture が再起動し、次のセッションから新しい bridge が引き継ぎます。",
     "capture_card_title": "キャプチャ",
-    "capture_mode_label": "モード",
-    "capture_mode_hint": "MITM プロキシは CA 証明書 + システムプロキシが必要です。Chromium モードは制御下のブラウザを起動するだけで、追加設定は不要です。",
-    "capture_mitm_option": "MITM プロキシ",
     "capture_chromium_option": "Chromium ブラウザ（実験的）",
-    "capture_mitm_only": "このプラットフォームには Web クライアントがありません — MITM キャプチャのみ対応です。",
-    "proxy_enabled": "プロキシを有効化",
-    "block_telemetry": "ゲームのテレメトリをブロック",
-    "block_telemetry_hint": "ゲームがAliyunへ送る分析ビーコンを転送せずに破棄し、ログイン統計や端末・アカウント識別子が端末外に出ないようにします。多くの広告ブロッカーもこのホストを遮断するため、ビーコンが無いことはツール使用の証拠にはなりません。既定でオン。",
-    "ca_dir_hint": "ルート証明書／鍵を書き出すディレクトリです。",
     "browser_executable": "ブラウザ実行ファイル",
     "browser_executable_hint": "空欄にすると自動検出します。",
     "detect_status_initial": "「検出」をクリックしてインストール済みのブラウザをスキャン。",
@@ -457,8 +448,6 @@
       "enable": "自動操作を有効化",
       "enable_help": "有効にすると、Akagi がボットの選んだ手を自動で実行します。Chromium キャプチャモードと起動中の対局タブが必要です。雀魂では卓上をクリックし、天鳳では対局接続に直接送信します。",
       "platform_note": "上記のクリック時間の設定は雀魂のみに適用されます。天鳳の自動打牌は対局接続に直接送信するためクリックを行わず、下の思考時間モデルのみを使用します。",
-      "requires_chromium": "自動操作にはChromiumキャプチャモードが必要です。",
-      "rc_warning_title": "麻雀一番街の自動操作に関する警告",
       "rc_warning_desc": "麻雀一番街の自動操作は MITM によるパケット注入で実現されています。安全性には依然として懸念があり、アカウントが BAN される可能性があります。リスクをご理解の上でご利用ください。",
       "rc_warning_ack": "リスクを理解しました",
       "pre_click_delay_min": "クリック前の待機 (最小, ms)",
@@ -490,7 +479,10 @@
     "overlay_top_n": "表示する候補数",
     "overlay_opacity": "不透明度",
     "overlay_always_on_top": "常に最前面に表示",
-    "overlay_always_on_top_hint": "サブモニターに置く場合はオフにしてください。なお、ゲームが排他的フルスクリーンの場合は最前面ウィンドウがすべて隠れるため、ボーダーレスまたはウィンドウモードをご利用ください。"
+    "overlay_always_on_top_hint": "サブモニターに置く場合はオフにしてください。なお、ゲームが排他的フルスクリーンの場合は最前面ウィンドウがすべて隠れるため、ボーダーレスまたはウィンドウモードをご利用ください。",
+    "capture_enabled": "ブラウザ取得を有効化",
+    "attach_port": "既存ブラウザのデバッグポート",
+    "attach_port_hint": "0 は独立ブラウザを起動します。0 以外は 127.0.0.1 の既存ブラウザに接続します。"
   },
   "setup": {
     "title": "Akagi セットアップ",
@@ -502,23 +494,6 @@
       "body1": "Akagi は麻雀ゲームのトラフィックを監視し、mjai プロトコル Bot と連携してリアルタイムにアドバイスを提供します。Bot が動き出す前に、Akagi はゲームの WebSocket を取得する手段を必要とします。",
       "body2": "次のページでは「従来型 MITM プロキシ（強力ですが CA 証明書の信頼が必要）」と「制御下の Chromium ブラウザ（プロキシ／証明書の設定不要 — Akagi が自前のブラウザを起動）」のどちらかを選択します。",
       "links_label": "プロジェクトホームと公式コミュニティ："
-    },
-    "platform": {
-      "title": "プラットフォームを選択",
-      "desc": "Akagi は同時に1つのゲームの WebSocket プロトコルしか監視できません。後から「設定」で変更できます。"
-    },
-    "mode": {
-      "title": "キャプチャモードを選択",
-      "chromium_title": "Chromium ブラウザ（推奨）",
-      "chromium_desc": "Akagi は制御下のブラウザを起動し、Chrome DevTools Protocol で WebSocket フレームを傍受します。システムプロキシも CA 証明書も不要。雀魂（Mahjong Soul）と天鳳（Tenhou）に対応；麻雀一番街は Web クライアントが無いため非対応です。",
-      "mitm_title": "MITM プロキシ（上級者向け）",
-      "mitm_desc": "hudsucker ベースの MITM。システムプロキシを設定し、Akagi の自己署名 CA を信頼する必要があります。麻雀一番街には必須です（Web クライアントが無いため）。"
-    },
-    "mitm": {
-      "title": "MITM プロキシ設定",
-      "listen": "待ち受けアドレス",
-      "ca_dir_hint": "CA 証明書は初回起動時に生成されます。.pem / .crt ファイルを OS またはブラウザの証明書ストアで信頼してから、ゲームをこのプロキシ経由にしてください。",
-      "proxy_enabled_hint": "メインスイッチ — オンにすると Akagi が自動でプロキシを起動します。"
     },
     "chromium": {
       "title": "Chromium 設定",
@@ -554,9 +529,6 @@
       "platform_label": "ゲームプラットフォーム:",
       "mode_label": "モード:",
       "mode_chromium": "Chromium ブラウザ",
-      "mode_mitm": "MITM プロキシ",
-      "listen_label": "待ち受け:",
-      "ca_dir_label": "CA ディレクトリ:",
       "exec_label": "実行ファイル:",
       "exec_cft": "（Chrome for Testing — {{channel}}）",
       "exec_autodetect": "（自動検出: システム → Chrome for Testing）",
@@ -729,7 +701,6 @@
     "description": "Bot、capture、現在のログセッションのライブ状態を表示します。",
     "bot_card_title": "Bot",
     "capture_chromium": "Capture（Chromium）",
-    "capture_mitm": "Capture（MITM）",
     "log_session": "ログセッション",
     "last_analysis": "最新の解析",
     "open_dashboard": "対局解析を開く"
@@ -816,9 +787,7 @@
     "majsoul": "雀魂",
     "majsoul_desc": "game.maj-soul.com — 四麻 + 三麻",
     "tenhou": "天鳳",
-    "tenhou_desc": "tenhou.net — 四麻 + 三麻",
     "riichi_city": "麻雀一番街",
-    "riichi_city_desc": "ネイティブアプリ — MITM のみ · 四麻 + 三麻",
     "mjai": "mjai"
   },
   "updates": {
@@ -861,13 +830,6 @@
     }
   },
   "announcements": {
-    "akagims": {
-      "card_title": "AkagiMS — 雀魂専用のスタンドアロン版",
-      "card_desc": "ゲームクライアント内蔵、全自動プレイ、セットアップ不要。ダウンロードして解凍、実行するだけ。",
-      "card_dismiss": "閉じる",
-      "screenshot_alt": "AkagiMS が全自動モードで段位戦をプレイ中",
-      "view_download": "ダウンロード"
-    },
     "dialog": {
       "title": "お知らせ",
       "intro": "リリースのハイライトとプロジェクトからのお知らせです。",
@@ -878,15 +840,11 @@
     "entries": {
       "v3_7_0": {
         "title": "麻雀一番街の自動打牌と、対局検討（ベータ）",
-        "rc_autoplay_title": "麻雀一番街の自動打牌",
-        "rc_autoplay_desc": "麻雀一番街での打牌・鳴き・立直を Akagi が自動で行います。四麻・三麻の両方に対応します。",
         "review_title": "対局検討（ベータ）",
         "review_desc": "記録した対局を AI に丸ごと検討させ、AI の選択と一致した打牌・逸れた打牌を MJOT ビューアで確認できます。結果はリンクで共有できます。"
       },
       "v3_6_0": {
         "title": "天鳳の自動打牌と、アップデート取得元の選択",
-        "tenhou_autoplay_title": "天鳳の自動打牌",
-        "tenhou_autoplay_desc": "天鳳での打牌・鳴き・立直を Akagi が自動で行います。手を離していても対局が進みます。",
         "update_source_title": "アップデート取得元の選択",
         "update_source_desc": "自動アップデートのダウンロード元を選べるようになりました。GitHub が遅い地域向けのミラーも利用でき、より速く安定して更新できます。"
       },
@@ -897,19 +855,6 @@
         "checkout_desc": "アプリ内で MJOT の利用時間を購入・延長できます。カード / Google Pay / Apple Pay / Alipay に対応します。",
         "health_title": "更新とヘルスチェックの改善",
         "health_desc": "延長は既定で現在のキーに加算され、ヘルスチェックはキュー状況や性能低下を報告するようになりました。"
-      },
-      "akagims": {
-        "title": "AkagiMS 登場:雀魂専用のスタンドアロンアプリ",
-        "majsoul_title": "雀魂専用設計",
-        "majsoul_desc": "ひとつのゲームのために作られ、すべてがそのために調整されています。",
-        "embedded_title": "ゲームクライアント内蔵",
-        "embedded_desc": "雀魂がアプリのウィンドウ内で開きます — プロキシも証明書も別のブラウザも不要。",
-        "fullauto_title": "全自動プレイ",
-        "fullauto_desc": "段位戦の予約から対局、結果画面を閉じて次の対局まで自動で行います。",
-        "zero_setup_title": "すぐに使える",
-        "zero_setup_desc": "ダウンロードして解凍、実行するだけ。AI はバイナリに同梱。",
-        "image_alt": "AkagiMS が全自動モードで段位戦をプレイ中",
-        "link_label": "ダウンロード"
       }
     }
   },

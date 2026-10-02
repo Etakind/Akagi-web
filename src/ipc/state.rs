@@ -32,23 +32,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex, Notify, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock};
 
-/// Per-running-capture-backend control handle.
-///
-/// `stop` is `Some` while the backend task is alive; sending `()`
-/// triggers graceful shutdown and the task exits. After exit the
-/// supervisor sets `stop = None` and updates `status`.
-///
-/// `force_close` is shared with the hudsucker handler when MITM is the
-/// active backend; calling `notify_waiters()` kicks every in-flight
-/// WebSocket flow so the game client actually disconnects (graceful
-/// shutdown alone only blocks new connections — existing flows would
-/// otherwise drain naturally). The Chromium backend ignores it.
 pub struct CaptureControl {
     pub status: CaptureStatus,
     pub stop: Option<oneshot::Sender<()>>,
-    pub force_close: Arc<Notify>,
 }
 
 impl Default for CaptureControl {
@@ -56,7 +44,6 @@ impl Default for CaptureControl {
         Self {
             status: CaptureStatus::Stopped,
             stop: None,
-            force_close: Arc::new(Notify::new()),
         }
     }
 }

@@ -23,10 +23,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux: ubuntu-22.04 keeps glibc old enough that the binaries
-          # run on most user machines without forced glibc upgrades.
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
           - os: macos-14
             target: aarch64-apple-darwin
           - os: windows-latest
@@ -84,30 +80,6 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: tauri-cli@2.11.1
-
-      - name: Linux system deps
-        if: runner.os == 'Linux'
-        # Hard cap the step: apt has no stall-timeout for downloads, so a
-        # single wedged mirror connection can hang until the 6 h runner
-        # limit (it did on the v3.2.0 run, stuck mid-fetch of the 27 MB
-        # libwebkit2gtk package). 12 min is ample for a ~55 MB install.
-        timeout-minutes: 12
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          set -euo pipefail
-          # Bound each socket to 30 s and retry, so a stalled download
-          # aborts and re-fetches instead of trickling forever.
-          apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-          sudo apt-get "${apt_opts[@]}" update
-          sudo apt-get "${apt_opts[@]}" install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libsoup-3.0-dev \
-            libssl-dev \
-            patchelf \
-            libfuse2
 
       # Cache fetched python + uv tarballs by version triple. The runtime
       # is shipped inside every zip, so the fetch is unconditional.

@@ -833,7 +833,6 @@ mod tests {
             budget: None,
             probs: None,
             delay_script: None,
-            tenhou: None,
         }
     }
 

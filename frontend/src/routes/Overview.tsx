@@ -1,17 +1,14 @@
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { Bot, Shield, ScrollText, Gamepad2, Settings as SettingsIcon, Download, X } from 'lucide-react'
+import { Bot, Shield, ScrollText, Gamepad2, Settings as SettingsIcon } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { useBotStore } from '@/stores/botStore'
 import { useCaptureStore } from '@/stores/captureStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useAnalysisStore } from '@/stores/analysisStore'
-import { useUiPrefsStore } from '@/stores/uiPrefsStore'
 import { fmtTime } from '@/lib/format'
 import { AkagiWordmark } from '@/components/BrandLogo'
-import { AKAGIMS_DOWNLOAD_URL, AKAGIMS_GITHUB_URL, openExternal } from '@/lib/external'
-import akagimsScreenshot from '@/assets/akagims-fullauto.jpg'
 
 const DOT: Record<string, string> = {
   ready:    'bg-emerald-500',
@@ -30,7 +27,7 @@ export function Overview() {
   const logDir = useConfigStore((s) => s.logDir)
   const lastAnalysis = useAnalysisStore((s) => s.updatedAt)
 
-  const captureTitle = 'kind' in capture && capture.kind === 'chromium' ? t('overview.capture_chromium') : t('overview.capture_mitm')
+  const captureTitle = t('overview.capture_chromium')
   const captureDetail = 'descriptor' in capture && capture.descriptor ? capture.descriptor : '—'
 
   return (
@@ -95,63 +92,7 @@ export function Overview() {
         </Button>
       </div>
 
-      <AkagiMsPromoCard />
     </div>
-  )
-}
-
-// Dismissible AkagiMS promo — the persistent, quieter counterpart to the
-// one-time announcement dialog (the sidebar footer link stays even after
-// this card is closed).
-function AkagiMsPromoCard() {
-  const { t } = useTranslation()
-  const dismissed = useUiPrefsStore((s) => s.akagimsCardDismissed)
-  const dismiss = useUiPrefsStore((s) => s.markAkagimsCardDismissed)
-  if (dismissed) return null
-
-  return (
-    <Card className="relative overflow-hidden">
-      <Button
-        variant="ghost"
-        size="icon"
-        className="absolute right-2 top-2 h-7 w-7 text-muted-foreground hover:text-foreground"
-        onClick={dismiss}
-        aria-label={t('announcements.akagims.card_dismiss')}
-      >
-        <X className="h-4 w-4" />
-      </Button>
-      <CardContent className="flex flex-col sm:flex-row items-start gap-4 pt-6">
-        <button
-          type="button"
-          className="shrink-0 w-full sm:w-56 cursor-pointer"
-          onClick={() => openExternal(AKAGIMS_GITHUB_URL)}
-          aria-label="AkagiMS"
-        >
-          <img
-            src={akagimsScreenshot}
-            alt={t('announcements.akagims.screenshot_alt')}
-            className="w-full rounded-md border border-border"
-          />
-        </button>
-        <div className="min-w-0 flex flex-col gap-2">
-          <div className="text-sm font-semibold">{t('announcements.akagims.card_title')}</div>
-          <p className="text-xs text-muted-foreground">{t('announcements.akagims.card_desc')}</p>
-          <div className="flex flex-wrap gap-2 pt-1">
-            <Button size="sm" onClick={() => openExternal(AKAGIMS_DOWNLOAD_URL)} className="gap-1.5">
-              <Download className="h-4 w-4" />
-              {t('announcements.akagims.view_download')}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => openExternal(AKAGIMS_GITHUB_URL)}
-            >
-              GitHub
-            </Button>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
   )
 }
 

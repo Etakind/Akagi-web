@@ -366,7 +366,6 @@
     "proxy": "Proxy",
     "enabled": "Enabled",
     "address": "Address",
-    "ca_dir": "CA directory",
     "logging": "Logging",
     "directory": "Directory",
     "app_log_level": "App log level",
@@ -393,15 +392,7 @@
     "platform_game_label": "Game",
     "platform_game_hint": "Selects which bridge parses the WebSocket protocol. Saving triggers a capture restart so the new bridge picks up the next session.",
     "capture_card_title": "Capture",
-    "capture_mode_label": "Mode",
-    "capture_mode_hint": "MITM proxy needs CA cert + system proxy. Chromium launches a controlled browser — no setup.",
-    "capture_mitm_option": "MITM proxy",
     "capture_chromium_option": "Chromium browser (experimental)",
-    "capture_mitm_only": "This platform has no web client — MITM capture only.",
-    "proxy_enabled": "Proxy enabled",
-    "block_telemetry": "Block game telemetry",
-    "block_telemetry_hint": "Drop the game's Aliyun analytics beacons instead of forwarding them, so login stats and device / account identifiers never leave your machine. Many ad blockers already block this host, so a missing beacon is not a sign of a tool. On by default.",
-    "ca_dir_hint": "Where root certificate / keys are written.",
     "browser_executable": "Browser executable",
     "browser_executable_hint": "Leave blank to auto-detect.",
     "detect_status_initial": "Click Detect to scan for installed browsers.",
@@ -457,8 +448,6 @@
       "enable": "Enable autoplay",
       "enable_help": "When enabled, Akagi performs the bot's chosen action for you. Requires the Chromium capture mode and a running game tab. On Mahjong Soul the action is clicked on the board; on Tenhou it is sent directly over the game connection; on Riichi City it is injected as the client's own protocol frames through the MITM proxy (no Chromium needed).",
       "platform_note": "These click-timing knobs apply to Mahjong Soul only. Tenhou and Riichi City autoplay send the action over the game connection and do not click, so they use the thinking-time model below but none of the settings above.",
-      "requires_chromium": "Autoplay requires the Chromium capture mode.",
-      "rc_warning_title": "Riichi City autoplay risk warning",
       "rc_warning_desc": "Autoplay on Riichi City is implemented by injecting protocol frames through the MITM proxy. This approach still has open safety concerns and may get your account banned. Use it at your own risk.",
       "rc_warning_ack": "I understand the risk",
       "pre_click_delay_min": "Pre-click delay (min, ms)",
@@ -490,7 +479,10 @@
     "overlay_top_n": "Suggestions shown",
     "overlay_opacity": "Opacity",
     "overlay_always_on_top": "Keep above other windows",
-    "overlay_always_on_top_hint": "Turn this off to park the overlay on a second monitor. Note that a game running in exclusive fullscreen draws over every always-on-top window — use borderless or windowed mode."
+    "overlay_always_on_top_hint": "Turn this off to park the overlay on a second monitor. Note that a game running in exclusive fullscreen draws over every always-on-top window — use borderless or windowed mode.",
+    "capture_enabled": "Enable browser capture",
+    "attach_port": "Existing browser debug port",
+    "attach_port_hint": "0 launches an isolated browser. A nonzero port attaches to an opted-in browser on 127.0.0.1."
   },
   "setup": {
     "title": "Akagi Setup",
@@ -502,23 +494,6 @@
       "body1": "Akagi watches your mahjong game traffic and runs an mjai-protocol bot alongside it for realtime advice. Before the bot can do anything, Akagi needs a way to capture the game's WebSocket traffic.",
       "body2": "On the next page you'll pick between the legacy MITM proxy (powerful but requires CA-cert trust) and a controlled Chromium browser (no proxy / certificate setup — Akagi launches its own browser window).",
       "links_label": "Project home and community:"
-    },
-    "platform": {
-      "title": "Pick your platform",
-      "desc": "Akagi listens for one game's WebSocket protocol at a time. You can change this later in Settings."
-    },
-    "mode": {
-      "title": "Pick a capture mode",
-      "chromium_title": "Chromium browser (recommended)",
-      "chromium_desc": "Akagi launches a controlled browser and intercepts WebSocket frames via Chrome DevTools Protocol. No system proxy. No CA cert. Works for Mahjong Soul and Tenhou; not for RiichiCity (no web client).",
-      "mitm_title": "MITM proxy (advanced)",
-      "mitm_desc": "hudsucker-based MITM. You configure your system proxy and trust Akagi's self-signed CA. Required for RiichiCity (no web client)."
-    },
-    "mitm": {
-      "title": "MITM proxy settings",
-      "listen": "Listen address",
-      "ca_dir_hint": "The CA cert is generated on first start. Trust the .pem / .crt file in your OS or browser certificate store before pointing the game at this proxy.",
-      "proxy_enabled_hint": "Master switch — leave on for Akagi to start the proxy automatically."
     },
     "chromium": {
       "title": "Chromium settings",
@@ -554,9 +529,6 @@
       "platform_label": "Game platform:",
       "mode_label": "Mode:",
       "mode_chromium": "Chromium browser",
-      "mode_mitm": "MITM proxy",
-      "listen_label": "Listen:",
-      "ca_dir_label": "CA dir:",
       "exec_label": "Executable:",
       "exec_cft": "(Chrome for Testing — {{channel}})",
       "exec_autodetect": "(auto-detect: system → Chrome for Testing)",
@@ -729,7 +701,6 @@
     "description": "Live status of bot, capture, and the active log session.",
     "bot_card_title": "Bot",
     "capture_chromium": "Capture (Chromium)",
-    "capture_mitm": "Capture (MITM)",
     "log_session": "Log Session",
     "last_analysis": "Latest analysis",
     "open_dashboard": "Open Game Analysis"
@@ -816,9 +787,7 @@
     "majsoul": "Mahjong Soul",
     "majsoul_desc": "game.maj-soul.com — yonma + sanma",
     "tenhou": "Tenhou",
-    "tenhou_desc": "tenhou.net — yonma + sanma",
     "riichi_city": "Riichi City",
-    "riichi_city_desc": "Native client — MITM only · yonma + sanma",
     "mjai": "mjai"
   },
   "updates": {
@@ -861,13 +830,6 @@
     }
   },
   "announcements": {
-    "akagims": {
-      "card_title": "AkagiMS — the standalone app for Mahjong Soul",
-      "card_desc": "Embedded game client, full-auto play, zero setup. Download, unzip, run.",
-      "card_dismiss": "Dismiss",
-      "screenshot_alt": "AkagiMS playing a ranked match by itself in full-auto mode",
-      "view_download": "Download"
-    },
     "dialog": {
       "title": "Announcements",
       "intro": "Release highlights and news from the Akagi project.",
@@ -878,15 +840,11 @@
     "entries": {
       "v3_7_0": {
         "title": "Riichi City autoplay & whole-game review (Beta)",
-        "rc_autoplay_title": "Riichi City autoplay",
-        "rc_autoplay_desc": "Let Akagi play your turns on Riichi City automatically — discards, calls and riichi, all hands-free. Works in both four-player and three-player games.",
         "review_title": "Whole-game review (Beta)",
         "review_desc": "Submit any recorded game for a full AI review and see where your play matched — or missed — the AI's choice in the MJOT viewer, with a shareable result link."
       },
       "v3_6_0": {
         "title": "Tenhou autoplay & selectable update sources",
-        "tenhou_autoplay_title": "Tenhou autoplay",
-        "tenhou_autoplay_desc": "Let Akagi play your turns on Tenhou automatically — discards, calls and riichi, all hands-free.",
         "update_source_title": "Choose your update source",
         "update_source_desc": "The auto-updater now lets you pick where downloads come from, with a mirror option for faster, more reliable updates where GitHub is slow."
       },
@@ -897,19 +855,6 @@
         "checkout_desc": "Buy or renew MJOT time without leaving the app — card, Google Pay, Apple Pay and Alipay.",
         "health_title": "Smarter renewals & health checks",
         "health_desc": "Renewals extend your current key by default, and the service health check now reports queue depth and degraded states."
-      },
-      "akagims": {
-        "title": "AkagiMS: a standalone app built for Mahjong Soul",
-        "majsoul_title": "Made for Mahjong Soul",
-        "majsoul_desc": "Purpose-built for one game, with everything tuned around it.",
-        "embedded_title": "Built-in game client",
-        "embedded_desc": "Mahjong Soul opens inside the app window — no proxy, no certificate, no second browser.",
-        "fullauto_title": "Full-auto play",
-        "fullauto_desc": "Queues ranked matches, plays them out, closes the results and queues the next one.",
-        "zero_setup_title": "Zero setup",
-        "zero_setup_desc": "Download, unzip, run. The AI ships inside the binary.",
-        "image_alt": "AkagiMS playing a ranked match by itself in full-auto mode",
-        "link_label": "Download"
       }
     }
   },

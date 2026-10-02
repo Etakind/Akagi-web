@@ -18,7 +18,7 @@ pub enum UpdateError {
     #[error("running platform has no published release artifact")]
     UnsupportedPlatform,
 
-    /// Install directory isn't writable — AppImage, system-wide install,
+    /// Install directory isn't writable — system-wide install,
     /// macOS `.app` bundle without admin. UI falls back to "Open release
     /// page".
     #[error("install directory {path} is not writable")]

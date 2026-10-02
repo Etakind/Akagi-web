@@ -47,8 +47,6 @@ import {
   type ThemePalette,
 } from '@/stores/themeStore'
 import {
-  PLATFORMS,
-  isKnownDefaultStartUrl,
   platformInfo,
 } from '@/lib/platforms'
 import {
@@ -59,14 +57,12 @@ import {
 } from '@/types'
 import type {
   AppConfig,
-  CaptureMode,
   DelayMode,
   DelayModelConfig,
   DetectedBrowser,
   GithubMirrorMode,
   NetworkConfig,
   OverlayConfig,
-  PlatformKind,
 } from '@/types'
 
 export function Settings() {
@@ -76,11 +72,6 @@ export function Settings() {
   const [draft, setDraft] = useState<AppConfig | null>(stored)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  // Riichi City autoplay is MITM frame injection — pop a risk warning the
-  // moment the draft combines the two, from either direction (platform
-  // switched to Riichi City while autoplay is on, or autoplay switched on
-  // while the platform is Riichi City).
-  const [rcAutoplayWarnOpen, setRcAutoplayWarnOpen] = useState(false)
 
   useEffect(() => {
     // Sync the editable draft from the store when it (re)loads.
@@ -215,12 +206,6 @@ export function Settings() {
 
       <OverlayCard draft={draft} setDraft={setDraft} />
 
-      <PlatformCard
-        draft={draft}
-        setDraft={setDraft}
-        onRiichiCityAutoplay={() => setRcAutoplayWarnOpen(true)}
-      />
-
       <CaptureCard draft={draft} setDraft={setDraft} />
 
       <Card>
@@ -292,7 +277,6 @@ export function Settings() {
       <AutoplayCard
         draft={draft}
         setDraft={setDraft}
-        onRiichiCityAutoplay={() => setRcAutoplayWarnOpen(true)}
       />
 
       <NetworkCard draft={draft} setDraft={setDraft} />
@@ -326,21 +310,7 @@ export function Settings() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={rcAutoplayWarnOpen} onOpenChange={setRcAutoplayWarnOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('settings.autoplay.rc_warning_title')}</DialogTitle>
-            <DialogDescription>
-              {t('settings.autoplay.rc_warning_desc')}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="bg-transparent p-0 border-0 mx-0 mb-0">
-            <Button size="sm" onClick={() => setRcAutoplayWarnOpen(false)}>
-              {t('settings.autoplay.rc_warning_ack')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+
     </div>
   )
 }
@@ -754,81 +724,12 @@ function UiScaleField() {
   )
 }
 
-function PlatformCard({
-  draft,
-  setDraft,
-  onRiichiCityAutoplay,
-}: {
-  draft: AppConfig
-  setDraft: (c: AppConfig) => void
-  onRiichiCityAutoplay: () => void
-}) {
-  const { t } = useTranslation()
-  const current = draft.platform.kind
-  const setKind = (kind: PlatformKind) => {
-    if (kind === current) return
-    if (kind === 'RiichiCity' && (draft.autoplay?.enabled ?? false)) {
-      onRiichiCityAutoplay()
-    }
-    // If the user hasn't customised the Chromium start URL, swap it to
-    // the new platform's default so the next launch lands on the right
-    // game. A user-customised URL is left alone — the URL field below
-    // shows the platform default as a hint either way.
-    const info = platformInfo(kind)
-    const oldStart = draft.capture.chromium.start_url
-    const nextStart = isKnownDefaultStartUrl(oldStart)
-      ? info.defaultStartUrl
-      : oldStart
-    setDraft({
-      ...draft,
-      platform: { kind },
-      capture: {
-        ...draft.capture,
-        // Native-only platforms (no web client) are MITM-only — force the
-        // mode so we never persist an unusable Chromium capture for them.
-        mode: info.supportsChromium ? draft.capture.mode : 'mitm',
-        chromium: { ...draft.capture.chromium, start_url: nextStart },
-      },
-    })
-  }
-  const info = platformInfo(current)
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t('settings.platform_card_title')}</CardTitle>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        <Field
-          label={t('settings.platform_game_label')}
-          hint={t('settings.platform_game_hint')}
-        >
-          <Select value={current} onValueChange={(v) => setKind(v as PlatformKind)}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PLATFORMS.map((p) => (
-                <SelectItem key={p.kind} value={p.kind}>
-                  {t(p.labelKey)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
-        <p className="text-xs text-muted-foreground">{t(info.descriptionKey)}</p>
-      </CardContent>
-    </Card>
-  )
-}
-
 function AutoplayCard({
   draft,
   setDraft,
-  onRiichiCityAutoplay,
 }: {
   draft: AppConfig
   setDraft: (c: AppConfig) => void
-  onRiichiCityAutoplay: () => void
 }) {
   const { t } = useTranslation()
   const ap = draft.autoplay ?? {
@@ -847,10 +748,6 @@ function AutoplayCard({
     delay: defaultDelayModel(),
   }
   const delay = ap.delay ?? defaultDelayModel()
-  const captureIsChromium = draft.capture?.mode === 'chromium'
-  // Riichi City autoplay runs through the MITM proxy (frame injection), so
-  // the Chromium-mode requirement only applies to the click platforms.
-  const platformIsRiichiCity = draft.platform?.kind === 'RiichiCity'
   const setApField = (patch: Partial<typeof ap>) =>
     setDraft({ ...draft, autoplay: { ...ap, ...patch } })
   const setMajsoulField = (patch: Partial<typeof ap.majsoul>) =>
@@ -874,17 +771,11 @@ function AutoplayCard({
           value={ap.enabled}
           onChange={(v) => {
             setApField({ enabled: v })
-            if (v && platformIsRiichiCity) onRiichiCityAutoplay()
           }}
         />
         <p className="text-xs text-muted-foreground">
           {t('settings.autoplay.enable_help')}
         </p>
-        {ap.enabled && !captureIsChromium && !platformIsRiichiCity && (
-          <p className="text-xs text-amber-500">
-            {t('settings.autoplay.requires_chromium')}
-          </p>
-        )}
         {/* Delay policy: exactly one of legacy (fixed uniform) or the
             Lua-scripted human-like model is active. */}
         <Field label={t('settings.autoplay.delay_mode')}>
@@ -1121,14 +1012,11 @@ function CaptureCard({
   setDraft: (c: AppConfig) => void
 }) {
   const { t } = useTranslation()
-  const supportsChromium = platformInfo(draft.platform.kind).supportsChromium
-  // Native-only platforms (no web client) are MITM-only; present MITM as the
-  // effective mode even if a stale config selected Chromium.
-  const mode: CaptureMode = supportsChromium ? (draft.capture?.mode ?? 'mitm') : 'mitm'
   const chromium = draft.capture?.chromium ?? {
     executable: '',
+    attach_port: 0,
     user_data_dir: '',
-    start_url: platformInfo(draft.platform.kind).defaultStartUrl,
+    start_url: platformInfo().defaultStartUrl,
     cft_channel: 'stable',
     force_cft: false,
     extra_args: [],
@@ -1149,26 +1037,19 @@ function CaptureCard({
   }
 
   useEffect(() => {
-    if (mode === 'chromium' && detected === null) {
+    if (detected === null) {
       // probe() sets detecting/detected state; intentional on mode switch.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       probe()
     }
-  }, [mode]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const setMode = (v: CaptureMode) =>
-    setDraft({
-      ...draft,
-      capture: {
-        mode: v,
-        chromium,
-      },
-    })
   const setChromium = (patch: Partial<typeof chromium>) =>
     setDraft({
       ...draft,
       capture: {
-        mode,
+        ...draft.capture,
+        mode: 'chromium',
         chromium: { ...chromium, ...patch },
       },
     })
@@ -1182,62 +1063,14 @@ function CaptureCard({
         </div>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <Field label={t('settings.capture_mode_label')} hint={t('settings.capture_mode_hint')}>
-          <Select value={mode} onValueChange={(v) => setMode(v as CaptureMode)}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="mitm">{t('settings.capture_mitm_option')}</SelectItem>
-              <SelectItem value="chromium" disabled={!supportsChromium}>
-                {t('settings.capture_chromium_option')}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
-
-        {!supportsChromium && (
-          <p className="text-xs text-amber-500">{t('settings.capture_mitm_only')}</p>
-        )}
-
-        {mode === 'mitm' && (
-          <>
-            <Toggle
-              label={t('settings.proxy_enabled')}
-              value={draft.proxy.enabled}
-              onChange={(v) => setDraft({ ...draft, proxy: { ...draft.proxy, enabled: v } })}
-            />
-            <Field label={t('settings.address')}>
-              <Input
-                value={draft.proxy.addr}
-                onChange={(e) => setDraft({ ...draft, proxy: { ...draft.proxy, addr: e.target.value } })}
-                placeholder="127.0.0.1:23410"
-              />
-            </Field>
-            <Field label={t('settings.ca_dir')} hint={t('settings.ca_dir_hint')}>
-              <Input
-                value={draft.proxy.ca_dir}
-                onChange={(e) => setDraft({ ...draft, proxy: { ...draft.proxy, ca_dir: e.target.value } })}
-              />
-            </Field>
-            <Toggle
-              label={t('settings.block_telemetry')}
-              value={draft.proxy.block_telemetry}
-              onChange={(v) => setDraft({ ...draft, proxy: { ...draft.proxy, block_telemetry: v } })}
-            />
-            <span className="text-xs text-muted-foreground">
-              {t('settings.block_telemetry_hint')}
-            </span>
-          </>
-        )}
-
-        {mode === 'chromium' && (
-          <>
+        {draft.capture.unavailable_reason && <p role="alert">{draft.capture.unavailable_reason}</p>}
+        <Toggle label={t('settings.capture_enabled')} value={draft.capture.enabled}
+          onChange={(enabled) => setDraft({ ...draft, capture: { ...draft.capture, enabled, unavailable_reason: null } })} />
             <Field label={t('settings.browser_executable')} hint={t('settings.browser_executable_hint')}>
               <Input
                 value={chromium.executable}
                 onChange={(e) => setChromium({ executable: e.target.value })}
-                placeholder="/usr/bin/google-chrome"
+                placeholder="Microsoft Edge / Google Chrome"
               />
             </Field>
             <div className="flex items-center justify-between gap-2">
@@ -1254,6 +1087,11 @@ function CaptureCard({
                 {detecting ? t('common.detecting') : t('common.detect')}
               </Button>
             </div>
+            <Field label={t('settings.attach_port')} hint={t('settings.attach_port_hint')}>
+              <Input type="number" min={0} max={65535} step={1}
+                value={chromium.attach_port ?? 0}
+                onChange={(e) => setChromium({ attach_port: Math.max(0, Math.min(65535, Math.trunc(Number(e.target.value) || 0))) })} />
+            </Field>
             <Field label={t('settings.user_data_dir')} hint={t('settings.user_data_dir_hint')}>
               <Input
                 value={chromium.user_data_dir}
@@ -1264,14 +1102,14 @@ function CaptureCard({
             <Field
               label={t('settings.start_url')}
               hint={t('settings.start_url_hint', {
-                platform: t(platformInfo(draft.platform.kind).labelKey),
-                url: platformInfo(draft.platform.kind).defaultStartUrl,
+                platform: t(platformInfo().labelKey),
+                url: platformInfo().defaultStartUrl,
               })}
             >
               <Input
                 value={chromium.start_url}
                 onChange={(e) => setChromium({ start_url: e.target.value })}
-                placeholder={platformInfo(draft.platform.kind).defaultStartUrl}
+                placeholder={platformInfo().defaultStartUrl}
               />
             </Field>
             <Toggle
@@ -1280,8 +1118,6 @@ function CaptureCard({
               onChange={(v) => setChromium({ force_cft: v })}
             />
             <CftPanel chromium={chromium} setChromium={setChromium} />
-          </>
-        )}
       </CardContent>
     </Card>
   )

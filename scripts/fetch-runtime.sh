@@ -16,9 +16,9 @@
 #
 # Layout produced:
 #   runtime/python/<triple>/        # full python-build-standalone tree
-#                          /bin/python3   (linux/mac)
+#                          /bin/python3   (macOS)
 #                          /python.exe    (windows)
-#   runtime/uv/<triple>/uv          (linux/mac)
+#   runtime/uv/<triple>/uv          (macOS)
 #   runtime/uv/<triple>/uv.exe      (windows)
 #
 # Re-runs are idempotent: if the python binary and uv binary already
@@ -51,6 +51,11 @@ if [[ -z "$TARGET" ]]; then
   fi
   TARGET="$(rustc -vV | awk '/host:/ { print $2 }')"
 fi
+
+case "$TARGET" in
+  aarch64-apple-darwin|x86_64-pc-windows-msvc) ;;
+  *) echo "unsupported application target: $TARGET" >&2; exit 2 ;;
+esac
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${ROOT}/runtime"
@@ -96,9 +101,7 @@ else
   echo "installed python: ${PY_BIN}"
 
   # Prune tkinter / tcl / tk — bots run headless, never import them, and
-  # `linuxdeploy` chokes on `_tkinter.so → libtcl9.0.so` when the host
-  # has no system tcl/tk during AppImage bundling. Also drops idlelib
-  # and turtledemo which depend on tkinter.
+  # Bundled bots do not need GUI toolkit libraries, idlelib or turtledemo.
   echo "pruning tkinter/tcl/tk from python tree"
   find "${PY_DIR}" \
     \( -name "_tkinter*.so" \

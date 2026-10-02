@@ -31,7 +31,6 @@ function loadRule(): PtRule {
     const parsed = JSON.parse(raw) as PtRule
     if (
       parsed.kind === 'majsoul' ||
-      parsed.kind === 'tenhou' ||
       parsed.kind === 'custom'
     ) {
       return parsed

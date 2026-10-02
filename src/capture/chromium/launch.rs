@@ -55,10 +55,6 @@ pub fn spawn(exe: &Path, profile: &Path, cfg: &ChromiumConfig) -> Result<Spawned
         .arg("--disable-sync")
         .arg("--metrics-recording-only")
         .arg("--no-pings");
-    if cfg!(target_os = "linux") {
-        // Chromium occasionally crashes on Linux when /dev/shm is small (e.g. Docker).
-        cmd.arg("--disable-dev-shm-usage");
-    }
     for extra in &cfg.extra_args {
         cmd.arg(extra);
     }

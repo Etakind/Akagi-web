@@ -76,8 +76,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
           - os: macos-14
             target: aarch64-apple-darwin
           - os: windows-latest
@@ -127,25 +125,6 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: tauri-cli@2.11.1
-
-      - name: Linux system deps
-        if: runner.os == 'Linux'
-        timeout-minutes: 12
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          set -euo pipefail
-          apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-          sudo apt-get "${apt_opts[@]}" update
-          sudo apt-get "${apt_opts[@]}" install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libsoup-3.0-dev \
-            libssl-dev \
-            patchelf \
-            libfuse2 \
-            protobuf-compiler
 
       # PR code must not be able to write into a cache shared with trusted
       # default-branch and release builds.
@@ -212,7 +191,6 @@ jobs:
               data.artifacts.map((artifact) => [artifact.name, artifact])
             );
             const expected = [
-              ['Linux x86_64', 'akagi-x86_64-unknown-linux-gnu'],
               ['macOS Apple Silicon', 'akagi-aarch64-apple-darwin'],
               ['Windows x86_64', 'akagi-x86_64-pc-windows-msvc'],
             ];

@@ -1,96 +1,19 @@
-# scripts/
+# 开发与验收工具
 
-Build / release / protocol-update tooling. Each script is invoked from
-the repo root.
+所有命令从仓库根目录运行。
 
-## Personal fork setup
+- `setup-fork.py` / `test_setup_fork.py`：安装及离线验证本地防误推配置。
+- `test_web_only.py`：验证双平台打包边界、不支持目标无文件副作用、废弃运行模块未恢复。
+- `fetch-runtime.sh <target>` / `package-zip.sh <target>`：仅支持 aarch64-apple-darwin、x86_64-pc-windows-msvc，供手动构建使用。
+- `audit_dependencies.py`：查询公开依赖元数据并更新根审计快照，不读取凭据。
+- `extract_liqi.py`：手动协议工具；日常协议更新优先随上游同步。
+- `prepare_edge_game_profile.py`：历史手动独立会话准备工具；常用 Edge 附加模式无需复制会话。只在明确需要独立目录时主动使用。
 
-Run `python3 scripts/setup-fork.py` after cloning the personal repository, and
-`python3 scripts/setup-fork.py --check` to verify local configuration. It installs
-an upstream push guard without changing global Git settings. Offline regression:
-`python3 scripts/test_setup_fork.py`. See [the maintenance guide](../docs/FORK_MAINTENANCE.md)
-for branch roles, synchronization commands and hook compatibility.
+Rust examples 中 login_acceptance 是手动凭据验收，audit_session_logs 在本地内存检查凭据泄露，replay_session_analysis 用于牌局回放。不得在 CI 调用真实账号工具，不得打印 account 或会话内容。
 
-## `fetch-runtime.sh`
+本次主用已安装浏览器及内置机器人，不自动下载或安装外部机器人。虚拟环境不是安全沙箱。
 
-Downloads `python-build-standalone` and `uv` for a target triple, into
-`runtime/python/<triple>/` and `runtime/uv/<triple>/`. Idempotent —
-re-running with the same versions is a no-op (`--force` to wipe and
-re-fetch).
-
-```sh
-scripts/fetch-runtime.sh                         # host triple
-scripts/fetch-runtime.sh x86_64-pc-windows-msvc  # cross-target
-```
-
-Versions come from env vars (`PYTHON_VERSION`, `PBS_RELEASE`,
-`UV_VERSION`) with built-in defaults. CI sets them via the `env:` block
-at the top of `.github/workflows/release.yml`.
-
-The `runtime/` tree is gitignored. Each per-triple subtree caches under
-the same key in CI (`Cache bundled runtime` step), so a second run on
-the same target hits the cache and skips network entirely.
-
-## `package-zip.sh`
-
-Stages a portable zip in `dist/akagi-<version>-<os>-<arch>.zip` from a
-prebuilt binary plus the fetched runtime tree.
-
-```sh
-scripts/package-zip.sh x86_64-unknown-linux-gnu
-```
-
-Prerequisites:
-
-- The binary exists at `target/<triple>/release/akagi[.exe]`. Produce it
-  with `cargo tauri build --no-bundle --target <triple>` (or plain
-  `cargo build --release --target <triple>` if you already ran the
-  frontend build separately).
-- `runtime/python/<triple>/` and `runtime/uv/<triple>/` are populated by
-  `fetch-runtime.sh`.
-
-Outputs a single zip named `akagi-<version>-<os>-<arch>.zip` containing
-a top-level folder of the same name with the binary, `runtime/`,
-`LICENSE.txt`, `NOTICE`, and a generated `README.txt` with
-platform-specific quick-start notes (Gatekeeper xattr on macOS,
-SmartScreen on Windows, WebKit2GTK package names on Linux).
-
-The version is parsed from the first `version = "..."` line of
-`Cargo.toml` (the `[package]` table is the first table, so this is
-unambiguous).
-
-Symlink preservation matters: `python-build-standalone` ships internal
-symlinks (`bin/python3.12 → bin/python`). `cp -RP` and `zip -y` are
-used so the zip stays small (~half the size of a flattened copy).
-
-## `extract_liqi.py`
-
-The upstream version was polled daily by `.github/workflows/auto-liqi.yml`.
-This fork receives protocol changes through upstream merges; its automatic
-protocol workflow is disabled. The script reconstructs the Mahjong
-Soul liqi protocol **directly from the live Unity client asset bundles** —
-the protobuf descriptors shipped as Lua in `Protol/*_pb.lua` and the service
-table in `docs/proto_config.bytes` — and writes:
-
-- `src/bridge/majsoul/proto/liqi.proto` — flat proto3 schema (`package lq`),
-- `src/bridge/majsoul/liqi.json` — flat rpc-map `".lq.Svc.method" → {req, resp}`.
-
-It exposes `product_version`, `bundle_hash`, and `changed=true/false` as GHA
-outputs; the original workflow opens a PR on `v3` when the schema moved. Requires
-`requests`, `UnityPy`, and `protobuf`. There is no dependency on any external
-proto release or on the legacy `res/proto/liqi.json` CDN file (a lagging
-Laya-era artifact since Mahjong Soul's Unity WASM migration).
-
-Offline mode for local validation reads pre-extracted assets from a directory
-instead of downloading:
-
-```sh
-python scripts/extract_liqi.py --from-raw <dir-with-lua-and-proto_config>
-```
-
-## CI integration
-
-`.github/workflows/release.yml` ties `fetch-runtime.sh` and
-`package-zip.sh` together: fetch → `cargo tauri build --no-bundle` →
-package → upload `dist/*.zip`. One zip per target (linux-x64,
-macos-arm64, windows-x64).
+`RUST_LOG=off cargo run --locked --example browser_probe -- attach` 检查本机 9222；`isolated` 使用临时无登录 Edge 目录。
+该工具运行实际 Chromium 后端，输出固定结果码，诊断沿用项目脱敏；不读取 account、复制 Cookie、登录、刷新游戏或执行任何点击。
+`BROWSER_PAGE_SUBSCRIBED` 只证明官方页面已订阅，不证明完成牌局或自动操作验收。
+依赖审计工具需要 Python 3.11+ 的 tomllib；Git 配置及裁剪离线测试仅需 Python 3 标准库。

@@ -11,9 +11,7 @@
 //! - Channel pins: <https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json>
 //!
 //! Install layout under `<install_root>/<version>/`:
-//! - Linux: `chrome-linux64/chrome`
 //! - macOS: `chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`
-//!   (or `chrome-mac-x64/...` on Intel)
 //! - Windows: `chrome-win64\chrome.exe`
 //!
 //! Triggers (per design):
@@ -54,34 +52,18 @@ impl Channel {
     }
 }
 
-/// CfT platform identifier expected by the manifest (e.g. `linux64`,
+/// CfT platform identifier expected by the manifest (e.g. `win64`,
 /// `mac-arm64`). Returns `None` on unsupported platforms.
 pub fn cft_platform() -> Option<&'static str> {
-    if cfg!(target_os = "linux") {
-        Some("linux64")
-    } else if cfg!(target_os = "macos") {
-        if cfg!(target_arch = "aarch64") {
-            Some("mac-arm64")
-        } else {
-            Some("mac-x64")
-        }
-    } else if cfg!(target_os = "windows") {
-        if cfg!(target_arch = "x86_64") {
-            Some("win64")
-        } else {
-            Some("win32")
-        }
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some("mac-arm64")
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Some("win64")
     } else {
         None
     }
 }
 
-/// Top-level CfT install dir.
-///
-/// Resolved via [`crate::util::resolve_dir`] so a portable zip keeps the
-/// downloaded browser next to the binary (single-folder install). On
-/// AppImage / read-only mounts the resolver falls back to
-/// `<user_config_root>/chrome-for-testing/`.
 pub fn install_root() -> Result<PathBuf> {
     Ok(crate::util::resolve_dir(Path::new("./chrome-for-testing")))
 }
@@ -94,17 +76,11 @@ pub fn install_dir_for(version: &str) -> Result<PathBuf> {
 /// Map an install dir + platform to the chrome executable inside.
 pub fn executable_path(install_dir: &Path, platform: &str) -> PathBuf {
     match platform {
-        "linux64" => install_dir.join("chrome-linux64").join("chrome"),
         "mac-arm64" => install_dir
             .join("chrome-mac-arm64")
             .join("Google Chrome for Testing.app")
             .join("Contents/MacOS/Google Chrome for Testing"),
-        "mac-x64" => install_dir
-            .join("chrome-mac-x64")
-            .join("Google Chrome for Testing.app")
-            .join("Contents/MacOS/Google Chrome for Testing"),
         "win64" => install_dir.join("chrome-win64").join("chrome.exe"),
-        "win32" => install_dir.join("chrome-win32").join("chrome.exe"),
         _ => install_dir.join(platform).join("chrome"),
     }
 }
@@ -510,23 +486,18 @@ mod tests {
         // Just exercise the cfg branches — actual value depends on host.
         let p = cft_platform();
         if cfg!(any(
-            target_os = "linux",
-            target_os = "macos",
-            target_os = "windows"
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "windows", target_arch = "x86_64")
         )) {
             assert!(p.is_some());
             let s = p.unwrap();
-            assert!(["linux64", "mac-arm64", "mac-x64", "win64", "win32"].contains(&s));
+            assert!(["mac-arm64", "win64"].contains(&s));
         }
     }
 
     #[test]
     fn executable_path_per_platform() {
         let dir = PathBuf::from("/tmp/cft/131.0.6778.85");
-        assert_eq!(
-            executable_path(&dir, "linux64"),
-            PathBuf::from("/tmp/cft/131.0.6778.85/chrome-linux64/chrome")
-        );
         assert_eq!(
             executable_path(&dir, "win64"),
             PathBuf::from("/tmp/cft/131.0.6778.85/chrome-win64/chrome.exe")
@@ -567,16 +538,16 @@ mod tests {
 
     #[test]
     fn download_origin_and_version_are_strict() {
-        assert!(official_asset("https://storage.googleapis.com/chrome-for-testing-public/1.2.3.4/mac-x64/chrome-mac-x64.zip", "1.2.3.4", "mac-x64"));
+        assert!(official_asset("https://storage.googleapis.com/chrome-for-testing-public/1.2.3.4/mac-arm64/chrome-mac-arm64.zip", "1.2.3.4", "mac-arm64"));
         assert!(!official_asset(
             "https://evil.test/browser.zip",
             "1.2.3.4",
-            "mac-x64"
+            "mac-arm64"
         ));
         assert!(!official_asset(
-            "https://storage.googleapis.com/chrome-for-testing-public/../chrome-mac-x64.zip",
+            "https://storage.googleapis.com/chrome-for-testing-public/../chrome-mac-arm64.zip",
             "..",
-            "mac-x64"
+            "mac-arm64"
         ));
     }
 
@@ -599,7 +570,7 @@ mod tests {
                     "revision": "1",
                     "downloads": {
                         "chrome": [
-                            { "platform": "linux64", "url": "https://example.test/chrome-linux64.zip" },
+                            { "platform": "win64", "url": "https://example.test/chrome-win64.zip" },
                             { "platform": "mac-arm64", "url": "https://example.test/chrome-mac-arm64.zip" }
                         ]
                     }

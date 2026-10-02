@@ -14,15 +14,14 @@ const STATE_COLOR: Record<string, string> = {
   error:    'bg-red-500',
 }
 
-export function ProxyControlTile({ bp }: { bp: Breakpoint }) {
+export function CaptureControlTile({ bp }: { bp: Breakpoint }) {
   const { t } = useTranslation()
   const status = useCaptureStore((s) => s.status)
   const [busy, setBusy] = useState(false)
 
   const dot = STATE_COLOR[status.state] ?? 'bg-zinc-500'
   const descriptor = 'descriptor' in status && status.descriptor ? status.descriptor : '—'
-  const kind = 'kind' in status ? status.kind : null
-  const title = kind === 'chromium' ? t('overview.capture_chromium') : t('overview.capture_mitm')
+  const title = t('overview.capture_chromium')
 
   const call = async (cmd: 'start_capture' | 'stop_capture' | 'restart_capture') => {
     setBusy(true)
