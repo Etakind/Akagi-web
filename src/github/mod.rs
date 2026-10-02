@@ -71,6 +71,7 @@ pub struct ReleaseJson {
 /// move on once the attempt fails.
 pub fn build_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
+        .https_only(true)
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
         .build()
@@ -91,7 +92,10 @@ where
             Ok(v) => return Ok((v, *source)),
             Err(e) => {
                 warn!("fetch via {candidate} failed: {e:#}");
-                errors.push(format!("{candidate}: {e:#}"));
+                errors.push(format!(
+                    "{}: download failed",
+                    crate::privacy::url(candidate)
+                ));
             }
         }
     }

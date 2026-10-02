@@ -320,7 +320,7 @@ function RowSummary({ entry }: { entry: InspectorEntry }) {
         ? entry.parsed.method
         : entry.raw.format === 'text'
           ? entry.raw.data.slice(0, 80)
-          : t('inspector.binary')
+          : entry.raw.format === 'redacted' ? entry.raw.data : t('inspector.binary')
     return (
       <span className="flex-1 break-all whitespace-pre-wrap">
         <span className="text-muted-foreground">
@@ -383,7 +383,7 @@ function RowSummary({ entry }: { entry: InspectorEntry }) {
   )
 }
 
-function DetailPanel({ entry }: { entry: InspectorEntry }) {
+export function DetailPanel({ entry }: { entry: InspectorEntry }) {
   const { t } = useTranslation()
   if (entry.kind === 'ws_frame') {
     return (
@@ -409,10 +409,10 @@ function DetailPanel({ entry }: { entry: InspectorEntry }) {
         )}
         <div>
           <div className="text-muted-foreground mb-1">
-            {entry.raw.format === 'text' ? t('inspector.detail_raw_text') : t('inspector.detail_raw_hex')}
+            {entry.raw.format === 'redacted' ? t('inspector.detail_redacted') : entry.raw.format === 'text' ? t('inspector.detail_raw_text') : t('inspector.detail_raw_hex')}
           </div>
           <pre className="font-mono whitespace-pre-wrap break-all bg-muted/40 rounded p-2 text-[11px]">
-            {entry.raw.format === 'text' ? entry.raw.data : hexDump(entry.raw.data, t)}
+            {entry.raw.format === 'binary' ? hexDump(entry.raw.data, t) : entry.raw.data}
           </pre>
         </div>
       </>

@@ -13,6 +13,7 @@ pub mod inspector;
 pub mod ipc;
 pub mod logger;
 pub mod platform;
+pub mod privacy;
 pub mod proxy;
 pub mod schema;
 pub mod updater;
@@ -76,7 +77,7 @@ pub fn run() {
         }
     };
 
-    info!("Config loaded: {cfg:?}");
+    info!("Configuration loaded");
     info!("Log session at {}", session.dir().display());
 
     // All buses constructed up front so AppState owns the canonical

@@ -3,8 +3,7 @@
 //! When Akagi intercepts TLS it terminates the client's connection with a
 //! certificate of its own — but it also makes the real connection, and on
 //! that leg it is handed the origin's real certificate. `upstream.rs`
-//! already receives it in `NoVerify::verify_server_cert` and, until now,
-//! dropped it on the floor. This module keeps it.
+//! validates the chain and hostname before recording it in this store.
 //!
 //! The one consumer today is [`crate::proxy::rewrite`]. See that module
 //! for why a client's certificate report is worth correcting.

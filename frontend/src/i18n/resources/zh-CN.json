@@ -260,7 +260,8 @@
     "detail_url": "完整 URL",
     "invalid_base64": "(无效的 base64)",
     "bytes_truncated": "… 已截断后续 {{count}} 个字节",
-    "binary": "(二进制)"
+    "binary": "(二进制)",
+    "detail_redacted": "原始数据已省略，防止凭据泄露"
   },
   "sidebar": {
     "collapse": "收起侧栏",
@@ -598,7 +599,7 @@
     "install_zip_path": "ZIP 文件",
     "install_zip_path_placeholder": "/path/to/bot.zip",
     "install_zip_browse": "浏览…",
-    "install_zip_path_hint": "选择本地 .zip 文件，或粘贴其完整路径。",
+    "install_zip_path_hint": "选择本地 .zip 文件，或粘贴其完整路径。 本地机器人及其依赖以当前用户权限执行。Python 虚拟环境不是安全沙箱，请仅安装你信任的代码。",
     "drawer_loading": "加载中…",
     "drawer_reinstall": "重建环境",
     "drawer_reinstall_tooltip": "清除并重建这个 Bot 的 Python 虚拟环境",
@@ -841,7 +842,8 @@
       "error_digest_mismatch": "下载文件的校验码与发布信息不符，请重试或手动下载。",
       "error_signature_missing": "该版本没有签名，且下载会经过镜像站。请打开发布页面手动更新。",
       "error_signature_invalid": "下载文件的签名验证失败，已拒绝安装 — 请重试或手动下载。",
-      "error_generic": "更新失败：{{message}}"
+      "error_generic": "更新失败：{{message}}",
+      "security_build": "本地安全构建：新版需审查后重新构建，已禁用原版更新包覆盖安装。"
     },
     "settings": {
       "title": "更新",

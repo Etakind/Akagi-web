@@ -18,7 +18,9 @@
 //! `<log_dir>/majsoul/*.mjai.jsonl`. The history root only ever contains
 //! games this recorder has finalised.
 
-use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -48,7 +50,8 @@ impl HistoryStore {
     /// Open (or create) the store at `root`. Creates `<root>` and
     /// `<root>/games/` if they don't already exist.
     pub fn new(root: PathBuf) -> Result<Self> {
-        fs::create_dir_all(root.join(GAMES_SUBDIR))
+        crate::util::private_fs::directory(&root)?;
+        crate::util::private_fs::directory(&root.join(GAMES_SUBDIR))
             .with_context(|| format!("failed to create history dir {}", root.display()))?;
         Ok(Self {
             root,
@@ -92,10 +95,7 @@ impl HistoryStore {
 
     fn append_index_locked(&self, record: &GameRecord) -> Result<()> {
         let path = self.index_path();
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
+        let mut f = crate::util::private_fs::append(&path)
             .with_context(|| format!("failed to open {}", path.display()))?;
         let line = serde_json::to_string(record).context("failed to serialise GameRecord")?;
         writeln!(f, "{line}").with_context(|| format!("failed to write to {}", path.display()))?;
@@ -200,7 +200,7 @@ impl HistoryStore {
         // Atomic-ish rewrite: write to a tmp sibling, then rename.
         let tmp = path.with_extension("jsonl.tmp");
         {
-            let mut f = File::create(&tmp)
+            let mut f = crate::util::private_fs::create(&tmp)
                 .with_context(|| format!("failed to create {}", tmp.display()))?;
             for r in records {
                 let line = serde_json::to_string(r).context("failed to serialise GameRecord")?;
@@ -216,9 +216,9 @@ impl HistoryStore {
 
 fn write_jsonl_events(path: &Path, events: &HistoryEventLog) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        crate::util::private_fs::directory(parent)?;
     }
-    let mut f = File::create(path)?;
+    let mut f = crate::util::private_fs::create(path)?;
     for ev in events {
         let line = serde_json::to_string(ev).context("failed to serialise MjaiEvent")?;
         writeln!(f, "{line}")?;

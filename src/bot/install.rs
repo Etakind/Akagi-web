@@ -139,32 +139,18 @@ pub async fn install_from_github_release(
     // When the metadata came straight from GitHub its digest field is
     // trustworthy — check the downloaded bytes against it regardless of
     // which route they took.
-    if meta_source == Source::Direct {
-        if let Some(expected) = asset
-            .digest
-            .as_deref()
-            .and_then(crate::updater::check::parse_sha256_digest)
-        {
-            if !zip_digest.eq_ignore_ascii_case(&expected) {
+    let trusted_digest =
+        match authenticated_digest(meta_source, asset.digest.as_deref(), &zip_digest) {
+            Ok(trusted) => trusted,
+            Err(e) => {
                 let _ = tokio::fs::remove_file(&tempfile_path).await;
-                bail!(
-                    "downloaded {} does not match the release's SHA-256 digest",
-                    asset.name
-                );
+                return Err(e);
             }
-        }
-    }
+        };
 
-    // Integrity: bot releases signed with the Akagi release key carry a
-    // `<asset>.minisig` companion — verify it whenever present (a failed
-    // verification aborts, wherever the bytes came from). Unsigned
-    // releases stay installable — bots are third-party by design and the
-    // user explicitly picked the repo — but when the bytes travelled
-    // through an accelerator mirror the user gets a warning that nothing
-    // could be verified. Note the limit of this design: a mirror that
-    // forges the *metadata* can simply omit the signature asset, so for
-    // third-party bots the signature only hardens the direct-metadata +
-    // mirrored-download case.
+    // An existing signature must verify, even when a digest matches.
+    // Mirrored metadata/archive without a signature requires a digest
+    // authenticated by a direct GitHub metadata response.
     match find_sig_asset(&release.assets, &asset.name) {
         Some(sig_asset) => {
             let sig_candidates = mirror::candidates(net, &sig_asset.browser_download_url);
@@ -177,18 +163,9 @@ pub async fn install_from_github_release(
                     .with_context(|| format!("signature verification failed for {}", asset.name));
             }
         }
-        None if meta_source == Source::Mirror || zip_source == Source::Mirror => {
-            let _ = notify.send(
-                Notification::warn(format!("{target_name} could not be verified"))
-                    .body(format!(
-                        "{} was fetched through a third-party mirror and the release \
-                         has no signature, so the download was installed without \
-                         verification. Remove the bot if you don't trust the mirror \
-                         and the repository ({}).",
-                        asset.name, spec.repo,
-                    ))
-                    .id(format!("{notify_id}-mirror")),
-            );
+        None if !unsigned_transport_allowed(meta_source, zip_source, trusted_digest) => {
+            let _ = tokio::fs::remove_file(&tempfile_path).await;
+            bail!("Unverified mirrored bot refused before extraction or dependency installation. Use a signed release or a digest obtained directly from GitHub.");
         }
         None => {}
     }
@@ -208,6 +185,24 @@ pub async fn install_from_github_release(
         true,
     )
     .await
+}
+
+fn authenticated_digest(source: Source, expected: Option<&str>, actual: &str) -> Result<bool> {
+    if source != Source::Direct {
+        return Ok(false);
+    }
+    let Some(expected) = expected.and_then(crate::updater::check::parse_sha256_digest) else {
+        return Ok(false);
+    };
+    if !actual.eq_ignore_ascii_case(&expected) {
+        bail!("download does not match the SHA-256 obtained directly from GitHub");
+    }
+    Ok(true)
+}
+
+fn unsigned_transport_allowed(metadata: Source, archive: Source, trusted_digest: bool) -> bool {
+    (metadata == Source::Direct && archive == Source::Direct)
+        || (metadata == Source::Direct && trusted_digest)
 }
 
 /// Pointer to a local zip-file install.
@@ -917,5 +912,47 @@ mod tests {
             !dest.path().join("syncfail").exists(),
             "failed sync must not leave a bot dir behind"
         );
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    #[test]
+    fn forged_or_mirror_supplied_digests_are_not_trusted() {
+        let digest = "a".repeat(64);
+        let expected = format!("sha256:{digest}");
+        assert!(authenticated_digest(Source::Direct, Some(&expected), &digest).unwrap());
+        assert!(authenticated_digest(Source::Direct, Some(&expected), &"b".repeat(64)).is_err());
+        assert!(!authenticated_digest(Source::Mirror, Some(&expected), &digest).unwrap());
+        assert!(!authenticated_digest(Source::Direct, None, &digest).unwrap());
+    }
+    #[test]
+    fn unsigned_mirrors_require_direct_authenticated_digest() {
+        assert!(unsigned_transport_allowed(
+            Source::Direct,
+            Source::Direct,
+            false
+        ));
+        assert!(unsigned_transport_allowed(
+            Source::Direct,
+            Source::Mirror,
+            true
+        ));
+        assert!(!unsigned_transport_allowed(
+            Source::Direct,
+            Source::Mirror,
+            false
+        ));
+        assert!(!unsigned_transport_allowed(
+            Source::Mirror,
+            Source::Direct,
+            true
+        ));
+        assert!(!unsigned_transport_allowed(
+            Source::Mirror,
+            Source::Mirror,
+            true
+        ));
     }
 }

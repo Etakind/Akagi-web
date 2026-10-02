@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+pub mod credentials;
+pub mod private_fs;
 
 /// True when running inside an AppImage runtime (read-only squashfs mount).
 /// AppImage sets `$APPIMAGE` to the .AppImage path before exec.
@@ -104,9 +106,15 @@ mod tests {
 
     #[test]
     fn appimage_routes_relative_path_to_user_config() {
-        let user_root = PathBuf::from("/home/u/.config/akagi");
-        let resolved = resolve_dir_inner(Path::new("./logs"), true, Some(user_root.clone()));
-        assert_eq!(resolved, user_root.join("logs"));
+        // An existing ./logs intentionally wins over the AppImage fallback.
+        // Use a unique absent relative path so a real local session cannot
+        // change this test's premise. Do not mutate process-wide cwd.
+        let fixture = tempfile::tempdir().unwrap();
+        let relative = PathBuf::from(fixture.path().file_name().unwrap()).join("logs");
+        assert!(!relative.exists());
+        let user_root = fixture.path().join("config");
+        let resolved = resolve_dir_inner(&relative, true, Some(user_root.clone()));
+        assert_eq!(resolved, user_root.join(relative));
     }
 
     #[test]

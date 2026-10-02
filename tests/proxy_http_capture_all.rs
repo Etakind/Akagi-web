@@ -14,6 +14,7 @@ use common::{get_through_proxy, Harness, UPSTREAM_BODY};
 async fn record_all_captures_both_halves_and_pairs_them() {
     let h = Harness::start(HttpCaptureConfig {
         record_all: true,
+        bodies: true, // Legacy config must not re-enable raw capture.
         ..Default::default()
     })
     .await;
@@ -45,9 +46,9 @@ async fn record_all_captures_both_halves_and_pairs_them() {
     assert_eq!(resp["status"], 200);
 
     // A small JSON response is exactly what we want kept.
-    assert_eq!(resp["body"]["text"], UPSTREAM_BODY);
+    assert!(resp["body"].get("text").is_none());
     assert_eq!(resp["body"]["bytes"], UPSTREAM_BODY.len());
-    assert!(resp["body"].get("skipped").is_none());
+    assert!(resp["body"].get("skipped").is_some());
 
     // Header order is preserved — it is a client fingerprint in its own
     // right, and the WS upgrade request is where that matters most.
@@ -57,7 +58,11 @@ async fn record_all_captures_both_halves_and_pairs_them() {
         .iter()
         .map(|h| h["name"].as_str().unwrap_or_default())
         .collect();
-    assert!(names.contains(&"host"), "got: {names:?}");
+    assert!(
+        !names.contains(&"host"),
+        "only diagnostic content headers are retained"
+    );
+    assert!(!req["url"].as_str().unwrap().contains("platform="));
 
     // Nothing was recognized here, and that is fine: an unannotated row
     // is still a recorded row once record_all is on.

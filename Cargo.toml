@@ -27,7 +27,7 @@ prost-build = "0.14"
 # The catch is that it uses private Apple APIs, so a build with it cannot be
 # accepted into the Mac App Store. Akagi ships as an unsigned portable zip from
 # GitHub Releases, so that costs us nothing.
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2.11.1", features = ["macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
@@ -46,7 +46,7 @@ tracing-appender = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 hudsucker = { version = "0.24", features = ["rcgen-ca", "rustls-client", "http2"], default-features = false }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "tls12"] }
-serde_with = "3.18.0"
+serde_with = "3.21.0"
 prost = "0.14"
 prost-reflect = { version = "0.16", features = ["serde"] }
 base64 = "0.22"
@@ -62,6 +62,9 @@ tempfile = "3"
 futures-util = "0.3"
 dirs = "6"
 chromiumoxide = "0.9.1"
+# Same version already used by chromiumoxide; inspect handshake status without
+# forwarding response bodies, endpoints or arbitrary errors into the UI.
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 ulid = { version = "1", features = ["serde"] }
 rand = "0.9"
 http = "1"
@@ -83,6 +86,12 @@ opener = { version = "0.8.5", default-features = false }
 rand_distr = "0.5"
 mlua = { version = "0.12.0", features = ["lua54", "vendored", "send", "error-send"] }
 minisign-verify = "0.2.5"
+webpki-roots = "1"
+rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+h2 = "0.4.16"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # Windows-only: find + terminate a surviving controlled Chromium by its command
 # line when reopening (Chrome writes no SingletonLock file on Windows, so the

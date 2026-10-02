@@ -49,7 +49,7 @@ async fn a_beacon_is_blocked_while_ordinary_traffic_forwards() {
     let entries = h.finish().await;
     let beacon_row = entries
         .iter()
-        .find(|e| e["kind"] == "http" && e["url"].as_str().is_some_and(|u| u.contains("/track?")))
+        .find(|e| e["kind"] == "http" && e["url"].as_str().is_some_and(|u| u.contains("/track")))
         .expect("the blocked beacon must be on the timeline");
 
     let kinds: Vec<&str> = beacon_row["annotations"]

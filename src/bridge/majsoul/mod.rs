@@ -1520,10 +1520,9 @@ impl Bridge for MajsoulBridge {
                     .unwrap_or_else(|| "-".into());
                 info!(
                     target: "akagi::bridge::majsoul",
-                    "{} {kind} {id_str} {} {}",
+                    "{} {kind} {id_str} {}",
                     direction.as_str(),
-                    msg.method_name,
-                    msg.payload
+                    msg.method_name
                 );
                 if let Some(log) = &self.flow_log {
                     let line = json!({
@@ -1531,8 +1530,8 @@ impl Bridge for MajsoulBridge {
                         "dir": direction.as_str(),
                         "type": kind,
                         "msg_id": msg.msg_id,
-                        "method": msg.method_name.as_ref(),
-                        "payload": msg.payload,
+                        "method": crate::privacy::safe_method(&msg.method_name),
+                        "len": content.len(),
                     });
                     log.writeln(&line.to_string());
                 }
@@ -1572,7 +1571,7 @@ impl Bridge for MajsoulBridge {
                         "dir": direction.as_str(),
                         "type": "PARSE_ERROR",
                         "len": content.len(),
-                        "error": format!("{e:#}"),
+                        "error": "protocol decode failed",
                     });
                     log.writeln(&line.to_string());
                 }

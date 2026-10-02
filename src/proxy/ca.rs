@@ -34,16 +34,26 @@ const KEY_PEM_EXT: &str = "key";
 const KEY_DER_EXT: &str = "key.der";
 
 pub fn load_or_generate(dir: &Path) -> Result<IpAwareAuthority> {
-    std::fs::create_dir_all(dir)
+    crate::util::private_fs::directory(dir)
         .with_context(|| format!("Failed to create CA dir {}", dir.display()))?;
 
     let cert_pem_path = dir.join(format!("{BASENAME}.cer"));
     let key_pem_path = dir.join(format!("{BASENAME}.{KEY_PEM_EXT}"));
 
-    let (cert_pem, key_pem) = if cert_pem_path.exists() && key_pem_path.exists() {
+    let cert_exists = std::fs::symlink_metadata(&cert_pem_path).is_ok();
+    let key_exists = std::fs::symlink_metadata(&key_pem_path).is_ok();
+    if cert_exists != key_exists {
+        anyhow::bail!("incomplete existing CA; refusing automatic replacement");
+    }
+    if !cert_exists && std::fs::read_dir(dir)?.next().is_some() {
+        anyhow::bail!("nonempty CA directory without complete CA; refusing automatic replacement");
+    }
+    let (cert_pem, key_pem) = if cert_exists && key_exists {
         info!("Loading CA from {}", dir.display());
-        let cert_pem = std::fs::read_to_string(&cert_pem_path).context("Failed to read CA cert")?;
-        let key_pem = std::fs::read_to_string(&key_pem_path).context("Failed to read CA key")?;
+        let cert_pem = crate::util::private_fs::read_and_protect(&cert_pem_path)
+            .context("Failed to read CA cert")?;
+        let key_pem = crate::util::private_fs::read_and_protect(&key_pem_path)
+            .context("Failed to read CA key")?;
         let key_pair_for_der = KeyPair::from_pem(&key_pem).context("Failed to parse CA key")?;
         write_extra_pem_formats(dir, &cert_pem)?;
         write_extra_key_der(dir, &key_pair_for_der.serialize_der())?;
@@ -51,8 +61,10 @@ pub fn load_or_generate(dir: &Path) -> Result<IpAwareAuthority> {
     } else {
         info!("Generating new CA at {}", dir.display());
         let (cert_pem, key_pem, cert_der, key_der) = generate_ca()?;
-        std::fs::write(&cert_pem_path, &cert_pem).context("Failed to write CA cert")?;
-        std::fs::write(&key_pem_path, &key_pem).context("Failed to write CA key")?;
+        crate::util::private_fs::write(&cert_pem_path, &cert_pem)
+            .context("Failed to write CA cert")?;
+        crate::util::private_fs::write(&key_pem_path, &key_pem)
+            .context("Failed to write CA key")?;
         write_extra_pem_formats(dir, &cert_pem)?;
         write_cert_der(dir, &cert_der)?;
         write_extra_key_der(dir, &key_der)?;
@@ -73,7 +85,7 @@ fn write_extra_pem_formats(dir: &Path, cert_pem: &str) -> Result<()> {
     for ext in CERT_PEM_EXTS {
         let p = dir.join(format!("{BASENAME}.{ext}"));
         if !p.exists() {
-            std::fs::write(&p, cert_pem)
+            crate::util::private_fs::write(&p, cert_pem)
                 .with_context(|| format!("Failed to write CA cert {}", p.display()))?;
         }
     }
@@ -83,7 +95,7 @@ fn write_extra_pem_formats(dir: &Path, cert_pem: &str) -> Result<()> {
 fn write_cert_der(dir: &Path, cert_der: &[u8]) -> Result<()> {
     let p = dir.join(format!("{BASENAME}.{CERT_DER_EXT}"));
     if !p.exists() {
-        std::fs::write(&p, cert_der)
+        crate::util::private_fs::write(&p, cert_der)
             .with_context(|| format!("Failed to write CA cert {}", p.display()))?;
     }
     Ok(())
@@ -91,9 +103,11 @@ fn write_cert_der(dir: &Path, cert_der: &[u8]) -> Result<()> {
 
 fn write_extra_key_der(dir: &Path, key_der: &[u8]) -> Result<()> {
     let p = dir.join(format!("{BASENAME}.{KEY_DER_EXT}"));
-    if !p.exists() {
-        std::fs::write(&p, key_der)
-            .with_context(|| format!("Failed to write CA key {}", p.display()))?;
+    if p.exists() {
+        // Opening validates ownership/type, refuses links, and tightens permissions.
+        let _ = crate::util::private_fs::append(&p)?;
+    } else {
+        crate::util::private_fs::write(&p, key_der).context("Failed to write private CA key")?;
     }
     Ok(())
 }
@@ -249,5 +263,32 @@ mod tests {
             p.subject_alt_names.as_slice(),
             [SanType::DnsName(_)]
         ));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod permission_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn new_and_existing_private_keys_are_owner_only_and_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ca");
+        load_or_generate(&path).unwrap();
+        for ext in [KEY_PEM_EXT, KEY_DER_EXT] {
+            let p = path.join(format!("{BASENAME}.{ext}"));
+            let before = std::fs::read(&p).unwrap();
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+            load_or_generate(&path).unwrap();
+            assert_eq!(before, std::fs::read(&p).unwrap());
+            assert_eq!(
+                std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 }

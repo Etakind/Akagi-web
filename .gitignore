@@ -1,4 +1,8 @@
 venv
+# Local login acceptance credentials; never package or commit.
+/account
+/chrome-profile/
+/configs/
 __pycache__
 target
 node_modules
@@ -66,3 +70,7 @@ native_bot/out/
 
 # ZCode session artifacts
 .zcode/
+
+/edge-game-profile/
+
+/.edge-game-profile-*/

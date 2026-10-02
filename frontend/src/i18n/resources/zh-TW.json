@@ -260,7 +260,8 @@
     "detail_url": "完整 URL",
     "invalid_base64": "(無效的 base64)",
     "bytes_truncated": "… 已截斷後續 {{count}} 個位元組",
-    "binary": "(二進位)"
+    "binary": "(二進位)",
+    "detail_redacted": "原始資料已省略，防止憑據外洩"
   },
   "sidebar": {
     "collapse": "收起側欄",
@@ -598,7 +599,7 @@
     "install_zip_path": "ZIP 檔案",
     "install_zip_path_placeholder": "/path/to/bot.zip",
     "install_zip_browse": "瀏覽…",
-    "install_zip_path_hint": "選擇本機 .zip 檔案，或貼上其完整路徑。",
+    "install_zip_path_hint": "選擇本機 .zip 檔案，或貼上其完整路徑。 本機機器人及其依賴以目前使用者權限執行。Python 虛擬環境不是安全沙箱，請僅安裝你信任的程式碼。",
     "drawer_loading": "載入中…",
     "drawer_reinstall": "重建環境",
     "drawer_reinstall_tooltip": "清除並重建這個 Bot 的 Python 虛擬環境",
@@ -841,7 +842,8 @@
       "error_digest_mismatch": "下載檔案的校驗碼與發佈資訊不符，請重試或手動下載。",
       "error_signature_missing": "此版本沒有簽章，且下載會經過鏡像站。請開啟發佈頁面手動更新。",
       "error_signature_invalid": "下載檔案的簽章驗證失敗，已拒絕安裝 — 請重試或手動下載。",
-      "error_generic": "更新失敗：{{message}}"
+      "error_generic": "更新失敗：{{message}}",
+      "security_build": "本機安全版本：新版需審查後重新建置，已停用原版更新套件覆蓋安裝。"
     },
     "settings": {
       "title": "更新",

@@ -260,7 +260,8 @@
     "detail_url": "Full URL",
     "invalid_base64": "(invalid base64)",
     "bytes_truncated": "… {{count}} more bytes truncated",
-    "binary": "(binary)"
+    "binary": "(binary)",
+    "detail_redacted": "Raw data omitted for privacy"
   },
   "sidebar": {
     "collapse": "Collapse sidebar",
@@ -598,7 +599,7 @@
     "install_zip_path": "ZIP file",
     "install_zip_path_placeholder": "/path/to/bot.zip",
     "install_zip_browse": "Browse…",
-    "install_zip_path_hint": "Pick a local .zip, or paste its full path.",
+    "install_zip_path_hint": "Pick a local .zip, or paste its full path. Local bots and their dependencies run with your user permissions. A Python virtual environment is not a security sandbox. Install only code you trust.",
     "drawer_loading": "Loading…",
     "drawer_reinstall": "Reinstall environment",
     "drawer_reinstall_tooltip": "Wipe and recreate the Python virtualenv for this bot",
@@ -841,7 +842,8 @@
       "error_digest_mismatch": "Downloaded file doesn't match the release checksum. Try again or download manually.",
       "error_signature_missing": "This release is unsigned and the download would go through a mirror. Open the release page to update manually.",
       "error_signature_invalid": "Signature verification failed for the downloaded file. Refusing to install — try again or download manually.",
-      "error_generic": "Update failed: {{message}}"
+      "error_generic": "Update failed: {{message}}",
+      "security_build": "Local security build: review and rebuild upstream updates manually. Automatic replacement is disabled."
     },
     "settings": {
       "title": "Updates",

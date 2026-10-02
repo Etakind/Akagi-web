@@ -21,7 +21,7 @@ pub enum GithubMirrorMode {
 }
 
 /// `[network]` section.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NetworkConfig {
     pub github_mirror_mode: GithubMirrorMode,
@@ -43,6 +43,15 @@ impl NetworkConfig {
         } else {
             None
         }
+    }
+}
+
+impl std::fmt::Debug for NetworkConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetworkConfig")
+            .field("github_mirror_mode", &self.github_mirror_mode)
+            .field("github_custom_mirror", &"[redacted]")
+            .finish()
     }
 }
 

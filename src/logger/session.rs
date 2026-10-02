@@ -59,7 +59,7 @@ where
 {
     fn format_event(
         &self,
-        ctx: &FmtContext<'_, S, N>,
+        _ctx: &FmtContext<'_, S, N>,
         mut writer: Writer<'_>,
         event: &Event<'_>,
     ) -> stdfmt::Result {
@@ -70,7 +70,15 @@ where
             write!(writer, " {file}:{line}")?;
         }
         write!(writer, ": ")?;
-        ctx.field_format().format_fields(writer.by_ref(), event)?;
+        let (message, fields) = super::stream::safe_fields(event);
+        write!(writer, "{message}")?;
+        if !fields.is_empty() {
+            write!(
+                writer,
+                " {}",
+                serde_json::to_string(&fields).unwrap_or_default()
+            )?;
+        }
         writeln!(writer)
     }
 }
@@ -119,9 +127,10 @@ impl Session {
         all_level: &str,
         targets: &[LogTarget],
     ) -> Result<Self> {
+        crate::util::private_fs::directory(log_root)?;
         let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
         let dir = log_root.join(&ts);
-        std::fs::create_dir_all(&dir)
+        crate::util::private_fs::directory(&dir)
             .with_context(|| format!("Failed to create log session dir {}", dir.display()))?;
 
         let timer_fmt = "%Y-%m-%d %H:%M:%S%.3f".to_string();
@@ -136,10 +145,9 @@ impl Session {
         );
         layers.push(
             fmt::layer()
-                .with_timer(ChronoLocal::new(timer_fmt.clone()))
-                .with_target(true)
-                .with_file(true)
-                .with_line_number(true)
+                .event_format(CompactNoSpans {
+                    timer: ChronoLocal::new(timer_fmt.clone()),
+                })
                 .with_writer(std::io::stderr)
                 .with_filter(env_filter)
                 .boxed(),
@@ -147,10 +155,7 @@ impl Session {
 
         // Combined all.log — captures every event regardless of target.
         let all_path = dir.join("all.log");
-        let all_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&all_path)
+        let all_file = crate::util::private_fs::append(&all_path)
             .with_context(|| format!("Failed to open {}", all_path.display()))?;
         let (all_writer, all_guard) = tracing_appender::non_blocking(all_file);
         guards.push(all_guard);
@@ -194,10 +199,7 @@ impl Session {
         // Per-target files.
         for t in targets {
             let path = dir.join(format!("{}.log", t.name));
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
+            let file = crate::util::private_fs::append(&path)
                 .with_context(|| format!("Failed to open {}", path.display()))?;
             let (writer, guard) = tracing_appender::non_blocking(file);
             guards.push(guard);
@@ -361,5 +363,43 @@ mod tests {
         assert!(!rendered.contains("protocol noise"), "{rendered}");
         assert!(rendered.contains("terminal chromium failure"), "{rendered}");
         assert!(rendered.contains("actionable app warning"), "{rendered}");
+    }
+}
+
+#[cfg(test)]
+mod privacy_test {
+    use super::*;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn terminal_formatter_omits_protocol_errors_and_span_fields() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let sink = output.clone();
+        let subscriber = Registry::default().with(
+            fmt::layer()
+                .event_format(CompactNoSpans {
+                    timer: ChronoLocal::new("%H:%M:%S".into()),
+                })
+                .with_writer(move || Sink(sink.clone())),
+        );
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("request", password = "FAKE-SECRET-71e9");
+            let _entered = span.enter();
+            tracing::error!(target:"akagi::proxy", body="FAKE-SECRET-71e9", "failed request FAKE-SECRET-71e9");
+        });
+        assert!(!String::from_utf8(output.lock().unwrap().clone())
+            .unwrap()
+            .contains("FAKE-SECRET-71e9"));
     }
 }

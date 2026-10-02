@@ -42,3 +42,22 @@ export function mockMatchMedia(initialMatches: boolean) {
     for (const cb of listeners) cb()
   }
 }
+
+// Use browser-like in-memory Storage when the Node Web Storage global shadows
+// jsdom's implementation. This is confined to the test environment.
+function testStorage(): Storage {
+  const data = new Map<string, string>()
+  return {
+    get length() { return data.size },
+    clear() { data.clear() },
+    getItem(key) { return data.get(String(key)) ?? null },
+    setItem(key, value) { data.set(String(key), String(value)) },
+    removeItem(key) { data.delete(String(key)) },
+    key(index) { return [...data.keys()][index] ?? null },
+  }
+}
+for (const name of ['localStorage', 'sessionStorage'] as const) {
+  const storage = window[name] ?? testStorage()
+  Object.defineProperty(window, name, { value: storage, configurable: true })
+  Object.defineProperty(globalThis, name, { value: storage, configurable: true })
+}

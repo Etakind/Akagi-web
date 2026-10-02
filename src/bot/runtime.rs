@@ -690,7 +690,10 @@ mod tests {
         );
         let cfg = std::fs::read_to_string(venv.join("pyvenv.cfg")).unwrap();
         assert!(
-            cfg.contains(&format!("home = {}", fresh_dir.display())),
+            cfg.contains(&format!(
+                "home = {}",
+                std::fs::canonicalize(&fresh_dir).unwrap().display()
+            )),
             "pyvenv.cfg `home` must be rewritten to the fresh bin dir, got:\n{cfg}"
         );
         assert!(

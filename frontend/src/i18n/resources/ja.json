@@ -260,7 +260,8 @@
     "detail_url": "完全な URL",
     "invalid_base64": "（不正な base64）",
     "bytes_truncated": "… 残り {{count}} バイトを切り捨て",
-    "binary": "（バイナリ）"
+    "binary": "（バイナリ）",
+    "detail_redacted": "認証情報保護のため生データを省略"
   },
   "sidebar": {
     "collapse": "サイドバーを閉じる",
@@ -598,7 +599,7 @@
     "install_zip_path": "ZIP ファイル",
     "install_zip_path_placeholder": "/path/to/bot.zip",
     "install_zip_browse": "参照…",
-    "install_zip_path_hint": "ローカルの .zip を選択するか、フルパスを貼り付けてください。",
+    "install_zip_path_hint": "ローカルの .zip を選択するか、フルパスを貼り付けてください。 ローカル Bot と依存関係は現在のユーザー権限で実行されます。Python 仮想環境はセキュリティサンドボックスではありません。信頼できるコードのみをインストールしてください。",
     "drawer_loading": "読み込み中…",
     "drawer_reinstall": "環境を再構築",
     "drawer_reinstall_tooltip": "この Bot の Python virtualenv を消去して再構築",
@@ -841,7 +842,8 @@
       "error_digest_mismatch": "ダウンロードしたファイルのチェックサムがリリース情報と一致しません。再試行するか手動でダウンロードしてください。",
       "error_signature_missing": "このリリースには署名がなく、ダウンロードがミラー経由になります。リリースページから手動で更新してください。",
       "error_signature_invalid": "ダウンロードしたファイルの署名検証に失敗したため、インストールを中止しました。再試行するか手動でダウンロードしてください。",
-      "error_generic": "更新に失敗しました: {{message}}"
+      "error_generic": "更新に失敗しました: {{message}}",
+      "security_build": "ローカル安全版：更新は確認後に再ビルドしてください。自動置換は無効です。"
     },
     "settings": {
       "title": "更新",

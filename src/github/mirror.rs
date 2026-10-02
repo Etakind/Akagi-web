@@ -9,8 +9,8 @@
 //! Trust model: anything fetched through a mirror is attacker-supplied
 //! until proven otherwise. Callers must treat `Source::Mirror` results
 //! accordingly — the updater requires a valid minisign signature (see
-//! [`super::signing`]), the bot installer warns when no signature is
-//! available.
+//! [`super::signing`]), the bot installer also accepts a digest authenticated by direct GitHub
+//! metadata and rejects unverified mirror content.
 
 use crate::config::{GithubMirrorMode, NetworkConfig};
 use serde::Serialize;

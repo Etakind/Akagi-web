@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Everything defaults empty / disabled so a fresh install uses the fully
 /// offline local model until the user opts in and pastes a key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NativeApiConfig {
     /// Route built-in-bot decisions through the remote API. Ignored unless a
@@ -65,6 +65,18 @@ pub const DEFAULT_REACT_TIMEOUT_MS: u32 = 3_000;
 /// off; above the ceiling a reach's two react calls could overrun the turn timer.
 pub const REACT_TIMEOUT_MIN_MS: u32 = 500;
 pub const REACT_TIMEOUT_MAX_MS: u32 = 10_000;
+
+impl std::fmt::Debug for NativeApiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeApiConfig")
+            .field("enabled", &self.enabled)
+            .field("base_url", &crate::privacy::url(&self.base_url))
+            .field("key", &"[redacted]")
+            .field("proxy", &"[redacted]")
+            .field("proxy_enabled", &self.proxy_enabled)
+            .finish_non_exhaustive()
+    }
+}
 
 impl Default for NativeApiConfig {
     fn default() -> Self {

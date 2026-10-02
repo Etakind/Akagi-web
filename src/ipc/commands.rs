@@ -1050,6 +1050,7 @@ fn inspector_matches(
                 let mut buf = match raw {
                     crate::schema::FrameRaw::Text(t) => t.to_lowercase(),
                     crate::schema::FrameRaw::Binary(b) => b.to_lowercase(),
+                    crate::schema::FrameRaw::Redacted(reason) => reason.to_lowercase(),
                 };
                 if let Some(p) = parsed {
                     buf.push(' ');
@@ -1367,23 +1368,10 @@ pub async fn check_for_update(
 /// `unsupported_platform`, `no_matching_asset`, `signature_missing`)
 /// from a real network / integrity error.
 #[tauri::command]
-pub async fn apply_update(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), crate::updater::UpdateError> {
-    let Ok(_guard) = state.updater_lock.try_lock() else {
-        return Err(crate::updater::UpdateError::Other {
-            message: "another update operation is in progress".into(),
-        });
-    };
-    let info = state.pending_update.read().await.clone();
-    let Some(info) = info else {
-        return Err(crate::updater::UpdateError::Other {
-            message: "no pending update — run a check first".into(),
-        });
-    };
-    let net = state.config.read().await.network.clone();
-    crate::updater::apply::download_and_apply(&app, &info, &net).await
+pub async fn apply_update() -> Result<(), crate::updater::UpdateError> {
+    Err(crate::updater::UpdateError::Other {
+        message: "This local security build cannot be overwritten by upstream updates. Review and rebuild updates manually.".into(),
+    })
 }
 
 // ---------- Built-in bot cloud inference (native API) ----------
@@ -1709,7 +1697,7 @@ pub async fn native_api_checkout_result(
 fn persist_config(config: &AppConfig, path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
+            crate::util::private_fs::directory(parent)?;
         }
     }
     // Merge into whatever is already there rather than rewriting the file:
@@ -1731,7 +1719,7 @@ fn persist_config(config: &AppConfig, path: &Path) -> std::io::Result<()> {
             toml::to_string_pretty(config).map_err(std::io::Error::other)?
         }
     };
-    std::fs::write(path, body)
+    crate::util::private_fs::write(path, body)
 }
 
 /// Pre-builds the handler list for `tauri::generate_handler!`. Keep in

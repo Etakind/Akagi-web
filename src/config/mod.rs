@@ -104,12 +104,12 @@ fn resolve_config_path_inner(
 fn write_default_config(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
+            crate::util::private_fs::directory(parent)?;
         }
     }
     let defaults = AppConfig::default();
     let body = toml::to_string_pretty(&defaults).map_err(std::io::Error::other)?;
-    std::fs::write(path, body)
+    crate::util::private_fs::write(path, body)
 }
 
 /// Load and parse the config. Returns the parsed `AppConfig` and the
@@ -166,11 +166,11 @@ pub fn load_config(cli_path: Option<&Path>) -> (AppConfig, PathBuf) {
 
     eprintln!("Loading config from: {}", path.display());
 
-    let mut cfg = match std::fs::read_to_string(&path) {
+    let mut cfg = match crate::util::private_fs::read_and_protect(&path) {
         Ok(content) => match toml::from_str::<AppConfig>(&content) {
             Ok(config) => config,
-            Err(e) => {
-                eprintln!("Failed to parse config: {e}, using defaults");
+            Err(_) => {
+                eprintln!("Failed to parse config; details omitted, using defaults");
                 AppConfig::default()
             }
         },

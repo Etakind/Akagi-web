@@ -45,37 +45,9 @@ async fn default_policy_records_only_recognized_exchanges() {
     // Vendor vocabulary lives in the annotation, never in the exchange.
     let ann = &row["annotations"][0];
     assert_eq!(ann["kind"], "sls_beacon");
-    assert_eq!(ann["summary"], "client/certificate_info");
-    assert_eq!(ann["data"]["logstore"], "client");
-    assert_eq!(ann["data"]["log_category"], "certificate_info");
-    assert_eq!(
-        ann["data"]["content"][0]["issuer"],
-        "CN=Example Test CA, O=Example"
-    );
-    assert!(
-        row.get("logstore").is_none(),
-        "the exchange itself must stay vendor-neutral: {row}"
-    );
-
-    // Identifiers are kept verbatim — seeing exactly what was sent is the
-    // point, and redaction would re-create the blind spot.
-    let params = ann["data"]["params"].as_array().expect("params");
-    let names: Vec<&str> = params
-        .iter()
-        .map(|p| p["name"].as_str().unwrap_or_default())
-        .collect();
-    assert_eq!(
-        names,
-        vec![
-            "APIVersion",
-            "level",
-            "log_category",
-            "account_id",
-            "device_id",
-            "content"
-        ],
-        "parameter order is part of the beacon's identity"
-    );
+    assert_eq!(ann["data"], serde_json::json!({}));
+    assert!(!row["url"].as_str().unwrap().contains('?'));
+    assert!(!row.to_string().contains("Example Test CA"));
 
     // A GET with no framing headers has no body; saying it was skipped
     // would invent one.

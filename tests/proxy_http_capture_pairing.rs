@@ -64,5 +64,5 @@ async fn a_failed_forward_does_not_misattribute_later_responses() {
             .contains("/api/clientgate/routes"),
         "response was attributed to the wrong request: {ok}"
     );
-    assert_eq!(ok["body"]["text"], UPSTREAM_BODY);
+    assert!(ok["body"].get("text").is_none());
 }

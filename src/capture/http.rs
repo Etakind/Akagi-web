@@ -12,22 +12,8 @@
 //!
 //! ## Bodies
 //!
-//! Bodies are the expensive and the risky part. Akagi forwards traffic
-//! untouched; reading a body means buffering it and rebuilding the
-//! message, which changes that. So a body is only ever buffered when all
-//! of the following hold, and the decision is made from headers alone —
-//! before a single byte is read:
-//!
-//! - capture is enabled and body capture is on,
-//! - `content-length` is present (so streaming and chunked responses are
-//!   never held up waiting for an end that may not come),
-//! - it is within [`HttpCapturePolicy::max_body_bytes`],
-//! - the `content-type` is textual.
-//!
-//! Anything else is recorded with the reason it was skipped rather than
-//! being silently absent — a timeline that looks the same whether a body
-//! was empty or merely dropped is exactly the blind spot this module
-//! exists to remove.
+//! Raw body capture is disabled, including for legacy `bodies = true`.
+//! The forwarding path therefore never buffers a body for logging.
 //!
 //! ## Pairing
 //!
@@ -57,16 +43,6 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-/// Content types whose bodies are worth keeping as text.
-const TEXTUAL_TYPES: &[&str] = &[
-    "text/",
-    "application/json",
-    "application/javascript",
-    "application/xml",
-    "application/x-www-form-urlencoded",
-    "application/problem+json",
-];
-
 /// How much of an exchange to keep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HttpCapturePolicy {
@@ -84,7 +60,7 @@ impl Default for HttpCapturePolicy {
     fn default() -> Self {
         Self {
             record_all: false,
-            bodies: true,
+            bodies: false,
             max_body_bytes: 256 * 1024,
         }
     }
@@ -125,76 +101,23 @@ fn header_str<'a>(headers: &'a HeaderMap<HeaderValue>, name: &str) -> Option<&'a
 }
 
 /// Decide what to do with a body, from headers alone.
-pub fn plan_body(headers: &HeaderMap<HeaderValue>, policy: &HttpCapturePolicy) -> BodyPlan {
-    let len: Option<usize> = header_str(headers, "content-length").and_then(|v| v.parse().ok());
-    if len == Some(0) {
-        return BodyPlan::None;
-    }
-    if !policy.bodies {
-        return BodyPlan::Skip {
-            reason: "body capture is off".to_string(),
+pub fn plan_body(headers: &HeaderMap<HeaderValue>, _policy: &HttpCapturePolicy) -> BodyPlan {
+    let len = header_str(headers, "content-length").and_then(|v| v.parse::<usize>().ok());
+    if len == Some(0) || (len.is_none() && !headers.contains_key("transfer-encoding")) {
+        BodyPlan::None
+    } else {
+        BodyPlan::Skip {
+            reason: crate::privacy::OMITTED.into(),
             len,
-        };
-    }
-    let Some(len) = len else {
-        // Neither framing header means there is no body at all (RFC 9112
-        // §6.3) — the common case for the game's GETs. Calling that
-        // "skipped" would invent a body that was never sent.
-        if headers.get("transfer-encoding").is_none() {
-            return BodyPlan::None;
         }
-        // Chunked: buffering to find the end would stall the forward for
-        // an unbounded time.
-        return BodyPlan::Skip {
-            reason: "chunked transfer-encoding".to_string(),
-            len: None,
-        };
-    };
-    if len > policy.max_body_bytes {
-        return BodyPlan::Skip {
-            reason: format!("{len} bytes exceeds the {}-byte cap", policy.max_body_bytes),
-            len: Some(len),
-        };
-    }
-    match header_str(headers, "content-type") {
-        Some(ct) if is_textual(ct) => BodyPlan::Capture { len },
-        Some(ct) => BodyPlan::Skip {
-            reason: format!("content-type {}", ct.split(';').next().unwrap_or(ct).trim()),
-            len: Some(len),
-        },
-        None => BodyPlan::Skip {
-            reason: "no content-type".to_string(),
-            len: Some(len),
-        },
     }
 }
 
-fn is_textual(content_type: &str) -> bool {
-    let ct = content_type.trim().to_ascii_lowercase();
-    TEXTUAL_TYPES.iter().any(|t| ct.starts_with(t))
-}
-
-/// Turn buffered bytes into the stored record.
-///
-/// Content-encoded bodies are **not** decoded: undoing an encoding here
-/// would either alter what we forward or require re-encoding it exactly,
-/// and neither is worth it for observability. The reason is recorded so
-/// the gap is visible.
-pub fn body_record(bytes: &[u8], headers: &HeaderMap<HeaderValue>) -> HttpBody {
-    if let Some(enc) = header_str(headers, "content-encoding") {
-        let enc = enc.trim();
-        if !enc.is_empty() && !enc.eq_ignore_ascii_case("identity") {
-            return HttpBody {
-                text: None,
-                bytes: Some(bytes.len()),
-                skipped: Some(format!("content-encoding {enc}")),
-            };
-        }
-    }
+pub fn body_record(bytes: &[u8], _headers: &HeaderMap<HeaderValue>) -> HttpBody {
     HttpBody {
-        text: Some(String::from_utf8_lossy(bytes).into_owned()),
+        text: None,
         bytes: Some(bytes.len()),
-        skipped: None,
+        skipped: Some(crate::privacy::OMITTED.into()),
     }
 }
 
@@ -291,120 +214,26 @@ mod tests {
     }
 
     #[test]
-    fn json_within_cap_is_captured() {
+    fn legacy_body_capture_never_buffers_secrets() {
         let h = headers(&[
-            ("content-length", "679"),
             ("content-type", "application/json"),
+            ("content-length", "42"),
         ]);
-        assert_eq!(
-            plan_body(&h, &HttpCapturePolicy::default()),
-            BodyPlan::Capture { len: 679 }
-        );
-    }
-
-    #[test]
-    fn empty_body_is_not_a_skip() {
-        // A GET with `content-length: 0` has no body; saying it was
-        // "skipped" would be a lie.
-        let h = headers(&[("content-length", "0")]);
-        assert_eq!(plan_body(&h, &HttpCapturePolicy::default()), BodyPlan::None);
-    }
-
-    /// The case that protects the forward path: a multi-megabyte asset
-    /// must never be buffered.
-    #[test]
-    fn oversized_body_is_skipped_with_its_size() {
-        let h = headers(&[
-            ("content-length", "9000000"),
-            ("content-type", "application/json"),
-        ]);
-        match plan_body(&h, &HttpCapturePolicy::default()) {
-            BodyPlan::Skip { reason, len } => {
-                assert_eq!(len, Some(9_000_000));
-                assert!(
-                    reason.contains("cap"),
-                    "reason should name the cap: {reason}"
-                );
-            }
-            other => panic!("expected a skip, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn binary_content_types_are_skipped() {
-        let h = headers(&[("content-length", "100"), ("content-type", "image/png")]);
-        match plan_body(&h, &HttpCapturePolicy::default()) {
-            BodyPlan::Skip { reason, .. } => assert!(reason.contains("image/png")),
-            other => panic!("expected a skip, got {other:?}"),
-        }
-    }
-
-    /// Chunked responses have no length, so buffering could stall the
-    /// forward indefinitely.
-    #[test]
-    fn chunked_body_is_skipped() {
-        let h = headers(&[
-            ("transfer-encoding", "chunked"),
-            ("content-type", "application/json"),
-        ]);
-        match plan_body(&h, &HttpCapturePolicy::default()) {
-            BodyPlan::Skip { reason, len } => {
-                assert!(reason.contains("chunked"), "got: {reason}");
-                assert_eq!(len, None);
-            }
-            other => panic!("expected a skip, got {other:?}"),
-        }
-    }
-
-    /// Neither framing header means there was no body — the shape of
-    /// every GET the game sends. Reporting a "skipped" body there would
-    /// invent one that never existed.
-    #[test]
-    fn a_get_with_no_framing_headers_has_no_body() {
-        let h = headers(&[("user-agent", "BestHTTP")]);
-        assert_eq!(plan_body(&h, &HttpCapturePolicy::default()), BodyPlan::None);
-    }
-
-    #[test]
-    fn charset_parameter_does_not_defeat_the_type_check() {
-        let h = headers(&[
-            ("content-length", "10"),
-            ("content-type", "text/html; charset=utf-8"),
-        ]);
-        assert_eq!(
-            plan_body(&h, &HttpCapturePolicy::default()),
-            BodyPlan::Capture { len: 10 }
-        );
-    }
-
-    #[test]
-    fn bodies_off_skips_with_a_reason() {
-        let policy = HttpCapturePolicy {
-            bodies: false,
-            ..Default::default()
+        let p = HttpCapturePolicy {
+            record_all: true,
+            bodies: true,
+            max_body_bytes: 1024,
         };
-        let h = headers(&[("content-length", "10"), ("content-type", "text/plain")]);
-        match plan_body(&h, &policy) {
-            BodyPlan::Skip { reason, .. } => assert!(reason.contains("off")),
-            other => panic!("expected a skip, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn encoded_body_is_recorded_as_skipped_not_as_mojibake() {
-        let h = headers(&[("content-encoding", "gzip")]);
-        let rec = body_record(&[0x1f, 0x8b, 0x08, 0x00], &h);
-        assert!(rec.text.is_none());
-        assert_eq!(rec.bytes, Some(4));
-        assert!(rec.skipped.unwrap().contains("gzip"));
-    }
-
-    #[test]
-    fn identity_encoding_is_captured() {
-        let h = headers(&[("content-encoding", "identity")]);
-        let rec = body_record(b"{\"ok\":true}", &h);
-        assert_eq!(rec.text.as_deref(), Some("{\"ok\":true}"));
-        assert!(rec.skipped.is_none());
+        assert!(matches!(
+            plan_body(&h, &p),
+            BodyPlan::Skip { len: Some(42), .. }
+        ));
+        assert!(body_record(b"secret", &h).text.is_none());
+        assert_eq!(plan_body(&headers(&[]), &p), BodyPlan::None);
+        assert!(matches!(
+            plan_body(&headers(&[("transfer-encoding", "chunked")]), &p),
+            BodyPlan::Skip { .. }
+        ));
     }
 
     fn addr(port: u16) -> SocketAddr {

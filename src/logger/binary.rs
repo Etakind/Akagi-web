@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::Write,
     path::Path,
     sync::Mutex,
@@ -24,10 +24,7 @@ pub struct BinaryLogger {
 impl BinaryLogger {
     pub fn new(session_dir: &Path, name: &str) -> Result<Self> {
         let path = session_dir.join(format!("{name}.binlog"));
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
+        let file = crate::util::private_fs::append(&path)
             .with_context(|| format!("Failed to open binary log {}", path.display()))?;
         Ok(Self {
             name: name.to_string(),
@@ -44,13 +41,15 @@ impl BinaryLogger {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
-        let len = bytes.len() as u32;
+        // Raw wire capture is permanently disabled in this privacy build.
+        // Keep a valid legacy binlog envelope containing no payload.
+        let _ = bytes;
+        let len = 0u32;
 
-        let mut buf = Vec::with_capacity(13 + bytes.len());
+        let mut buf = Vec::with_capacity(13);
         buf.extend_from_slice(&micros.to_le_bytes());
         buf.push(tag);
         buf.extend_from_slice(&len.to_le_bytes());
-        buf.extend_from_slice(bytes);
 
         let mut file = self.file.lock().expect("binary log mutex poisoned");
         file.write_all(&buf)

@@ -10,7 +10,7 @@
 //! is to grab a `Page` and call `page.event_listener::<E>()` on it.
 //!
 //! Subscription lifecycle:
-//! - Poll `browser.pages()` every ~1s.
+//! - Poll browser target metadata every ~1s; never block on unrelated pages.
 //! - On a new `target_id`: enable Network domain on that page, subscribe
 //!   to the four WS events, spawn a routing task.
 //! - On a `target_id` disappearing from the snapshot (tab closed):
@@ -22,26 +22,23 @@
 
 use crate::autoplay::AutoplayContext;
 use crate::bridge::Direction;
-use crate::capture::flow::{slugify, FlowBridges};
+use crate::capture::flow::FlowBridges;
 use crate::config::HttpCaptureConfig;
 use crate::event_bus::{MjaiBus, NotifyBus};
 use crate::inspector::annotate::{self, RequestView};
 use crate::inspector::InspectorWriter;
 use crate::schema::{
     CaptureSource, FrameDirection, FrameRaw, HttpBody, HttpExchange, HttpHeader, HttpPhase,
-    InspectorEntry,
+    InspectorEntry, Notification,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use base64::Engine;
-use chromiumoxide::page::Page;
-use chromiumoxide::{
-    cdp::browser_protocol::network::{
-        EnableParams as NetworkEnableParams, EventRequestWillBeSent, EventResponseReceived,
-        EventWebSocketClosed, EventWebSocketCreated, EventWebSocketFrameReceived,
-        EventWebSocketFrameSent, Headers, ResourceType,
-    },
-    Browser,
+use chromiumoxide::cdp::browser_protocol::network::{
+    EnableParams as NetworkEnableParams, EventRequestWillBeSent, EventResponseReceived,
+    EventWebSocketClosed, EventWebSocketCreated, EventWebSocketFrameReceived,
+    EventWebSocketFrameSent, Headers, ResourceType,
 };
+use chromiumoxide::page::Page;
 use chrono::Local;
 use futures_util::StreamExt;
 use std::collections::{HashMap, HashSet};
@@ -146,6 +143,8 @@ fn is_autoplay_target_url(ws_url: &str) -> bool {
 /// feature is wired (`AppState.autoplay_context`). On Majsoul WS open
 /// we publish the page handle into it; autoplay reads it back to dispatch
 /// `Input.dispatchMouseEvent`. Passing `None` makes the loop bridge-only.
+// Explicit shared buses/context mirror attach_page; no independent ownership.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     endpoint: &str,
     bridges: Arc<FlowBridges<FlowKey>>,
@@ -154,11 +153,17 @@ pub async fn run(
     autoplay: Option<Arc<AutoplayContext>>,
     http_cfg: HttpCaptureConfig,
     notify: NotifyBus,
+    official_majsoul_only: bool,
 ) -> Result<()> {
-    info!("CDP connecting to {endpoint}");
-    let (browser_owned, mut handler) = Browser::connect(endpoint)
-        .await
-        .with_context(|| format!("CDP connect to {endpoint}"))?;
+    if let Some(ctx) = &autoplay {
+        ctx.official_majsoul_only
+            .store(official_majsoul_only, std::sync::atomic::Ordering::Relaxed);
+        *ctx.page.write().await = None;
+        *ctx.canvas_rect.write().await = None;
+    }
+    info!("CDP connection starting");
+    let (browser_owned, mut handler) =
+        super::connection::connect(endpoint, &notify, official_majsoul_only).await?;
     // `Browser` is not `Clone`; share via Arc for the page-poll task.
     let browser = Arc::new(browser_owned);
 
@@ -167,31 +172,54 @@ pub async fn run(
     // `WS Invalid message` warnings when Chrome sends events
     // chromiumoxide doesn't have a typed binding for; those are
     // non-fatal noise and the stream keeps running.
-    let pump = tokio::spawn(async move {
+    let mut pump = AbortTask(tokio::spawn(async move {
         while let Some(ev) = handler.next().await {
             if let Err(e) = ev {
                 debug!("chromiumoxide handler event error: {e:?}");
+                break;
             }
         }
-    });
+    }));
 
     // Per-page subscription registry. Key: TargetId stringified.
-    let mut subscribed: HashMap<String, JoinHandle<()>> = HashMap::new();
+    let mut subscribed: HashMap<String, AbortTask> = HashMap::new();
 
     let poll_loop = async {
+        let mut failed_discovery = 0u8;
+        let mut unavailable_game = 0u8;
+        let mut last_counts = None;
         loop {
-            let pages = match browser.pages().await {
-                Ok(p) => p,
-                Err(e) => {
-                    debug!("browser.pages() error: {e:?}");
+            let snapshot = match super::discovery::snapshot(&browser, official_majsoul_only).await {
+                Ok(snapshot) => {
+                    failed_discovery = 0;
+                    snapshot
+                }
+                Err(_) => {
+                    failed_discovery += 1;
+                    warn!(
+                        discovery_failures = failed_discovery as u64,
+                        "CDP discovery failed"
+                    );
+                    if failed_discovery >= 3 {
+                        break;
+                    }
                     tokio::time::sleep(PAGE_POLL_INTERVAL).await;
                     continue;
                 }
             };
-            let current: HashSet<String> = pages
-                .iter()
-                .map(|p| p.target_id().inner().clone())
-                .collect();
+            let current = snapshot.current;
+            let pages = snapshot.pages;
+            let counts = (current.len(), pages.len());
+            if last_counts != Some(counts) {
+                info!(
+                    game_targets = counts.0 as u64,
+                    available_pages = counts.1 as u64,
+                    "CDP discovery state"
+                );
+                last_counts = Some(counts);
+            }
+            // A routing task can end independently of the tab; subscribe again.
+            subscribed.retain(|_, task| !task.0.is_finished());
             let prev: HashSet<String> = subscribed.keys().cloned().collect();
             let (adds, removes) = diff_pages(&prev, &current);
 
@@ -199,7 +227,7 @@ pub async fn run(
             // long sessions where users open + close many tabs.
             for id in &removes {
                 if let Some(h) = subscribed.remove(id) {
-                    h.abort();
+                    h.0.abort();
                     debug!("CDP: dropped subscription for closed target {id}");
                 }
             }
@@ -226,31 +254,84 @@ pub async fn run(
             }
 
             // Subscribe new tabs.
-            for page in pages {
+            for page in &pages {
                 let id = page.target_id().inner().clone();
                 if !adds.contains(&id) {
                     continue;
                 }
-                match attach_page(
-                    page.clone(),
-                    id.clone(),
-                    bridges.clone(),
-                    mjai_bus.clone(),
-                    inspector.clone(),
-                    autoplay.clone(),
-                    http_cfg.clone(),
-                    notify.clone(),
+                match tokio::time::timeout(
+                    Duration::from_secs(8),
+                    attach_page(
+                        page.clone(),
+                        id.clone(),
+                        bridges.clone(),
+                        mjai_bus.clone(),
+                        inspector.clone(),
+                        autoplay.clone(),
+                        http_cfg.clone(),
+                        notify.clone(),
+                        official_majsoul_only,
+                    ),
                 )
                 .await
                 {
-                    Ok(handle) => {
+                    Ok(Ok(handle)) => {
                         info!("CDP: attached to page target {id}");
-                        subscribed.insert(id, handle);
+                        if official_majsoul_only {
+                            let _ = notify.send(
+                                Notification::success("Majsoul capture attached")
+                                    .body("Official game page connected. Local analysis is ready for a new game.")
+                                    .id("cdp-connection"),
+                            );
+                        }
+                        subscribed.insert(id, AbortTask(handle));
                     }
-                    Err(e) => {
-                        warn!("CDP: failed to attach to target {id}: {e:#}");
+                    Ok(Err(_)) | Err(_) => {
+                        warn!(
+                            page_attach_failed = true,
+                            "CDP page subscription unavailable; retrying"
+                        );
                     }
                 }
+            }
+
+            if official_majsoul_only {
+                if let Some(ctx) = &autoplay {
+                    // Do not depend on a future WebSocketCreated event, and
+                    // never guess which of multiple game tabs should be clicked.
+                    let desired = if current.len() == 1 {
+                        pages
+                            .iter()
+                            .find(|p| subscribed.contains_key(p.target_id().inner()))
+                            .cloned()
+                    } else {
+                        None
+                    };
+                    let mut bound = ctx.page.write().await;
+                    if bound.as_ref().map(|p| p.session_id())
+                        != desired.as_ref().map(|p| p.session_id())
+                    {
+                        *bound = desired;
+                        *ctx.canvas_rect.write().await = None;
+                        info!(
+                            autoplay_page_bound = bound.is_some(),
+                            "Official game input target updated"
+                        );
+                    }
+                }
+            }
+
+            if official_majsoul_only && !current.is_empty() && subscribed.is_empty() {
+                unavailable_game += 1;
+                if unavailable_game >= 3 {
+                    warn!(
+                        game_page_unavailable = true,
+                        "CDP game subscription stalled"
+                    );
+                    break;
+                }
+            } else {
+                unavailable_game = 0;
             }
 
             tokio::time::sleep(PAGE_POLL_INTERVAL).await;
@@ -261,15 +342,90 @@ pub async fn run(
     };
 
     tokio::select! {
-        _ = pump => info!("CDP handler pump exited"),
+        _ = &mut pump.0 => info!("CDP handler pump exited"),
         _ = poll_loop => info!("CDP page poll exited"),
     }
     // Abort any still-live page subscriptions before tearing down.
     for (_id, h) in subscribed {
-        h.abort();
+        h.0.abort();
+    }
+    if let Some(ctx) = &autoplay {
+        *ctx.page.write().await = None;
+        *ctx.canvas_rect.write().await = None;
     }
     drop(browser);
-    Err(anyhow!("CDP loop terminated"))
+    Err(super::connection::Disconnected.into())
+}
+
+// Task cancellation must detach from a user-owned browser, even if the
+// capture future is dropped while its child routing tasks are still running.
+struct AbortTask(JoinHandle<()>);
+impl Drop for AbortTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+#[derive(Default)]
+struct GameReadiness {
+    started: bool,
+    ready: bool,
+    warned: bool,
+}
+impl GameReadiness {
+    fn observe(&mut self, result: &crate::bridge::ParseResult) -> Option<Notification> {
+        use crate::schema::MjaiEvent;
+        if !result
+            .parsed
+            .as_ref()
+            .is_some_and(|p| p.method.starts_with(".lq."))
+        {
+            return None;
+        }
+        for event in &result.events {
+            match event {
+                MjaiEvent::StartGame { .. } => {
+                    self.started = true;
+                    self.ready = false;
+                }
+                MjaiEvent::StartKyoku { .. } if self.started && !self.ready => {
+                    self.ready = true;
+                    return Some(
+                        Notification::success("Majsoul game state ready")
+                            .body(
+                                "Seat and starting hand received. Local game analysis can now run.",
+                            )
+                            .id("majsoul-game-state"),
+                    );
+                }
+                _ => {}
+            }
+        }
+        if !self.started
+            && !self.warned
+            && result
+                .parsed
+                .as_ref()
+                .is_some_and(|p| p.method == ".lq.ActionPrototype")
+        {
+            self.warned = true;
+            return Some(Notification::warn("Majsoul connected; game state missing")
+                .body("Capture started after game entry. Keep Akagi running and refresh the game page when a brief reconnect is safe, so the game can restore your seat and hand.")
+                .sticky().id("majsoul-game-state"));
+        }
+        None
+    }
+}
+pub(super) fn official_majsoul_page(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.host_str() == Some("game.maj-soul.com")
+        && url.path().starts_with("/1/")
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
 }
 
 /// URL of the script that carries the Tenhou client.
@@ -460,10 +616,8 @@ async fn attach_page(
     autoplay: Option<Arc<AutoplayContext>>,
     http_cfg: HttpCaptureConfig,
     notify: NotifyBus,
+    official_majsoul_only: bool,
 ) -> Result<JoinHandle<()>> {
-    page.execute(NetworkEnableParams::default())
-        .await
-        .context("Network.enable")?;
     // The pause listener has to exist before `Fetch.enable` arms the
     // interceptor: a request paused with no listener yet is a request nobody
     // ever continues, and the page hangs on it. The stream buffers
@@ -473,13 +627,14 @@ async fn attach_page(
         .event_listener::<chromiumoxide::cdp::browser_protocol::fetch::EventRequestPaused>()
         .await
         .context("subscribe requestPaused")?;
-    // Instrument the Tenhou client on its way in. Scoped to that one script
-    // so nothing else on the page is paused; a failure to enable is logged
-    // and the session continues without a discard path.
-    if let Err(e) = enable_script_rewrite(&page).await {
-        warn!("CDP: client instrumentation unavailable on target {target_id}: {e:#}");
-    } else if let Err(e) = reload_if_uninstrumented(&page).await {
-        warn!("CDP: could not re-load the client for instrumentation: {e:#}");
+    // The existing-browser mode only captures Majsoul. Do not install Tenhou
+    // interception or run its page JavaScript on a personal browser tab.
+    if !official_majsoul_only {
+        if let Err(e) = enable_script_rewrite(&page).await {
+            warn!("CDP: client instrumentation unavailable: {e:#}");
+        } else if let Err(e) = reload_if_uninstrumented(&page).await {
+            warn!("CDP: client instrumentation unavailable: {e:#}");
+        }
     }
     let mut on_created = page
         .event_listener::<EventWebSocketCreated>()
@@ -509,7 +664,13 @@ async fn attach_page(
         .await
         .context("subscribe responseReceived")?;
 
+    // Install every listener before enabling traffic delivery.
+    page.execute(NetworkEnableParams::default())
+        .await
+        .context("Network.enable")?;
+
     let handle = tokio::spawn(async move {
+        let mut readiness: HashMap<String, GameReadiness> = HashMap::new();
         loop {
             tokio::select! {
                 Some(ev) = on_paused.next() => {
@@ -521,9 +682,9 @@ async fn attach_page(
                         target: target_id.clone(),
                         request: ev.request_id.inner().clone(),
                     };
-                    let label = format!("ws {}", ev.url);
-                    let slug = slugify(&ev.url);
-                    let _ = bridges.acquire(key, &slug, &label);
+                    let label = format!("ws {}", crate::privacy::url(&ev.url));
+                    let slug = "websocket";
+                    let _ = bridges.acquire(key, slug, &label);
                     debug!("ws created: {} (target {target_id} request {})", ev.url, ev.request_id.inner());
 
                     // If this is the platform's WS (Majsoul), capture
@@ -533,7 +694,7 @@ async fn attach_page(
                     // the same tab just refreshes it. Multi-tab user:
                     // most-recent wins, per the plan.
                     if let Some(ctx) = &autoplay {
-                        if is_autoplay_target_url(&ev.url) {
+                        if !official_majsoul_only && is_autoplay_target_url(&ev.url) {
                             let mut guard = ctx.page.write().await;
                             let prev_target =
                                 guard.as_ref().map(|p| p.target_id().inner().clone());
@@ -588,6 +749,9 @@ async fn attach_page(
                         let mut b = bridge.lock().expect("bridge mutex poisoned");
                         b.parse(Direction::Down, &payload)
                     };
+                    if let Some(message) = readiness.entry(ev.request_id.inner().clone()).or_default().observe(&result) {
+                        let _ = notify.send(message);
+                    }
                     record_frame(
                         &inspector,
                         FrameDirection::Down,
@@ -635,6 +799,7 @@ async fn attach_page(
                     }
                 }
                 Some(ev) = on_closed.next() => {
+                    readiness.remove(ev.request_id.inner());
                     let key = FlowKey {
                         target: target_id.clone(),
                         request: ev.request_id.inner().clone(),
@@ -940,5 +1105,57 @@ mod tests {
                 "opcode {opcode} should skip"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod attached_browser_tests {
+    use super::*;
+    #[test]
+    fn midgame_warning_is_once_and_recovery_requires_start_game_and_round() {
+        use crate::bridge::ParseResult;
+        use crate::schema::ParsedFrame;
+        let mut state = GameReadiness::default();
+        let mut result = ParseResult {
+            events: vec![],
+            parsed: Some(ParsedFrame {
+                method: ".lq.ActionPrototype".into(),
+                args: serde_json::json!({}),
+            }),
+        };
+        assert!(state.observe(&result).unwrap().sticky);
+        assert!(state.observe(&result).is_none());
+        result.events = vec![serde_json::from_value(
+            serde_json::json!({"type":"start_game","names":["","","",""],"id":0}),
+        )
+        .unwrap()];
+        assert!(state.observe(&result).is_none());
+        result.events = vec![serde_json::from_value(serde_json::json!({"type":"start_kyoku","bakaze":"E","dora_marker":"1m","kyoku":1,"honba":0,"kyotaku":0,"oya":0,"scores":[25000,25000,25000,25000],"tehais":[[],[],[],[]]})).unwrap()];
+        assert_eq!(
+            state.observe(&result).unwrap().title,
+            "Majsoul game state ready"
+        );
+        assert!(state.observe(&result).is_none());
+    }
+    #[test]
+    fn attached_browser_scope_excludes_other_tabs() {
+        assert!(official_majsoul_page("https://game.maj-soul.com/1/"));
+        for url in [
+            "http://game.maj-soul.com/1/",
+            "https://game.maj-soul.com.evil.test/1/",
+            "https://mail.example.test/",
+            "https://game.maj-soul.com:8443/1/",
+            "https://game.maj-soul.com/other/",
+        ] {
+            assert!(!official_majsoul_page(url));
+        }
+    }
+    #[tokio::test]
+    async fn dropping_capture_aborts_child_tasks() {
+        let task = tokio::spawn(std::future::pending::<()>());
+        let handle = task.abort_handle();
+        drop(AbortTask(task));
+        tokio::task::yield_now().await;
+        assert!(handle.is_finished());
     }
 }

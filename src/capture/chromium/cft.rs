@@ -29,7 +29,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// CfT release channel + literal-version pin format used by
 /// `ChromiumConfig.cft_channel`.
@@ -195,9 +195,7 @@ struct ManifestDownloads {
 #[derive(Debug, Clone, Deserialize)]
 struct ChannelEntry {
     version: String,
-    /// Absent in npmmirror's `last-known-good-versions.json` (the
-    /// downloads-free variant is the only channels manifest the mirror
-    /// carries) — the binary URL is constructed from the version instead.
+    /// Missing downloads are parsed, but resolution fails closed.
     #[serde(default)]
     downloads: ManifestDownloads,
 }
@@ -238,30 +236,14 @@ const ALL_VERSIONS_URL: &str =
 /// Official binary bucket — every `downloads.chrome[].url` in the
 /// manifests points here. Hard-blocked in mainland China.
 const GCS_BASE: &str = "https://storage.googleapis.com/chrome-for-testing-public";
-/// npmmirror (Alibaba) mirrors the GCS bucket layout 1:1 plus a subset
-/// of the metadata files: `last-known-good-versions.json` (channels,
-/// no download URLs) and `known-good-versions-with-downloads.json`.
-/// Verified 2026-08-12. The `-with-downloads` channels variant and the
-/// `LATEST_RELEASE_*` pins are NOT mirrored.
-const NPMMIRROR_BASE: &str = "https://registry.npmmirror.com/-/binary/chrome-for-testing";
-
-/// Per-attempt ceiling on manifest fetches. The all-versions manifest is
-/// ~5 MB, so this is generous; the point is that a black-holed
-/// connection fails over to the mirror instead of hanging forever.
 const MANIFEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
-/// Rewrite an official GCS binary URL to its npmmirror twin. `None`
-/// when the URL isn't under the GCS bucket.
-fn npmmirror_rewrite(url: &str) -> Option<String> {
-    url.strip_prefix(GCS_BASE)
-        .map(|rest| format!("{NPMMIRROR_BASE}{rest}"))
-}
-
-/// Binary URL constructed from scratch — used when the manifest came
-/// from npmmirror's downloads-free channels file. The path layout
-/// `<ver>/<platform>/chrome-<platform>.zip` is shared by both hosts.
-fn binary_url(base: &str, version: &str, platform: &str) -> String {
-    format!("{base}/{version}/{platform}/chrome-{platform}.zip")
+fn official_asset(url: &str, version: &str, platform: &str) -> bool {
+    version.split('.').count() == 4
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        && url == format!("{GCS_BASE}/{version}/{platform}/chrome-{platform}.zip")
 }
 
 async fn fetch_json<T: serde::de::DeserializeOwned>(
@@ -293,98 +275,41 @@ fn pick_channel(bag: ChannelsBag, channel: &Channel) -> Result<ChannelEntry> {
     .ok_or_else(|| anyhow!("channel not present in CfT manifest"))
 }
 
-/// Resolve a `Channel` to a concrete `(version, download candidates)`
-/// for the host platform. Candidates are tried in order by the caller;
-/// the second entry is always the other host's URL for the same file,
-/// so a user who can reach the manifest but not the binary bucket (or
-/// vice versa) still succeeds.
-///
-/// Official endpoints are tried first; when they are unreachable the
-/// resolve falls back to npmmirror's mirrored metadata (channel pins
-/// without download URLs, so the binary URL is constructed from the
-/// shared bucket layout).
+/// Resolve only against Google's HTTPS manifests. No unverified mirror fallback.
 async fn resolve_asset(
     client: &reqwest::Client,
     channel: &Channel,
 ) -> Result<(String, Vec<String>)> {
-    let platform = cft_platform()
-        .ok_or_else(|| anyhow!("Chrome-for-Testing is not available for this platform"))?;
-    match channel {
-        Channel::Stable | Channel::Beta | Channel::Dev | Channel::Canary => {
-            match fetch_json::<ChannelsManifest>(client, CHANNELS_URL, "CfT channels manifest")
-                .await
-            {
-                Ok(m) => {
-                    let entry = pick_channel(m.channels, channel)?;
-                    let url = entry
-                        .downloads
-                        .chrome
-                        .into_iter()
-                        .find(|d| d.platform == platform)
-                        .ok_or_else(|| {
-                            anyhow!("CfT manifest has no {platform} asset for {}", entry.version)
-                        })?
-                        .url;
-                    let mut candidates = vec![url.clone()];
-                    candidates.extend(npmmirror_rewrite(&url));
-                    Ok((entry.version, candidates))
-                }
-                Err(e) => {
-                    warn!("official CfT channels manifest unreachable ({e:#}); trying npmmirror");
-                    let m: ChannelsManifest = fetch_json(
-                        client,
-                        &format!("{NPMMIRROR_BASE}/last-known-good-versions.json"),
-                        "npmmirror CfT channels manifest",
-                    )
-                    .await?;
-                    let entry = pick_channel(m.channels, channel)?;
-                    let candidates = vec![
-                        binary_url(NPMMIRROR_BASE, &entry.version, platform),
-                        binary_url(GCS_BASE, &entry.version, platform),
-                    ];
-                    Ok((entry.version, candidates))
-                }
-            }
-        }
+    let platform =
+        cft_platform().ok_or_else(|| anyhow!("unsupported Chrome for Testing platform"))?;
+    let (version, downloads) = match channel {
         Channel::Literal(v) => {
-            let (m, from_mirror): (AllVersionsManifest, bool) =
-                match fetch_json(client, ALL_VERSIONS_URL, "CfT all-versions manifest").await {
-                    Ok(m) => (m, false),
-                    Err(e) => {
-                        warn!(
-                        "official CfT all-versions manifest unreachable ({e:#}); trying npmmirror"
-                    );
-                        let m = fetch_json(
-                            client,
-                            &format!("{NPMMIRROR_BASE}/known-good-versions-with-downloads.json"),
-                            "npmmirror CfT all-versions manifest",
-                        )
-                        .await?;
-                        (m, true)
-                    }
-                };
-            let entry = m
+            let m: AllVersionsManifest =
+                fetch_json(client, ALL_VERSIONS_URL, "official CfT manifest").await?;
+            let e = m
                 .versions
                 .into_iter()
                 .find(|e| &e.version == v)
-                .ok_or_else(|| anyhow!("CfT version {v:?} not found in manifest"))?;
-            let url = entry
-                .downloads
-                .chrome
-                .into_iter()
-                .find(|d| d.platform == platform)
-                .ok_or_else(|| anyhow!("CfT manifest has no {platform} asset for {v}"))?
-                .url;
-            let candidates = match (npmmirror_rewrite(&url), from_mirror) {
-                // Manifest came from the mirror → the binary bucket is
-                // likely blocked too; try the mirror first.
-                (Some(alt), true) => vec![alt, url],
-                (Some(alt), false) => vec![url, alt],
-                (None, _) => vec![url],
-            };
-            Ok((entry.version, candidates))
+                .ok_or_else(|| anyhow!("requested browser version not found"))?;
+            (e.version, e.downloads)
         }
+        _ => {
+            let m: ChannelsManifest =
+                fetch_json(client, CHANNELS_URL, "official CfT channels").await?;
+            let e = pick_channel(m.channels, channel)?;
+            (e.version, e.downloads)
+        }
+    };
+    let url = downloads
+        .chrome
+        .into_iter()
+        .find(|d| d.platform == platform)
+        .ok_or_else(|| anyhow!("official manifest has no browser for this platform"))?
+        .url;
+    if !official_asset(&url, &version, platform) {
+        bail!("non-official browser download refused");
     }
+    Ok((version, vec![url]))
 }
 
 // ---------- Download + extract ----------
@@ -396,6 +321,7 @@ async fn resolve_asset(
 pub async fn install(channel: &Channel, notify: &NotifyBus) -> Result<String> {
     let client = reqwest::Client::builder()
         .user_agent("akagi-cft-downloader")
+        .redirect(reqwest::redirect::Policy::none())
         // Short connect ceiling: blocked hosts black-hole rather than
         // reset, and fallback to the mirror needs the attempt to *fail*.
         .connect_timeout(std::time::Duration::from_secs(10))
@@ -489,14 +415,9 @@ fn installed_chrome_exists(install_dir: &Path) -> bool {
     executable_path(install_dir, platform).exists()
 }
 
-/// Defensive `chmod +x` (Unix) and macOS quarantine strip after
-/// extraction. CfT zips DO carry unix mode bits via `extract_zip_safe`,
-/// but a stray archive without them shouldn't leave a non-executable
-/// binary behind. macOS Gatekeeper blocks unsigned binaries with the
-/// quarantine xattr — strip it so first launch doesn't show a
-/// "cannot verify developer" prompt.
+/// Restore executable permission if absent. Never remove macOS quarantine.
 #[cfg_attr(not(unix), allow(unused_variables))]
-fn post_extract_fixup(exe: &Path, install_dir: &Path) {
+fn post_extract_fixup(exe: &Path, _install_dir: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -505,21 +426,6 @@ fn post_extract_fixup(exe: &Path, install_dir: &Path) {
             // Add user/group/other execute bits without dropping read/write.
             perms.set_mode(perms.mode() | 0o111);
             let _ = std::fs::set_permissions(exe, perms);
-        }
-    }
-    if cfg!(target_os = "macos") {
-        let status = std::process::Command::new("xattr")
-            .args(["-dr", "com.apple.quarantine"])
-            .arg(install_dir)
-            .stderr(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .status();
-        match status {
-            Ok(s) if s.success() => {
-                debug!("stripped quarantine xattr from {}", install_dir.display())
-            }
-            Ok(s) => warn!("xattr exited {s} (non-fatal)"),
-            Err(e) => warn!("xattr not found / failed: {e} (non-fatal)"),
         }
     }
 }
@@ -660,49 +566,18 @@ mod tests {
     }
 
     #[test]
-    fn npmmirror_rewrite_maps_gcs_urls_only() {
-        assert_eq!(
-            npmmirror_rewrite(
-                "https://storage.googleapis.com/chrome-for-testing-public/151.0.7922.138/linux64/chrome-linux64.zip"
-            )
-            .as_deref(),
-            Some(
-                "https://registry.npmmirror.com/-/binary/chrome-for-testing/151.0.7922.138/linux64/chrome-linux64.zip"
-            )
-        );
-        assert_eq!(npmmirror_rewrite("https://example.com/chrome.zip"), None);
-    }
-
-    #[test]
-    fn binary_url_matches_bucket_layout() {
-        assert_eq!(
-            binary_url(GCS_BASE, "151.0.7922.138", "win64"),
-            "https://storage.googleapis.com/chrome-for-testing-public/151.0.7922.138/win64/chrome-win64.zip"
-        );
-        assert_eq!(
-            binary_url(NPMMIRROR_BASE, "151.0.7922.138", "mac-arm64"),
-            "https://registry.npmmirror.com/-/binary/chrome-for-testing/151.0.7922.138/mac-arm64/chrome-mac-arm64.zip"
-        );
-    }
-
-    /// npmmirror only carries the downloads-free channels manifest
-    /// (`last-known-good-versions.json`); its entries must parse with
-    /// `downloads` defaulting to empty.
-    #[test]
-    fn channels_manifest_parses_npmmirror_shape_without_downloads() {
-        let body = r#"{
-            "timestamp": "2026-08-11T22:20:47.187Z",
-            "channels": {
-                "Stable": { "channel": "Stable", "version": "151.0.7922.138", "revision": "1654411" },
-                "Beta":   { "channel": "Beta",   "version": "152.0.7977.30",  "revision": "1669021" }
-            }
-        }"#;
-        let m: ChannelsManifest = serde_json::from_str(body).unwrap();
-        let stable = pick_channel(m.channels.clone(), &Channel::Stable).unwrap();
-        assert_eq!(stable.version, "151.0.7922.138");
-        assert!(stable.downloads.chrome.is_empty());
-        let beta = pick_channel(m.channels, &Channel::Beta).unwrap();
-        assert_eq!(beta.version, "152.0.7977.30");
+    fn download_origin_and_version_are_strict() {
+        assert!(official_asset("https://storage.googleapis.com/chrome-for-testing-public/1.2.3.4/mac-x64/chrome-mac-x64.zip", "1.2.3.4", "mac-x64"));
+        assert!(!official_asset(
+            "https://evil.test/browser.zip",
+            "1.2.3.4",
+            "mac-x64"
+        ));
+        assert!(!official_asset(
+            "https://storage.googleapis.com/chrome-for-testing-public/../chrome-mac-x64.zip",
+            "..",
+            "mac-x64"
+        ));
     }
 
     #[test]

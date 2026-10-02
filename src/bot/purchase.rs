@@ -711,7 +711,7 @@ mod tests {
     /// Server error bodies surface through `check` with the endpoint label
     /// and the server's generic message — what the frontend shows verbatim.
     #[tokio::test]
-    async fn create_order_surfaces_server_error() {
+    async fn create_order_surfaces_status_without_server_body() {
         let (base, served) = mock_http(vec![(
             "400 Bad Request",
             r#"{"error":"unknown product"}"#.into(),
@@ -720,7 +720,7 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("create order failed"), "got: {msg}");
         assert!(msg.contains("HTTP 400"), "got: {msg}");
-        assert!(msg.contains("unknown product"), "got: {msg}");
+        assert!(!msg.contains("unknown product"), "got: {msg}");
         served.join().unwrap();
     }
 

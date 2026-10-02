@@ -475,6 +475,13 @@ impl AutoplayManager {
                         warn!("autoplay: no page handle — aborting click sequence");
                         return;
                     };
+                    if !self.ctx.page_allowed(page).await {
+                        warn!(
+                            official_page_rejected = true,
+                            "autoplay: input target no longer allowed"
+                        );
+                        return;
+                    }
                     // A lost press usually costs nothing — the decision
                     // window closes and the client passes. A lost *riichi*
                     // press is different: the discard that follows it still
@@ -779,6 +786,13 @@ impl AutoplayManager {
                     warn!("autoplay: no page handle — abandoning retry for {action:?}");
                     return false;
                 };
+                if !self.ctx.page_allowed(page).await {
+                    warn!(
+                        official_page_rejected = true,
+                        "autoplay: retry target no longer allowed"
+                    );
+                    return false;
+                }
                 if let Err(e) =
                     dispatch_click_shaped(page, px, py, cfg.hover_delay_ms, hold, jiggle).await
                 {
@@ -849,6 +863,9 @@ impl AutoplayManager {
             return;
         };
         drop(page_guard);
+        if !self.ctx.page_allowed(&page).await {
+            return;
+        }
         if let Err(e) = page.reload().await {
             warn!("autoplay: page reload failed: {e:#}");
         }
@@ -946,6 +963,9 @@ impl AutoplayManager {
         let page_guard = self.ctx.page.read().await;
         let page = page_guard.as_ref()?.clone();
         drop(page_guard);
+        if !self.ctx.page_allowed(&page).await {
+            return None;
+        }
         match evaluate_canvas_rect(&page).await {
             Ok(rect) => {
                 *self.ctx.canvas_rect.write().await = Some(rect);

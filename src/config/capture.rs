@@ -23,20 +23,15 @@ pub struct CaptureConfig {
 /// endpoints, and the analytics beacons through which the client reports
 /// on itself. This turns that back on.
 ///
-/// `record_all` defaults to **off** on purpose. Full HTTP capture puts
-/// access tokens, cookies and authorization headers into the session
-/// file, and nothing is redacted — redaction would re-create the blind
-/// spot this exists to remove. So the default keeps only the exchanges a
-/// recognizer understood (analytics beacons, and Akagi's own notes about
-/// traffic it declined to intercept), and the firehose is opt-in.
+/// `record_all` expands the scope of metadata collection only. Headers,
+/// URLs and bodies are always redacted before storage and broadcasting.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HttpCaptureConfig {
     /// Record every intercepted exchange, not just recognized ones.
     /// Off by default — see the struct docs.
     pub record_all: bool,
-    /// Keep textual request/response bodies within `max_body_bytes`.
-    /// Only consulted when the exchange is being recorded at all.
+    /// Legacy compatibility field. Ignored: raw body capture is disabled.
     pub bodies: bool,
     /// Ceiling on a buffered body. Larger ones are recorded with their
     /// size and the reason they were skipped, never truncated silently.
@@ -52,7 +47,7 @@ impl Default for HttpCaptureConfig {
     fn default() -> Self {
         Self {
             record_all: false,
-            bodies: true,
+            bodies: false,
             max_body_bytes: 256 * 1024,
             static_assets: false,
         }
@@ -63,7 +58,7 @@ impl HttpCaptureConfig {
     pub fn policy(&self) -> crate::capture::http::HttpCapturePolicy {
         crate::capture::http::HttpCapturePolicy {
             record_all: self.record_all,
-            bodies: self.bodies,
+            bodies: false,
             max_body_bytes: self.max_body_bytes,
         }
     }
@@ -77,12 +72,16 @@ pub enum CaptureMode {
     Chromium,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChromiumConfig {
     /// Absolute path to a chrome/chromium binary. `""` = auto-detect.
     pub executable: String,
-    /// User-data-dir for the controlled profile. `""` = exe-adjacent
+    /// Optional existing browser port on 127.0.0.1. Zero launches an isolated browser.
+    /// Attached browsers are never closed by Akagi; only official Majsoul tabs are recorded.
+    pub attach_port: u16,
+    /// In attach mode, reads only DevToolsActivePort here; never mutates the profile.
+    /// Otherwise user-data-dir for the controlled profile. `""` = exe-adjacent
     /// `chrome-profile/` (resolved via `util::resolve_dir`, with an
     /// AppImage / read-only fallback to `<user_config_root>/chrome-profile`).
     pub user_data_dir: String,
@@ -98,10 +97,22 @@ pub struct ChromiumConfig {
     pub extra_args: Vec<String>,
 }
 
+impl std::fmt::Debug for ChromiumConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChromiumConfig")
+            .field("executable", &self.executable)
+            .field("start_url", &crate::privacy::url(&self.start_url))
+            .field("extra_args", &"[redacted]")
+            .field("force_cft", &self.force_cft)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for ChromiumConfig {
     fn default() -> Self {
         Self {
             executable: String::new(),
+            attach_port: 0,
             user_data_dir: String::new(),
             start_url: "https://game.maj-soul.com/1/".to_string(),
             cft_channel: "stable".to_string(),
@@ -135,15 +146,12 @@ mod tests {
         assert!(s.contains("mode = \"chromium\""), "got: {s}");
     }
 
-    /// The default is deliberately conservative: full HTTP capture would
-    /// put access tokens and cookies into every session file, and nothing
-    /// is redacted (redaction would re-create the blind spot the capture
-    /// exists to remove). Recognized exchanges are still recorded.
+    /// Default metadata collection is limited to recognized exchanges.
     #[test]
-    fn http_capture_is_opt_in_but_bodies_are_on_once_it_is() {
+    fn http_capture_is_opt_in_and_bodies_are_disabled() {
         let cfg = CaptureConfig::default();
         assert!(!cfg.http.record_all, "full capture must be opt-in");
-        assert!(cfg.http.bodies);
+        assert!(!cfg.http.bodies);
         assert!(!cfg.http.static_assets);
         assert_eq!(cfg.http.max_body_bytes, 256 * 1024);
 
@@ -158,6 +166,7 @@ mod tests {
             mode: CaptureMode::Chromium,
             chromium: ChromiumConfig {
                 executable: "/opt/chrome/chrome".into(),
+                attach_port: 0,
                 user_data_dir: "/tmp/profile".into(),
                 start_url: "https://example.test/".into(),
                 cft_channel: "131.0.6778.85".into(),

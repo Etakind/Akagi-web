@@ -1,3 +1,5 @@
+> 本機安全版本：請先閱讀[安全行為、依賴適用條件與手動驗收](SECURITY_HARDENING.md)。新日誌不記錄原始訊框或 HTTP 內文，應用程式內覆蓋更新已停用。
+
 <!-- markdownlint-disable MD033 MD041 -->
 
 <br/>
@@ -354,7 +356,7 @@ minisign -Vm akagi-<version>-<platform>.zip -p minisign.pub
 
 > [!TIP]
 > 重現問題後，存下 `<log_dir>/<session>/` 整個 session
-> 資料夾 — 內含應用紀錄、原始訊框、mjai 事件、bot meta，
+> 資料夾 — 內含應用紀錄、去識別化訊框中繼資料、mjai 事件、bot meta，
 > 是回報有用 bug 報告所需的所有資訊。
 
 - **MITM 模式抓不到封包。** 確認 `./ca/akagi-ca.crt`

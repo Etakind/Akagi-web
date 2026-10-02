@@ -1,3 +1,5 @@
+> Local security build: see [security behavior, dependency conditions and manual acceptance](SECURITY_HARDENING.md). New logs omit raw frames and HTTP bodies; upstream automatic installation is disabled.
+
 <!-- markdownlint-disable MD033 MD041 -->
 
 <br/>
@@ -316,7 +318,7 @@ Per-session logs land under `<log_dir>/<YYYYMMDD-HHMMSS>/`:
 <log_dir>/<session>/
 ├── all.log                       # combined tracing output
 ├── <target>.log                  # per-module filtered logs
-├── proxy.binlog                  # raw binary WS frames
+├── proxy.binlog                  # metadata-only envelopes, no wire bytes
 ├── majsoul/<flow_id>.log         # per-WebSocket flow JSON log
 ├── majsoul/<flow_id>.mjai.jsonl  # per-game mjai event stream
 └── inspector.jsonl               # frames seen by the Inspector
@@ -335,8 +337,7 @@ Folder** button reveals the session directory in the OS file manager.
 
 Protocol-level frame viewer. Three entry types:
 
-- **WS Frame** — raw binary (base64-truncated) plus the bridge's
-  first-pass parse.
+- **WS Frame** — direction, length and protocol metadata; raw payloads are omitted.
 - **MjaiEvent** — decoded events flowing to the bot.
 - **BotReaction** — bot responses with the `meta` field
   (confidence / q-values / whatever the bot emits).
@@ -350,7 +351,7 @@ Useful when debugging a bot or a bridge issue.
 
 > [!TIP]
 > Reproduce the problem, then save the session folder under
-> `<log_dir>/<session>/` — it has everything (app log, raw frames,
+> `<log_dir>/<session>/` — it has everything (app log, redacted frame metadata,
 > mjai events, bot meta) needed to file a useful bug report.
 
 - **Capture not working in MITM mode.** Make sure the CA at

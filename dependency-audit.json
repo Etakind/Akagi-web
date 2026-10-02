@@ -1,0 +1,607 @@
+[
+  {
+    "name": "fxhash",
+    "version": "0.2.1",
+    "locks": [
+      "Cargo.lock"
+    ],
+    "id": "RUSTSEC-2025-0057",
+    "summary": "fxhash - no longer maintained",
+    "details": "The fxhash crate is no longer maintained.\n\nThe repository is stale and owner is no longer active on GitHub.\n\nPlease take a look at [rustc-hash](https://github.com/rust-lang/rustc-hash) instead.\n```",
+    "references": [
+      {
+        "type": "PACKAGE",
+        "url": "https://crates.io/crates/fxhash"
+      },
+      {
+        "type": "ADVISORY",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2025-0057.html"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://github.com/cbreeden/fxhash/issues/20"
+      }
+    ],
+    "affected": [
+      {
+        "package": {
+          "name": "fxhash",
+          "ecosystem": "crates.io",
+          "purl": "pkg:cargo/fxhash"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.0.0-0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "affected_functions": null,
+          "affects": {
+            "os": [],
+            "arch": [],
+            "functions": []
+          }
+        },
+        "database_specific": {
+          "categories": [],
+          "cvss": null,
+          "informational": "unmaintained",
+          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2025-0057.json"
+        }
+      }
+    ],
+    "withdrawn": null
+  },
+  {
+    "name": "glib",
+    "version": "0.18.5",
+    "locks": [
+      "Cargo.lock"
+    ],
+    "id": "GHSA-wrw7-89jp-8q8g",
+    "summary": "Unsoundness in `Iterator` and `DoubleEndedIterator` impls for `glib::VariantStrIter`",
+    "details": "The `VariantStrIter::impl_get` function (called internally by implementations of the `Iterator` and `DoubleEndedIterator` traits for this type) was unsound, resulting in undefined behaviour.\n\nAn immutable reference `&p` to a `*mut libc::c_char` pointer initialized to `NULL` was passed as an argument to a C function that that mutates the pointer behind `&p` in-place (i.e. as an out-argument), which was unsound. After changes in recent versions of the Rust compiler, these unsound writes through `&p` now seem to be completely disregarded when building the `glib` crate with optimizations.\n\nThis subsequently caused all calls of `VariantStrIter::impl_get` to violate the safety requirements of the `std::ffi::CStr::from_ptr` function - which requires its argument to be a valid pointer to a C-style string - resulting in crashes due to `NULL` pointer dereferences.\n\nThis was fixed by passing the out-argument pointer explitly as `&mut p` instead of `&p`.\n\nThis issue has been present since this code was initially added in `glib` v0.15.0. The mismatch in mutability was likely missed (and not raised as an error by the compiler) because the C function wrapped by `VariantStrIter::impl_get` is variadic (`glib_sys::g_variant_get_child`), and the pointer in question is one of the variadic arguments.\n\n",
+    "references": [
+      {
+        "type": "WEB",
+        "url": "https://github.com/gtk-rs/gtk-rs-core/pull/1343"
+      },
+      {
+        "type": "PACKAGE",
+        "url": "https://github.com/gtk-rs/gtk-rs-core"
+      },
+      {
+        "type": "WEB",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2024-0429.html"
+      }
+    ],
+    "affected": [
+      {
+        "package": {
+          "name": "glib",
+          "ecosystem": "crates.io",
+          "purl": "pkg:cargo/glib"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.15.0"
+              },
+              {
+                "fixed": "0.20.0"
+              }
+            ]
+          }
+        ],
+        "database_specific": {
+          "source": "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2024/12/GHSA-wrw7-89jp-8q8g/GHSA-wrw7-89jp-8q8g.json"
+        }
+      }
+    ],
+    "withdrawn": null
+  },
+  {
+    "name": "glib",
+    "version": "0.18.5",
+    "locks": [
+      "Cargo.lock"
+    ],
+    "id": "RUSTSEC-2024-0429",
+    "summary": "Unsoundness in `Iterator` and `DoubleEndedIterator` impls for `glib::VariantStrIter`",
+    "details": "The `VariantStrIter::impl_get` function (called internally by implementations of the `Iterator` and `DoubleEndedIterator` traits for this type) was unsound, resulting in undefined behaviour.\n\nAn immutable reference `&p` to a `*mut libc::c_char` pointer initialized to `NULL` was passed as an argument to a C function that that mutates the pointer behind `&p` in-place (i.e. as an out-argument), which was unsound. After changes in recent versions of the Rust compiler, these unsound writes through `&p` now seem to be completely disregarded when building the `glib` crate with optimizations.\n\nThis subsequently caused all calls of `VariantStrIter::impl_get` to violate the safety requirements of the `std::ffi::CStr::from_ptr` function - which requires its argument to be a valid pointer to a C-style string - resulting in crashes due to `NULL` pointer dereferences.\n\nThis was fixed by passing the out-argument pointer explitly as `&mut p` instead of `&p`.\n\nThis issue has been present since this code was initially added in `glib` v0.15.0. The mismatch in mutability was likely missed (and not raised as an error by the compiler) because the C function wrapped by `VariantStrIter::impl_get` is variadic (`glib_sys::g_variant_get_child`), and the pointer in question is one of the variadic arguments.",
+    "references": [
+      {
+        "type": "PACKAGE",
+        "url": "https://crates.io/crates/glib"
+      },
+      {
+        "type": "ADVISORY",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2024-0429.html"
+      },
+      {
+        "type": "WEB",
+        "url": "https://github.com/gtk-rs/gtk-rs-core/pull/1343"
+      }
+    ],
+    "affected": [
+      {
+        "package": {
+          "name": "glib",
+          "ecosystem": "crates.io",
+          "purl": "pkg:cargo/glib"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.15.0"
+              },
+              {
+                "fixed": "0.20.0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "affected_functions": null,
+          "affects": {
+            "arch": [],
+            "functions": [
+              "glib::VariantStrIter::last",
+              "glib::VariantStrIter::next",
+              "glib::VariantStrIter::next_back",
+              "glib::VariantStrIter::nth",
+              "glib::VariantStrIter::nth_back"
+            ],
+            "os": []
+          }
+        },
+        "database_specific": {
+          "categories": [],
+          "cvss": null,
+          "informational": "unsound",
+          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2024-0429.json"
+        }
+      }
+    ],
+    "withdrawn": null
+  },
+  {
+    "name": "paste",
+    "version": "1.0.15",
+    "locks": [
+      "Cargo.lock",
+      "native_bot/Cargo.lock"
+    ],
+    "id": "RUSTSEC-2024-0436",
+    "summary": "paste - no longer maintained",
+    "details": "The creator of the crate `paste` has stated in the [`README.md`](https://github.com/dtolnay/paste/blob/master/README.md) \nthat this project is not longer maintained as well as archived the repository\n\n## Possible Alternative(s)\n\n- [`pastey`]: a fork of paste and is aimed to be a drop-in replacement with additional features for paste crate\n- [`with_builtin_macros`]: crate providing a [superset of `paste`'s functionality including general `macro_rules!` eager expansions](https://docs.rs/with_builtin_macros/0.1.0/with_builtin_macros/macro.with_eager_expansions.html)  and `concat!`/`concat_idents!` macros\n\n[`pastey`]: https://crates.io/crates/pastey\n[`with_builtin_macros`]: https://crates.io/crates/with_builtin_macros",
+    "references": [
+      {
+        "type": "PACKAGE",
+        "url": "https://crates.io/crates/paste"
+      },
+      {
+        "type": "ADVISORY",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2024-0436.html"
+      },
+      {
+        "type": "WEB",
+        "url": "https://github.com/dtolnay/paste"
+      }
+    ],
+    "affected": [
+      {
+        "package": {
+          "name": "paste",
+          "ecosystem": "crates.io",
+          "purl": "pkg:cargo/paste"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.0.0-0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "affected_functions": null,
+          "affects": {
+            "arch": [],
+            "functions": [],
+            "os": []
+          }
+        },
+        "database_specific": {
+          "categories": [],
+          "cvss": null,
+          "informational": "unmaintained",
+          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2024-0436.json"
+        }
+      }
+    ],
+    "withdrawn": null
+  },
+  {
+    "name": "proc-macro-error",
+    "version": "1.0.4",
+    "locks": [
+      "Cargo.lock"
+    ],
+    "id": "RUSTSEC-2024-0370",
+    "summary": "proc-macro-error is unmaintained",
+    "details": "proc-macro-error's maintainer seems to be unreachable, with no commits for 2 years, no releases pushed for 4 years, and no activity on the GitLab repo or response to email.\n\nproc-macro-error also depends on `syn 1.x`, which may be bringing duplicate dependencies into dependant build trees.\n\n## Possible Alternative(s)\n\n- [manyhow](https://crates.io/crates/manyhow)\n- [proc-macro2-diagnostics](https://github.com/SergioBenitez/proc-macro2-diagnostics)",
+    "references": [
+      {
+        "type": "PACKAGE",
+        "url": "https://crates.io/crates/proc-macro-error"
+      },
+      {
+        "type": "ADVISORY",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2024-0370.html"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://gitlab.com/CreepySkeleton/proc-macro-error/-/issues/20"
+      }
+    ],
+    "affected": [
+      {
+        "package": {
+          "name": "proc-macro-error",
+          "ecosystem": "crates.io",
+          "purl": "pkg:cargo/proc-macro-error"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.0.0-0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "affects": {
+            "os": [],
+            "functions": [],
+            "arch": []
+          },
+          "affected_functions": null
+        },
+        "database_specific": {
+          "categories": [],
+          "cvss": null,
+          "informational": "unmaintained",
+          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2024-0370.json"
+        }
+      }
+    ],
+    "withdrawn": null
+  },
+  {
+    "name": "quick-xml",
+    "version": "0.38.4",
+    "locks": [
+      "Cargo.lock"
+    ],
+    "id": "RUSTSEC-2026-0194",
+    "summary": "Quadratic run time when checking a start tag for duplicate attribute names",
+    "details": "`BytesStart::attributes()` returns an `Attributes` iterator which, by default\n(`with_checks(true)`), rejects a start tag that repeats an attribute name. For\neach attribute yielded, the iterator compared the new name against every name\nseen so far in the same tag using a linear scan, so a start tag with `N`\ndistinct attribute names cost `O(N²)` byte comparisons. There was no bound on\n`N` other than the size of the buffered start tag.\n\n## Impact\n\nAny code that parses untrusted XML and iterates a start tag's attributes with\nthe default duplicate check enabled can be made to spend CPU time quadratic in\nthe number of attributes on a single tag. Because the check is pure computation\nwith no `.await`/I/O, an I/O-based timeout on the consumer (for example a read\nor request timeout) cannot interrupt it while it runs.\n\nMeasured cost of a single start tag, release build:\n\n| Attributes on one tag | Time |\n|---|---|\n| 80,000  | ~6 s   |\n| 800,000 | ~10 min |\n\nThe cost grows with the square of the attribute count, so a start tag of a few\ntens of megabytes can stall a parsing thread for hours. No memory is exhausted\nand the parser does not crash; the effect is CPU exhaustion on the thread doing\nthe parsing: a single crafted start tag can pin a CPU core for minutes to hours,\ndenying service to that worker. A deployment that places a wall-clock bound on\nparsing, or confines it to a non-critical thread, may consider the availability\nimpact lower.\n\n## Affected code paths\n\n* `BytesStart::attributes()` / `Attributes` iterated with checks enabled (the\n  default), and `BytesStart::try_get_attribute`.\n* `NsReader`, which resolves namespaces by iterating a tag's attributes and so\n  reaches the same check internally.\n\nConsumers that iterate attributes with `.attributes().with_checks(false)` and do\nnot use `NsReader` are not affected.\n\nThis was reported as reachable by a remote, unauthenticated attacker in a\nreal-world RPKI relying party (NLnet Labs Routinator) via a crafted RRDP\n`snapshot.xml`.\n\n## Remediation\n\nUpgrade to `quick-xml >= 0.41.0`, where the duplicate check keeps the linear\nscan for start tags with a small number of attributes and switches to an `O(1)`\nhash pre-filter above a threshold, making the whole tag `O(N)`. The reported\n`AttrError::Duplicated` positions are unchanged.\n\nIf upgrading is not possible and duplicate-name detection is not required,\ndisable it with `.attributes().with_checks(false)` (this does not help\n`NsReader` consumers, which have no equivalent opt-out before 0.41.0).",
+    "references": [
+      {
+        "type": "PACKAGE",
+        "url": "https://crates.io/crates/quick-xml"
+      },
+      {
+        "type": "ADVISORY",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0194.html"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://github.com/tafia/quick-xml/issues/969"
+      },
+      {
+        "type": "WEB",
+        "url": "https://github.com/tafia/quick-xml/pull/971"
+      },
+      {
+        "type": "WEB",
+        "url": "https://github.com/tafia/quick-xml/commit/07f3db8343cf152f5bc3483ef5b3164582489bea"
+      }
+    ],
+    "affected": [
+      {
+        "package": {
+          "name": "quick-xml",
+          "ecosystem": "crates.io",
+          "purl": "pkg:cargo/quick-xml"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.0.0-0"
+              },
+              {
+                "fixed": "0.41.0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "affects": {
+            "arch": [],
+            "os": [],
+            "functions": []
+          },
+          "affected_functions": null
+        },
+        "database_specific": {
+          "informational": null,
+          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2026-0194.json",
+          "categories": [
+            "denial-of-service"
+          ],
+          "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+        }
+      }
+    ],
+    "withdrawn": null
+  },
+  {
+    "name": "quick-xml",
+    "version": "0.38.4",
+    "locks": [
+      "Cargo.lock"
+    ],
+    "id": "RUSTSEC-2026-0195",
+    "summary": "Unbounded namespace-declaration allocation in `NsReader` enables memory-exhaustion denial of service",
+    "details": "`NsReader` resolves namespaces by calling `NamespaceResolver::push` for every\n`Start`/`Empty` event *before* the event is returned to the caller. `push`\niterated all `xmlns` / `xmlns:*` attributes on the start tag and, for each one,\nappended the prefix bytes to an internal buffer and pushed a `NamespaceBinding`\n(32 bytes on 64-bit) to an internal `Vec`, with no upper bound on the number of\ndeclarations.\n\n## Impact\n\nA start tag with `N` namespace declarations drove roughly `3×` the tag's byte\nsize in `NamespaceResolver` heap, allocated *inside* `quick-xml` before the\n`NsReader` consumer ever received the event and could inspect or reject it. A\nconsumer that bounds its *input* size therefore still cannot bound this\nallocation: an `M`-byte start tag yields on the order of `3 × M` bytes of\nresolver heap the caller never sees.\n\nOn untrusted XML this lets a remote, unauthenticated attacker force large heap\nallocations with a single start tag. With several `NsReader`s running\nconcurrently on independent inputs (a common server pattern), the allocations\nstack and can exhaust process memory, causing the operating system to kill the\nprocess (OOM). This was confirmed against a real-world RPKI relying party (NLnet\nLabs Routinator), where concurrent RRDP validation workers parsing a crafted\n`snapshot.xml` exceeded the memory limit and the process was OOM-killed.\n\n## Affected code paths\n\nConsumers using `NsReader` (which always calls `NamespaceResolver::push` before\nyielding `Start`/`Empty`), or calling `NamespaceResolver::push` directly. A plain\n`Reader` that does not perform namespace resolution is not affected.\n\n## Remediation\n\nUpgrade to `quick-xml >= 0.41.0`. `NamespaceResolver::push` now rejects a start\ntag that declares more than `DEFAULT_MAX_DECLARATIONS_PER_ELEMENT` (256)\nnamespace bindings, returning the new `NamespaceError::TooManyDeclarations`\ninstead of allocating without limit. The limit is configurable via\n`NamespaceResolver::set_max_declarations_per_element` (use `usize::MAX` to\nrestore the previous unbounded behavior), and `NsReader::resolver_mut()` is\nprovided to reach it.\n\nThere is no clean workaround for `NsReader` consumers before 0.41.0, as the\nallocation happens inside the reader with no configuration knob to cap it.",
+    "references": [
+      {
+        "type": "PACKAGE",
+        "url": "https://crates.io/crates/quick-xml"
+      },
+      {
+        "type": "ADVISORY",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0195.html"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://github.com/tafia/quick-xml/issues/970"
+      },
+      {
+        "type": "WEB",
+        "url": "https://github.com/tafia/quick-xml/commit/7ca25266e94987210daa864889ab15c9332c8a2a"
+      }
+    ],
+    "affected": [
+      {
+        "package": {
+          "name": "quick-xml",
+          "ecosystem": "crates.io",
+          "purl": "pkg:cargo/quick-xml"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.0.0-0"
+              },
+              {
+                "fixed": "0.41.0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "affects": {
+            "arch": [],
+            "os": [],
+            "functions": []
+          },
+          "affected_functions": null
+        },
+        "database_specific": {
+          "cvss": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+          "informational": null,
+          "categories": [
+            "denial-of-service"
+          ],
+          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2026-0195.json"
+        }
+      }
+    ],
+    "withdrawn": null
+  },
+  {
+    "name": "rand",
+    "version": "0.7.3",
+    "locks": [
+      "Cargo.lock"
+    ],
+    "id": "GHSA-cq8v-f236-94qc",
+    "summary": "Rand is unsound with a custom logger using rand::rng()",
+    "details": "It has been reported (by @lopopolo) that the `rand` library is [unsound](https://rust-lang.github.io/unsafe-code-guidelines/glossary.html#soundness-of-code--of-a-library) (i.e. that safe code using the public API can cause Undefined Behaviour) when all the following conditions are met:\n\n- The `log` and `thread_rng` features are enabled\n- A [custom logger](https://docs.rs/log/latest/log/#implementing-a-logger) is defined\n- The custom logger accesses `rand::rng()` (previously `rand::thread_rng()`) and calls any `TryRng` (previously `RngCore`) methods on `ThreadRng`\n- The `ThreadRng` (attempts to) reseed while called from the custom logger (this happens every 64 kB of generated data)\n- Trace-level logging is enabled or warn-level logging is enabled and the random source (the `getrandom` crate) is unable to provide a new seed\n\n`TryRng` (previously `RngCore`) methods for `ThreadRng` use `unsafe` code to cast `*mut BlockRng<ReseedingCore>` to `&mut BlockRng<ReseedingCore>`. When all the above conditions are met this results in an aliased mutable reference, violating the Stacked Borrows rules. Miri is able to detect this violation in sample code. Since construction of [aliased mutable references is Undefined Behaviour](https://doc.rust-lang.org/stable/nomicon/references.html), the behaviour of optimized builds is hard to predict.",
+    "references": [
+      {
+        "type": "WEB",
+        "url": "https://github.com/rust-random/rand/pull/1763"
+      },
+      {
+        "type": "PACKAGE",
+        "url": "https://github.com/rust-random/rand"
+      },
+      {
+        "type": "WEB",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0097.html"
+      }
+    ],
+    "affected": [
+      {
+        "package": {
+          "name": "rand",
+          "ecosystem": "crates.io",
+          "purl": "pkg:cargo/rand"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.9.0"
+              },
+              {
+                "fixed": "0.9.3"
+              }
+            ]
+          }
+        ],
+        "database_specific": {
+          "source": "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-cq8v-f236-94qc/GHSA-cq8v-f236-94qc.json"
+        }
+      },
+      {
+        "package": {
+          "name": "rand",
+          "ecosystem": "crates.io",
+          "purl": "pkg:cargo/rand"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.10.0"
+              },
+              {
+                "fixed": "0.10.1"
+              }
+            ]
+          }
+        ],
+        "versions": [
+          "0.10.0"
+        ],
+        "database_specific": {
+          "source": "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-cq8v-f236-94qc/GHSA-cq8v-f236-94qc.json"
+        }
+      },
+      {
+        "package": {
+          "name": "rand",
+          "ecosystem": "crates.io",
+          "purl": "pkg:cargo/rand"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.7.0"
+              },
+              {
+                "fixed": "0.8.6"
+              }
+            ]
+          }
+        ],
+        "database_specific": {
+          "source": "https://github.com/github/advisory-database/blob/main/advisories/github-reviewed/2026/04/GHSA-cq8v-f236-94qc/GHSA-cq8v-f236-94qc.json"
+        }
+      }
+    ],
+    "withdrawn": null
+  },
+  {
+    "name": "rand",
+    "version": "0.7.3",
+    "locks": [
+      "Cargo.lock"
+    ],
+    "id": "RUSTSEC-2026-0097",
+    "summary": "Rand is unsound with a custom logger using `rand::rng()`",
+    "details": "It has been reported (by [@lopopolo](https://github.com/lopopolo)) that the `rand` library is [unsound](https://rust-lang.github.io/unsafe-code-guidelines/glossary.html#soundness-of-code--of-a-library) (i.e. that safe code using the public API can cause Undefined Behaviour) when all the following conditions are met:\n\n- The `log` and `thread_rng` features are enabled\n- A [custom logger](https://docs.rs/log/latest/log/#implementing-a-logger) is defined\n- The custom logger accesses `rand::rng()` (previously `rand::thread_rng()`) and calls any `TryRng` (previously `RngCore`) methods on `ThreadRng`\n- The `ThreadRng` (attempts to) reseed while called from the custom logger (this happens every 64 kB of generated data)\n- Trace-level logging is enabled or warn-level logging is enabled and the random source (the `getrandom` crate) is unable to provide a new seed\n\n`TryRng` (previously `RngCore`) methods for `ThreadRng` use `unsafe` code to cast `*mut BlockRng<ReseedingCore>` to `&mut BlockRng<ReseedingCore>`. When all the above conditions are met this results in an aliased mutable reference, violating the Stacked Borrows rules. Miri is able to detect this violation in sample code. Since construction of [aliased mutable references is Undefined Behaviour](https://doc.rust-lang.org/stable/nomicon/references.html), the behaviour of optimized builds is hard to predict.",
+    "references": [
+      {
+        "type": "PACKAGE",
+        "url": "https://crates.io/crates/rand"
+      },
+      {
+        "type": "ADVISORY",
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0097.html"
+      },
+      {
+        "type": "WEB",
+        "url": "https://github.com/rust-random/rand/pull/1763"
+      }
+    ],
+    "affected": [
+      {
+        "package": {
+          "name": "rand",
+          "ecosystem": "crates.io",
+          "purl": "pkg:cargo/rand"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.7.0"
+              },
+              {
+                "fixed": "0.8.6"
+              },
+              {
+                "introduced": "0.9.0"
+              },
+              {
+                "fixed": "0.9.3"
+              },
+              {
+                "introduced": "0.10.0"
+              },
+              {
+                "fixed": "0.10.1"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "affects": {
+            "arch": [],
+            "os": [],
+            "functions": [
+              "rand::rng",
+              "rand::thread_rng"
+            ]
+          },
+          "affected_functions": null
+        },
+        "database_specific": {
+          "cvss": null,
+          "informational": "unsound",
+          "source": "https://github.com/rustsec/advisory-db/blob/osv/crates/RUSTSEC-2026-0097.json",
+          "categories": []
+        }
+      }
+    ],
+    "withdrawn": null
+  }
+]

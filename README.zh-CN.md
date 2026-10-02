@@ -1,3 +1,5 @@
+> 本地安全构建：请先阅读[安全行为、依赖适用条件与手动验收](SECURITY_HARDENING.md)。新日志不记录原始帧或 HTTP 正文，应用内覆盖更新已禁用。
+
 <!-- markdownlint-disable MD033 MD041 -->
 
 <br/>
@@ -334,8 +336,7 @@ Akagi 运行期间会下载三类内容：应用更新与 bot 安装来自
 - **自定义镜像前缀** — 公共加速站时常失效；填一个你所在地区
   可用的（如 `https://gh-proxy.com`），它会优先于内置列表使用。
 
-Chrome for Testing 无需设置：Google 端点不可达时会自动改用
-[npmmirror](https://registry.npmmirror.com) 镜像下载。
+Chrome for Testing 仅使用 Google 官方 HTTPS 清单和下载源；不可达时报告失败。不会自动移除 macOS 隔离属性。
 
 镜像属于第三方，因此完整性靠签名而不是传输渠道保证：每个
 release zip 都用 [minisign](https://jedisct1.github.io/minisign/)
@@ -354,7 +355,7 @@ minisign -Vm akagi-<version>-<platform>.zip -p minisign.pub
 
 > [!TIP]
 > 复现问题后，保存 `<log_dir>/<session>/` 整个 session
-> 目录 — 内含应用日志、原始帧、mjai 事件、bot meta，
+> 目录 — 内含应用日志、脱敏帧元数据、mjai 事件、bot meta，
 > 是提交有用 bug 报告所需的全部信息。
 
 - **MITM 模式抓不到包。** 确认 `./ca/akagi-ca.crt`

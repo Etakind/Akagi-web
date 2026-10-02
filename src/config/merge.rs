@@ -35,7 +35,9 @@ const OPAQUE_TABLES: [&[&str]; 1] = [&["autoplay", "delay", "lognormal"]];
 /// Fails only when `existing` is not valid TOML — there is nothing to merge
 /// into then, and the caller decides whether to rewrite the file.
 pub fn merge_into<T: serde::Serialize>(config: &T, existing: &str) -> Result<String, String> {
-    let mut doc: DocumentMut = existing.parse().map_err(|e| format!("{e}"))?;
+    let mut doc: DocumentMut = existing
+        .parse()
+        .map_err(|_| "invalid existing configuration; details omitted".to_string())?;
     let fresh: DocumentMut = toml::to_string_pretty(config)
         .map_err(|e| format!("{e}"))?
         .parse()

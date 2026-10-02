@@ -22,7 +22,7 @@ use crate::schema::LogEntry;
 use anyhow::Result;
 use chrono::Local;
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -59,7 +59,7 @@ impl LogStreamLayer {
     /// Channel `capacity` is the broadcast ring size; 1024 is generous
     /// for normal workloads and still bounds memory under TRACE storms.
     pub fn open(path: &Path, capacity: usize) -> Result<(Self, LogStreamHandle)> {
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let file = crate::util::private_fs::append(path)?;
         let file = Arc::new(Mutex::new(file));
         let (tx, _) = broadcast::channel(capacity);
         let handle = LogStreamHandle { tx: tx.clone() };
@@ -141,14 +141,30 @@ impl Visit for FieldVisitor {
     }
 }
 
+pub(super) fn safe_fields(event: &Event<'_>) -> (String, HashMap<String, serde_json::Value>) {
+    let mut visitor = FieldVisitor::new();
+    event.record(&mut visitor);
+    if crate::privacy::sensitive_target(event.metadata().target()) {
+        // Do not try to regex-redact arbitrary library errors or protocol bytes.
+        visitor
+            .fields
+            .retain(|_, v| v.is_number() || v.is_boolean());
+        (
+            "I/O diagnostic; free-form details omitted by privacy policy".into(),
+            visitor.fields,
+        )
+    } else {
+        (visitor.message.unwrap_or_default(), visitor.fields)
+    }
+}
+
 impl<S> Layer<S> for LogStreamLayer
 where
     S: Subscriber,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let meta = event.metadata();
-        let mut visitor = FieldVisitor::new();
-        event.record(&mut visitor);
+        let (message, fields) = safe_fields(event);
 
         let entry = LogEntry {
             ts_ms: Local::now().timestamp_millis(),
@@ -156,8 +172,8 @@ where
             target: meta.target().to_string(),
             file: meta.file().map(|s| s.to_string()),
             line: meta.line(),
-            message: visitor.message.unwrap_or_default(),
-            fields: visitor.fields,
+            message,
+            fields,
         };
 
         // Disk write: serialize one JSON object + newline. Lock contention

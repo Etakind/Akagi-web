@@ -73,6 +73,7 @@ export type Notification = {
 export type CaptureMode = 'mitm' | 'chromium'
 
 export type ChromiumConfig = {
+  attach_port?: number
   executable: string
   user_data_dir: string
   start_url: string
@@ -721,7 +722,8 @@ export type FrameDirection = 'up' | 'down'
 
 export type FrameRaw =
   | { format: 'text'; data: string }
-  | { format: 'binary'; data: string } // base64
+  | { format: 'binary'; data: string } // legacy base64
+  | { format: 'redacted'; data: string }
 
 export type ParsedFrame = {
   method: string

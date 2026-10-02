@@ -28,7 +28,7 @@ pub mod annotate;
 
 use crate::schema::InspectorEntry;
 use anyhow::Result;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -58,7 +58,7 @@ impl InspectorWriter {
     /// broadcast `Sender`. The caller passes the same `Sender` into
     /// `Session` so the IPC layer can hand out receivers later.
     pub fn open(path: &Path, capacity: usize) -> Result<(Self, InspectorBus)> {
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let file = crate::util::private_fs::append(path)?;
         let (tx, _) = broadcast::channel(capacity);
         let writer = Self {
             inner: Arc::new(Inner {
@@ -73,6 +73,7 @@ impl InspectorWriter {
     /// or the broadcast are swallowed so emit-site code stays simple
     /// (the inspector is observability, not an authoritative store).
     pub fn record(&self, entry: InspectorEntry) {
+        let entry = crate::privacy::inspector(entry);
         if let Ok(mut f) = self.inner.file.lock() {
             if serde_json::to_writer(&mut *f, &entry).is_ok() {
                 let _ = f.write_all(b"\n");
@@ -115,11 +116,11 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         let line = body.lines().next().unwrap();
         let from_disk: InspectorEntry = serde_json::from_str(line).unwrap();
-        assert_eq!(from_disk, entry);
+        assert_eq!(from_disk, crate::privacy::inspector(entry.clone()));
 
         // Wire
         let from_wire = rx.try_recv().unwrap();
-        assert_eq!(from_wire, entry);
+        assert_eq!(from_wire, crate::privacy::inspector(entry));
     }
 
     #[test]

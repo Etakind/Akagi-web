@@ -334,6 +334,7 @@ impl ApiClient {
             .json(&body)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("POST /v3/react")?;
         let resp = check(resp, "react").await?;
         resp.json::<ReactResponse>()
@@ -350,6 +351,7 @@ impl ApiClient {
             .bearer_auth(&self.key)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("GET /v3/key")?;
         let resp = check(resp, "key status").await?;
         resp.json::<KeyStatus>()
@@ -366,6 +368,7 @@ impl ApiClient {
             .bearer_auth(&self.key)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("GET /v3/models")?;
         let resp = check(resp, "models").await?;
         #[derive(Deserialize)]
@@ -413,6 +416,7 @@ impl ApiClient {
             .body(gz)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("POST /v3/review")?;
         let resp = check(resp, "review submit").await?;
         resp.json::<ReviewSubmitted>()
@@ -433,6 +437,7 @@ impl ApiClient {
             .bearer_auth(&self.key)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("GET /v3/review/<id>")?;
         let resp = check(resp, "review status").await?;
         resp.json::<ReviewJobStatus>()
@@ -452,6 +457,7 @@ impl ApiClient {
             .bearer_auth(&self.key)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("POST /v3/review/<id>/share")?;
         let resp = check(resp, "review share").await?;
         resp.json::<ShareIssued>()
@@ -469,6 +475,7 @@ impl ApiClient {
             .bearer_auth(&self.key)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("GET /v3/shares")?;
         let resp = check(resp, "shares").await?;
         #[derive(Deserialize)]
@@ -496,6 +503,7 @@ impl ApiClient {
             .bearer_auth(&self.key)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .context("DELETE /v3/shared/<id>")?;
         check(resp, "share revoke").await?;
         Ok(())
@@ -545,6 +553,7 @@ pub async fn redeem(
         .json(&body)
         .send()
         .await
+        .map_err(reqwest::Error::without_url)
         .context("POST /v3/redeem")?;
     let resp = check(resp, "redeem").await?;
     resp.json::<RedeemResponse>()
@@ -557,7 +566,12 @@ pub async fn health(base_url: &str, proxy: &str) -> Result<Health> {
     let base = normalize_base(base_url);
     let http = http_client(REQUEST_TIMEOUT, proxy)?;
     let url = format!("{base}/healthz");
-    let resp = http.get(&url).send().await.context("GET /healthz")?;
+    let resp = http
+        .get(&url)
+        .send()
+        .await
+        .map_err(reqwest::Error::without_url)
+        .context("GET /healthz")?;
     let resp = check(resp, "health").await?;
     resp.json::<Health>()
         .await
@@ -601,8 +615,8 @@ pub(crate) fn normalize_base(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_string()
 }
 
-/// Turn a non-2xx response into a descriptive error, surfacing the server's
-/// generic `{"error": "..."}` message and any `Retry-After` hint. Success
+/// Turn non-2xx responses into status-only errors with numeric Retry-After.
+/// Untrusted error bodies may echo credentials and are never surfaced. Success
 /// passes the response through untouched for the caller to deserialize.
 /// Shared with the purchase client ([`crate::bot::purchase`]).
 pub(crate) async fn check(resp: reqwest::Response, what: &str) -> Result<reqwest::Response> {
@@ -615,19 +629,10 @@ pub(crate) async fn check(resp: reqwest::Response, what: &str) -> Result<reqwest
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    let raw = resp.text().await.unwrap_or_default();
-    let msg = serde_json::from_str::<Value>(&raw)
-        .ok()
-        .and_then(|v| {
-            v.get("error")
-                .and_then(Value::as_str)
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| raw.chars().take(200).collect());
     let code = status.as_u16();
-    match retry_after {
-        Some(ra) => bail!("{what} failed: HTTP {code} — {msg} (retry after {ra}s)"),
-        None => bail!("{what} failed: HTTP {code} — {msg}"),
+    match retry_after.and_then(|s| s.parse::<u64>().ok()) {
+        Some(ra) => bail!("{what} failed: HTTP {code} (retry after {ra}s)"),
+        None => bail!("{what} failed: HTTP {code}"),
     }
 }
 
@@ -1186,7 +1191,7 @@ mod tests {
 
     /// A non-2xx surfaces the server's `error` message and the `Retry-After` hint.
     #[tokio::test]
-    async fn http_error_carries_the_server_message() {
+    async fn http_error_omits_untrusted_server_message() {
         let (base, served) = mock_http(vec![(
             "429 Too Many Requests",
             r#"{"error":"rate limited"}"#.into(),
@@ -1195,7 +1200,7 @@ mod tests {
         let err = client.key_status().await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("429"), "{msg}");
-        assert!(msg.contains("rate limited"), "{msg}");
+        assert!(!msg.contains("rate limited"), "{msg}");
         let _ = served.join();
     }
 

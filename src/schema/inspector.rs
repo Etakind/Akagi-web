@@ -42,6 +42,8 @@ pub enum FrameDirection {
 pub enum FrameRaw {
     Text(String),
     Binary(String),
+    /// New captures retain metadata only. Old Text/Binary records still read.
+    Redacted(String),
 }
 
 /// Bridge's structured view of a parsed frame.

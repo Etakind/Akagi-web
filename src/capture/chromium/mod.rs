@@ -12,7 +12,9 @@
 
 pub mod cdp;
 pub mod cft;
+mod connection;
 pub mod detect;
+mod discovery;
 pub mod launch;
 pub mod profile;
 
@@ -74,11 +76,70 @@ impl ChromiumBackend {
 #[async_trait]
 impl CaptureBackend for ChromiumBackend {
     async fn run(self: Box<Self>, ctx: CaptureCtx, shutdown: ShutdownToken) -> Result<()> {
+        if self.cfg.attach_port != 0 {
+            let profile = (!self.cfg.user_data_dir.is_empty())
+                .then(|| std::path::Path::new(&self.cfg.user_data_dir));
+            let attached = async {
+                let mut retries = 0u8;
+                loop {
+                    // Re-read the locator on every attempt; a browser restart
+                    // can change its endpoint while retaining the same port.
+                    let endpoint = launch::existing_endpoint(self.cfg.attach_port, profile).await?;
+                    let bridges = Arc::new(FlowBridges::<cdp::FlowKey>::new(
+                        ctx.session.clone(),
+                        ctx.platform,
+                        crate::bridge::BridgeHooks {
+                            notify: Some(ctx.notify_bus.clone()),
+                            time_budget: ctx.autoplay.as_ref().map(|a| a.time_budget.clone()),
+                            input_watch: ctx.autoplay.as_ref().map(|a| a.input_watch.clone()),
+                            ..Default::default()
+                        },
+                    ));
+                    info!("attaching existing local browser; official Majsoul pages only");
+                    let result = cdp::run(
+                        &endpoint,
+                        bridges,
+                        ctx.mjai_bus.clone(),
+                        ctx.session.inspector(),
+                        ctx.autoplay.clone(),
+                        ctx.http.clone(),
+                        ctx.notify_bus.clone(),
+                        true,
+                    )
+                    .await;
+                    let Err(error) = result else {
+                        return Ok(());
+                    };
+                    if !connection::retry_allowed(&error, retries) {
+                        return Err(error);
+                    }
+                    retries += 1;
+                    warn!(
+                        reconnect_attempt = retries as u64,
+                        "CDP reconnecting after transport failure"
+                    );
+                    let _ = ctx.notify_bus.send(crate::schema::Notification::warn("Reconnecting browser capture")
+                        .body("The browser connection stopped responding. Reconnecting; an existing game may need a game-page reconnect to restore its state.")
+                        .id("cdp-connection"));
+                    tokio::time::sleep(std::time::Duration::from_secs(1 << retries)).await;
+                }
+            };
+            let result = tokio::select! {
+                _ = shutdown.wait() => Ok(()),
+                result = attached => result,
+            };
+            // Also runs when shutdown cancels cdp::run before its cleanup.
+            if let Some(autoplay) = &ctx.autoplay {
+                *autoplay.page.write().await = None;
+                *autoplay.canvas_rect.write().await = None;
+            }
+            return result;
+        }
         let exe = self
             .resolve_executable()
             .context("resolving chromium executable")?;
         let profile_dir = profile::resolve_profile_dir(&self.cfg.user_data_dir)?;
-        std::fs::create_dir_all(&profile_dir)
+        crate::util::private_fs::directory(&profile_dir)
             .with_context(|| format!("creating chromium profile dir {}", profile_dir.display()))?;
         // A browser we previously launched may still be running with this
         // profile (e.g. the user closed Akagi but left Chrome open). Spawning a
@@ -143,6 +204,7 @@ impl CaptureBackend for ChromiumBackend {
             ctx.autoplay.clone(),
             ctx.http.clone(),
             ctx.notify_bus.clone(),
+            false,
         );
         let mut cdp_fut = Box::pin(cdp_run);
         let shutdown_fut = shutdown.wait();

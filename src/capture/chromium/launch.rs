@@ -38,12 +38,14 @@ struct RemoteDebuggingConfig {
 }
 
 pub fn spawn(exe: &Path, profile: &Path, cfg: &ChromiumConfig) -> Result<SpawnedChromium> {
+    validate_extra_args(&cfg.extra_args)?;
     let remote_debugging = remote_debugging_config(&cfg.extra_args)?;
     let mut cmd = Command::new(exe);
     cmd.arg(format!("--user-data-dir={}", profile.display()));
     if let Some(arg) = &remote_debugging.arg {
         cmd.arg(arg);
     }
+    cmd.arg("--remote-debugging-address=127.0.0.1");
     cmd.arg("--no-first-run")
         .arg("--no-default-browser-check")
         .arg("--disable-features=TranslateUI,InterestFeedContentSuggestions")
@@ -77,6 +79,8 @@ pub fn spawn(exe: &Path, profile: &Path, cfg: &ChromiumConfig) -> Result<Spawned
     // previous run was force-killed (SIGKILL fallback marks the profile
     // as crashed; without this the user sees the bubble on every relaunch).
     suppress_crash_recovery_prompt(profile);
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     cmd.kill_on_drop(true);
     let child = cmd
         .spawn()
@@ -93,6 +97,28 @@ pub fn spawn(exe: &Path, profile: &Path, cfg: &ChromiumConfig) -> Result<Spawned
         child,
         remote_debugging_port: remote_debugging.port,
     })
+}
+
+fn validate_extra_args(args: &[String]) -> Result<()> {
+    for arg in args {
+        let name = arg.split('=').next().unwrap_or("");
+        if [
+            "--remote-debugging-address",
+            "--remote-allow-origins",
+            "--user-data-dir",
+            "--ignore-certificate-errors",
+            "--ignore-certificate-errors-spki-list",
+            "--allow-insecure-localhost",
+            "--disable-web-security",
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+        ]
+        .contains(&name)
+        {
+            return Err(anyhow!("unsafe Chromium argument refused"));
+        }
+    }
+    Ok(())
 }
 
 fn remote_debugging_config(extra_args: &[String]) -> Result<RemoteDebuggingConfig> {
@@ -233,6 +259,84 @@ pub async fn devtools_http_alive(port: u16) -> bool {
         }
     }
     false
+}
+
+/// Discover an explicitly opted-in existing browser, without proxying or redirects.
+pub async fn existing_endpoint(port: u16, profile: Option<&Path>) -> Result<String> {
+    if port == 0 {
+        return Err(anyhow!("an existing browser requires a nonzero port"));
+    }
+    // UI-enabled remote debugging (current Edge) deliberately exposes no
+    // unauthenticated HTTP discovery API. Read its local locator instead.
+    // Never alter permissions, session restore state, or the user's profile.
+    if let Some(profile) = profile {
+        match read_existing_port_file(&profile.join(DEVTOOLS_FILE), port) {
+            Ok(endpoint) => return Ok(endpoint),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(anyhow!("existing browser locator rejected")),
+        }
+    }
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(HTTP_DISCOVERY_TIMEOUT)
+        .build()?;
+    let endpoint =
+        fetch_devtools_endpoint(&client, &format!("http://127.0.0.1:{port}/json/version")).await?;
+    validate_existing_endpoint(&endpoint, port)?;
+    Ok(endpoint)
+}
+
+fn read_existing_port_file(path: &Path, port: u16) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind, Read};
+    let reject = || Error::new(ErrorKind::InvalidData, "existing browser locator rejected");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(reject());
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > 4096 {
+        return Err(reject());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.nlink() != 1 {
+            return Err(reject());
+        }
+    }
+    let mut body = String::new();
+    file.take(4097).read_to_string(&mut body)?;
+    if body.len() > 4096 {
+        return Err(reject());
+    }
+    let endpoint = parse_devtools_port(&body).ok_or_else(reject)?;
+    validate_existing_endpoint(&endpoint, port).map_err(|_| reject())?;
+    Ok(endpoint)
+}
+
+fn validate_existing_endpoint(endpoint: &str, port: u16) -> Result<()> {
+    let url =
+        reqwest::Url::parse(endpoint).map_err(|_| anyhow!("invalid local debugging endpoint"))?;
+    if url.scheme() != "ws"
+        || url.host_str() != Some("127.0.0.1")
+        || url.port() != Some(port)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.path().starts_with("/devtools/browser/")
+    {
+        return Err(anyhow!("non-local debugging endpoint rejected"));
+    }
+    Ok(())
 }
 
 async fn fetch_devtools_endpoint(client: &reqwest::Client, url: &str) -> Result<String> {
@@ -563,5 +667,65 @@ mod tests {
     #[test]
     fn rejects_garbage_port() {
         assert!(parse_devtools_port("not-a-port\n/path\n").is_none());
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    #[test]
+    fn refuses_debugger_exposure_and_disabled_browser_security() {
+        for arg in [
+            "--remote-debugging-address=0.0.0.0",
+            "--remote-debugging-address",
+            "--ignore-certificate-errors",
+            "--no-sandbox",
+            "--disable-web-security",
+            "--remote-allow-origins=*",
+        ] {
+            assert!(validate_extra_args(&[arg.into()]).is_err());
+        }
+        assert!(validate_extra_args(&["--remote-debugging-port=0".into()]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod existing_browser_tests {
+    use super::*;
+    #[test]
+    fn local_locator_preserves_profile_and_requires_matching_port() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(DEVTOOLS_FILE);
+        let body = "9222\n/devtools/browser/test-locator\n";
+        std::fs::write(&path, body).unwrap();
+        let before = std::fs::metadata(&path).unwrap().permissions();
+        assert!(read_existing_port_file(&path, 9222).is_ok());
+        assert!(read_existing_port_file(&path, 9333).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions(), before);
+        #[cfg(unix)]
+        {
+            let link = temp.path().join("link");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(read_existing_port_file(&link, 9222).is_err());
+        }
+        std::fs::write(&path, "9222\n@evil.test/devtools/browser/test\n").unwrap();
+        assert!(read_existing_port_file(&path, 9222).is_err());
+    }
+
+    #[test]
+    fn discovery_cannot_redirect_capture_off_loopback() {
+        assert!(
+            validate_existing_endpoint("ws://127.0.0.1:9222/devtools/browser/test", 9222).is_ok()
+        );
+        for endpoint in [
+            "ws://evil.test:9222/devtools/browser/test",
+            "ws://127.0.0.1:9223/devtools/browser/test",
+            "ws://user:secret@127.0.0.1:9222/devtools/browser/test",
+            "ws://127.0.0.1:9222/devtools/browser/test?token=x",
+            "ws://127.0.0.1:9222/other",
+        ] {
+            assert!(validate_existing_endpoint(endpoint, 9222).is_err());
+        }
     }
 }
