@@ -12,7 +12,7 @@
 //!   (`Idle/Loading/Ready/Error/Stopped`). Producer: `BotManager`.
 //!   Consumer: `ipc` forwarder (UI loading spinner).
 //! - [`CaptureStatusBus`]: lifecycle of the active capture backend
-//!   (`Stopped/Starting/Running/Error` × `kind: Mitm | Chromium`).
+//!   (`Stopped/Starting/Running/Error` × `kind: Chromium`).
 //!   Producer: `ipc::commands` / capture supervisor. Consumer: `ipc`
 //!   forwarder.
 //! - [`NotifyBus`]: ad-hoc toast notifications. Any subsystem may push;

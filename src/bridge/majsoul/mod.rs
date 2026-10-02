@@ -157,7 +157,7 @@ pub struct MajsoulBridge {
     num_players: u8,
     /// Shared slot for the server's per-decision-window time budget
     /// (`operation.time_fixed` / `time_add`, both ms). `None` when the
-    /// autoplay context isn't wired (MITM path, tests).
+    /// autoplay context isn't wired (tests or replay tools).
     time_budget: Option<SharedTimeBudget>,
     /// True while `handle_game_restore` replays historical actions through
     /// `handle_action_prototype`. Replayed operations must not clobber the
@@ -170,7 +170,7 @@ pub struct MajsoulBridge {
     restore_budget: Option<TimeBudget>,
     /// Counter of the client's own uplink input commands, shared with the
     /// autoplay manager for click verification (see `autoplay::verify`).
-    /// `None` when the autoplay context isn't wired (MITM path, tests).
+    /// `None` when the autoplay context isn't wired (tests or replay tools).
     input_watch: Option<crate::autoplay::verify::SharedInputWatch>,
 }
 
@@ -1740,8 +1740,7 @@ mod tests {
         assert!(watch.non_discard_since(ticket));
     }
 
-    /// Without a watch attached (the state the bridge is in on the MITM
-    /// path) the same frames must still parse harmlessly.
+    /// Without a watch attached (the state the bridge is in without a browser context) the same frames must still parse harmlessly.
     #[test]
     fn input_commands_are_harmless_without_a_watch() {
         let mut bridge = MajsoulBridge::new(None, None);

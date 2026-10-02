@@ -1,21 +1,9 @@
-//! Lifecycle supervisor for the active capture backend.
-//!
-//! One supervisor instance multiplexes the two backends
-//! (`HudsuckerBackend`, `ChromiumBackend`) — the one that runs is
-//! determined by `cfg.capture.mode`. Owns `state.capture_control`
-//! (start/stop oneshot + force-close `Notify`) and emits onto
-//! `state.capture_status_bus`.
-//!
-//! `CaptureStatus::Starting` is reserved for future use but not emitted
-//! today — both backends do their startup work synchronously inside
-//! `spawn_capture_supervisor` before returning, so we transition
-//! straight to `Running`.
+//! 浏览器采集生命周期：启动、停止、重启以及界面状态通知。
 
 use crate::capture::{
-    chromium::ChromiumBackend, hudsucker_backend::HudsuckerBackend, CaptureBackend, CaptureCtx,
-    CaptureKind as RtCaptureKind, ShutdownToken,
+    chromium::ChromiumBackend, CaptureBackend, CaptureCtx, CaptureKind as RtCaptureKind,
+    ShutdownToken,
 };
-use crate::config::CaptureMode;
 use crate::ipc::state::AppState;
 use crate::schema::{CaptureKind, CaptureStatus, Notification};
 use anyhow::Result;
@@ -25,7 +13,6 @@ use tracing::{error, info, warn};
 
 fn schema_kind(k: RtCaptureKind) -> CaptureKind {
     match k {
-        RtCaptureKind::Mitm => CaptureKind::Mitm,
         RtCaptureKind::Chromium => CaptureKind::Chromium,
     }
 }
@@ -33,21 +20,20 @@ fn schema_kind(k: RtCaptureKind) -> CaptureKind {
 /// Stop the running backend (if any) and wait briefly for the
 /// supervisor task to flip status to `Stopped` before returning. Used by
 /// `restart_capture` so the spawn that follows starts on a clean slate.
-async fn stop_and_wait(state: &AppState, max_wait: Duration) {
+pub async fn stop_and_wait(state: &AppState, max_wait: Duration) {
     // Subscribe *before* signalling shutdown so we can't lose the
     // resulting status emission to a race.
     let mut rx = state.capture_status_bus.subscribe();
 
-    let (stop, force_close) = {
+    let stop = {
         let mut ctl = state.capture_control.lock().await;
-        (ctl.stop.take(), ctl.force_close.clone())
+        ctl.stop.take()
     };
     let Some(tx) = stop else {
         return; // not running
     };
     // Kick in-flight WS flows so existing connections actually disconnect
     // (mirrors stop_capture semantics).
-    force_close.notify_waiters();
     let _ = tx.send(());
 
     let _ = tokio::time::timeout(max_wait, async {
@@ -85,38 +71,19 @@ pub async fn spawn_capture_supervisor(state: AppState) -> Result<()> {
         }
     }
 
-    let (mode, proxy_cfg, chromium_cfg, http_cfg, platform) = {
+    let (chromium_cfg, http_cfg, platform) = {
         let cfg = state.config.read().await;
+        if let Some(reason) = &cfg.capture.unavailable_reason {
+            anyhow::bail!("{reason}");
+        }
         (
-            cfg.capture.mode,
-            cfg.proxy.clone(),
             cfg.capture.chromium.clone(),
             cfg.capture.http.clone(),
             cfg.platform.kind,
         )
     };
-
-    // Build a fresh shutdown token for this run. Stored in
-    // `capture_control.stop` as a oneshot-via-Notify shim: command-side
-    // `stop_capture` calls `notify_waiters()` on `force_close` for the
-    // hudsucker WS-kick AND fires the oneshot; we plumb both here.
     let (shutdown_token, shutdown_notify) = ShutdownToken::new();
-
-    // Build backend per mode.
-    let backend: Box<dyn CaptureBackend> = match mode {
-        CaptureMode::Mitm => {
-            let force_close = {
-                let ctl = state.capture_control.lock().await;
-                ctl.force_close.clone()
-            };
-            Box::new(HudsuckerBackend::new(
-                proxy_cfg.clone(),
-                http_cfg.clone(),
-                force_close,
-            ))
-        }
-        CaptureMode::Chromium => Box::new(ChromiumBackend::new(chromium_cfg)),
-    };
+    let backend: Box<dyn CaptureBackend> = Box::new(ChromiumBackend::new(chromium_cfg));
     let descriptor = backend.descriptor();
     let kind = schema_kind(descriptor.kind);
 
@@ -124,7 +91,6 @@ pub async fn spawn_capture_supervisor(state: AppState) -> Result<()> {
     // sees an immediate transition from Stopped → Running. Backends that
     // fail mid-startup will flip back to Error from the spawned task.
     let label = match descriptor.kind {
-        RtCaptureKind::Mitm => proxy_cfg.addr.clone(),
         RtCaptureKind::Chromium => format!("chromium ({})", descriptor.label),
     };
     let running_status = CaptureStatus::Running {
@@ -209,7 +175,6 @@ pub async fn spawn_capture_supervisor(state: AppState) -> Result<()> {
 
 fn kind_label(k: CaptureKind) -> &'static str {
     match k {
-        CaptureKind::Mitm => "MITM",
         CaptureKind::Chromium => "Chromium",
     }
 }

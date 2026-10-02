@@ -366,7 +366,6 @@
     "proxy": "代理",
     "enabled": "啟用",
     "address": "位址",
-    "ca_dir": "CA 目錄",
     "logging": "日誌",
     "directory": "目錄",
     "app_log_level": "應用日誌等級",
@@ -393,15 +392,7 @@
     "platform_game_label": "遊戲",
     "platform_game_hint": "選擇要解析哪個遊戲的 WebSocket 協定。儲存後會重新啟動 capture，下一場對局即會由新的 bridge 接手。",
     "capture_card_title": "封包擷取",
-    "capture_mode_label": "模式",
-    "capture_mode_hint": "MITM 代理需要 CA 憑證 + 系統代理；Chromium 模式則啟動受控瀏覽器，無需前置設定。",
-    "capture_mitm_option": "MITM 代理",
     "capture_chromium_option": "Chromium 瀏覽器(實驗性)",
-    "capture_mitm_only": "此平台沒有網頁用戶端 — 僅支援 MITM 擷取。",
-    "proxy_enabled": "啟用代理",
-    "block_telemetry": "封鎖遊戲遙測",
-    "block_telemetry_hint": "丟棄遊戲送往阿里雲的分析遙測封包而不轉發,讓登入統計、裝置與帳號識別碼完全不離開你的電腦。許多廣告攔截器本來就會封鎖這個主機,因此缺少遙測封包並不代表使用了工具。預設開啟。",
-    "ca_dir_hint": "CA 根憑證／金鑰寫入的目錄。",
     "browser_executable": "瀏覽器執行檔",
     "browser_executable_hint": "留空以自動偵測。",
     "detect_status_initial": "點擊「偵測」掃描已安裝的瀏覽器。",
@@ -457,8 +448,6 @@
       "enable": "啟用自動打牌",
       "enable_help": "啟用後,Akagi 會替你執行 BOT 選擇的動作。需使用 Chromium 擷取模式並開著遊戲分頁。雀魂會在牌桌上點擊;天鳳則直接透過遊戲連線送出。",
       "platform_note": "以上點擊時間參數僅適用於雀魂。天鳳的自動打牌是直接透過遊戲連線送出動作,不做點擊,因此只會套用下方的思考時間模型,不會用到上面的設定。",
-      "requires_chromium": "自動打牌需要使用 Chromium 擷取模式。",
-      "rc_warning_title": "麻雀一番街自動打牌風險警告",
       "rc_warning_desc": "麻雀一番街的自動打牌是透過 MITM 注入遊戲封包的方式實現的,在安全性上仍有疑慮,可能導致帳號被封禁。請自行評估風險後再使用。",
       "rc_warning_ack": "我已了解風險",
       "pre_click_delay_min": "點擊前延遲 (最小, ms)",
@@ -490,7 +479,10 @@
     "overlay_top_n": "顯示幾個建議",
     "overlay_opacity": "不透明度",
     "overlay_always_on_top": "保持在其他視窗上方",
-    "overlay_always_on_top_hint": "如果想把懸浮視窗放到第二個螢幕，可以關掉這個選項。另外請注意：遊戲若使用「獨佔全螢幕」，會蓋住所有置頂視窗，請改用無邊框或視窗模式。"
+    "overlay_always_on_top_hint": "如果想把懸浮視窗放到第二個螢幕，可以關掉這個選項。另外請注意：遊戲若使用「獨佔全螢幕」，會蓋住所有置頂視窗，請改用無邊框或視窗模式。",
+    "capture_enabled": "啟動瀏覽器擷取",
+    "attach_port": "常用瀏覽器偵錯連接埠",
+    "attach_port_hint": "0：啟動獨立瀏覽器；非零：連接已開啟偵錯的瀏覽器，僅使用 127.0.0.1。"
   },
   "setup": {
     "title": "Akagi 設定",
@@ -502,23 +494,6 @@
       "body1": "Akagi 會監聽你的麻將遊戲流量，並同時執行一個 mjai 協定的 Bot 提供即時建議。在 Bot 動工之前，Akagi 需要先有一個方式來擷取遊戲的 WebSocket 流量。",
       "body2": "下一頁你可以在「傳統 MITM 代理」(功能強但需要信任 CA 憑證)與「受控的 Chromium 瀏覽器」(無需設定代理／憑證 — Akagi 會自己啟動瀏覽器)之間擇一。",
       "links_label": "專案首頁與官方社群："
-    },
-    "platform": {
-      "title": "選擇遊戲平台",
-      "desc": "Akagi 一次只能監聽一個遊戲的 WebSocket 協定。之後可以在「設定」中變更。"
-    },
-    "mode": {
-      "title": "選擇擷取模式",
-      "chromium_title": "Chromium 瀏覽器(建議)",
-      "chromium_desc": "Akagi 會啟動一個受控的瀏覽器，並透過 Chrome DevTools Protocol 攔截 WebSocket 封包。不需要系統代理，也不需要 CA 憑證。支援雀魂(Mahjong Soul)與天鳳(Tenhou)；不支援麻雀一番街(無 Web 客戶端)。",
-      "mitm_title": "MITM 代理(進階)",
-      "mitm_desc": "以 hudsucker 為基礎的 MITM。你需要設定系統代理並信任 Akagi 的自簽 CA。麻雀一番街必須使用此模式(無 Web 客戶端)。"
-    },
-    "mitm": {
-      "title": "MITM 代理設定",
-      "listen": "監聽位址",
-      "ca_dir_hint": "CA 憑證會在首次啟動時自動產生。請先在作業系統或瀏覽器的憑證儲存區信任 .pem / .crt 檔，再讓遊戲走這個代理。",
-      "proxy_enabled_hint": "主開關 — 開啟後 Akagi 會自動啟動代理。"
     },
     "chromium": {
       "title": "Chromium 設定",
@@ -554,9 +529,6 @@
       "platform_label": "遊戲平台：",
       "mode_label": "模式：",
       "mode_chromium": "Chromium 瀏覽器",
-      "mode_mitm": "MITM 代理",
-      "listen_label": "監聽位址：",
-      "ca_dir_label": "CA 目錄：",
       "exec_label": "執行檔：",
       "exec_cft": "(Chrome for Testing — {{channel}})",
       "exec_autodetect": "(自動偵測：系統 → Chrome for Testing)",
@@ -729,7 +701,6 @@
     "description": "顯示 Bot、capture 與目前日誌 session 的即時狀態。",
     "bot_card_title": "Bot",
     "capture_chromium": "Capture(Chromium)",
-    "capture_mitm": "Capture(MITM)",
     "log_session": "日誌 Session",
     "last_analysis": "最新一次分析",
     "open_dashboard": "開啟對局分析"
@@ -816,9 +787,7 @@
     "majsoul": "雀魂",
     "majsoul_desc": "game.maj-soul.com — 四麻 + 三麻",
     "tenhou": "天鳳",
-    "tenhou_desc": "tenhou.net — 四麻 + 三麻",
     "riichi_city": "麻雀一番街",
-    "riichi_city_desc": "原生用戶端 — 僅 MITM · 四麻 + 三麻",
     "mjai": "mjai"
   },
   "updates": {
@@ -861,13 +830,6 @@
     }
   },
   "announcements": {
-    "akagims": {
-      "card_title": "AkagiMS — 專為雀魂打造的獨立版",
-      "card_desc": "內建遊戲客戶端、全自動打牌、即開即用。下載、解壓、執行就好。",
-      "card_dismiss": "關閉",
-      "screenshot_alt": "AkagiMS 正在全自動模式下自己打一局段位戰",
-      "view_download": "前往下載"
-    },
     "dialog": {
       "title": "公告",
       "intro": "版本更新重點與專案消息。",
@@ -878,15 +840,11 @@
     "entries": {
       "v3_7_0": {
         "title": "麻雀一番街自動打牌,對局覆盤(Beta)",
-        "rc_autoplay_title": "麻雀一番街自動打牌",
-        "rc_autoplay_desc": "讓 Akagi 在麻雀一番街自動幫你出牌、鳴牌與立直,全程免動手,四麻與三麻皆支援。",
         "review_title": "對局覆盤(Beta)",
         "review_desc": "將歷史紀錄中的對局送交 AI 進行整場覆盤,在 MJOT 檢視器中查看每一手與 AI 選擇的一致程度,並可產生連結分享結果。"
       },
       "v3_6_0": {
         "title": "天鳳自動打牌,更新來源可選擇",
-        "tenhou_autoplay_title": "天鳳自動打牌",
-        "tenhou_autoplay_desc": "讓 Akagi 在天鳳自動幫你出牌、鳴牌與立直,全程免動手。",
         "update_source_title": "更新來源可選擇",
         "update_source_desc": "自動更新現在可以選擇下載來源,並提供鏡像選項,在 GitHub 較慢的地區也能更快、更穩定地更新。"
       },
@@ -897,19 +855,6 @@
         "checkout_desc": "不用離開應用程式即可購買或續期 MJOT 時數——支援信用卡、Google Pay、Apple Pay 與支付寶。",
         "health_title": "更聰明的續期與健康檢查",
         "health_desc": "續期預設加到目前的金鑰上,服務健康檢查現在會回報佇列深度與降載狀態。"
-      },
-      "akagims": {
-        "title": "AkagiMS 登場:專為雀魂打造的獨立應用程式",
-        "majsoul_title": "專為雀魂設計",
-        "majsoul_desc": "只為一款遊戲打造,一切都圍繞它調校。",
-        "embedded_title": "內建遊戲客戶端",
-        "embedded_desc": "雀魂直接在程式視窗裡開啟 — 不用代理、不用憑證、不用第二個瀏覽器。",
-        "fullauto_title": "全自動打牌",
-        "fullauto_desc": "自己排段位戰、打完、關掉結算畫面、再排下一局。",
-        "zero_setup_title": "即開即用",
-        "zero_setup_desc": "下載、解壓、執行。AI 就在程式裡。",
-        "image_alt": "AkagiMS 正在全自動模式下自己打一局段位戰",
-        "link_label": "前往下載"
       }
     }
   },

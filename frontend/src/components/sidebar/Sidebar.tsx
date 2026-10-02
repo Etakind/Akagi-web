@@ -15,7 +15,7 @@ import { useSidebar } from '@/hooks/useSidebar'
 import { useIsNarrow } from '@/hooks/useIsNarrow'
 import { GithubMark, DiscordMark } from '@/components/BrandMarks'
 import { AkagiIcon, AkagiWordmark } from '@/components/BrandLogo'
-import { AKAGI_GITHUB_URL, AKAGI_DISCORD_URL, AKAGIMS_GITHUB_URL, openExternal } from '@/lib/external'
+import { AKAGI_GITHUB_URL, AKAGI_DISCORD_URL, openExternal } from '@/lib/external'
 import { getAppVersion, VERSION_FALLBACK } from '@/lib/appVersion'
 import { LANG_LABELS, SUPPORTED_LANGS, type SupportedLang } from '@/i18n'
 import { selectHasNotifiableUpdate, useUpdaterStore } from '@/stores/updaterStore'
@@ -188,13 +188,6 @@ export function Sidebar() {
             onClick={() => openExternal(AKAGI_DISCORD_URL)}
           >
             <DiscordMark className="h-4 w-4" />
-          </SidebarIconButton>
-          <SidebarIconButton
-            label="AkagiMS"
-            collapsed={!open}
-            onClick={() => openExternal(AKAGIMS_GITHUB_URL)}
-          >
-            <AkagiIcon className="h-4 w-4" />
           </SidebarIconButton>
         </div>
         {open && (

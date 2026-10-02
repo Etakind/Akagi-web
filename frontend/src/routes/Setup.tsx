@@ -16,10 +16,8 @@ import { Toaster } from '@/components/ui/sonner'
 import { InstallBlockingOverlay } from '@/components/InstallBlockingOverlay'
 import { NativeApiFields } from '@/components/NativeApiFields'
 import { invoke } from '@/lib/tauri'
-import { withInstallBlock } from '@/lib/install'
 import { checkApiBeforeSave } from '@/lib/nativeApi'
 import { mergeExternal } from '@/lib/merge'
-import { withFirstRunCaptureDefault } from '@/lib/setupDefaults'
 import { useTauriBridge } from '@/hooks/useTauriBridge'
 import { useConfigStore } from '@/stores/configStore'
 import { ManifestField } from '@/components/ManifestField'
@@ -27,26 +25,23 @@ import { GithubMark, DiscordMark } from '@/components/BrandMarks'
 import { MjotLogo } from '@/components/MjotBrand'
 import { NATIVE_3P, NATIVE_4P, isNativeBot } from '@/lib/nativeBots'
 import { AKAGI_GITHUB_URL, AKAGI_DISCORD_URL, openExternal } from '@/lib/external'
-import { PLATFORMS, platformInfo } from '@/lib/platforms'
+import { platformInfo } from '@/lib/platforms'
 import { LANG_LABELS, SUPPORTED_LANGS, type SupportedLang } from '@/i18n'
-import type { AppConfig, BotInfo, BotSettings, DetectedBrowser, PlatformKind } from '@/types'
+import type { AppConfig, BotInfo, BotSettings, DetectedBrowser } from '@/types'
 
-type Step = 'welcome' | 'platform' | 'mode' | 'config' | 'bots' | 'configure' | 'finish'
+type Step = 'welcome' | 'config' | 'configure' | 'finish'
 
 // The 'bots' (install Mortal from GitHub) step is intentionally omitted: the
 // built-in native bot is the zero-install default, so the wizard no longer
 // installs an author bot. The 'configure' (bot settings) step is kept as the
 // future home for built-in-bot settings. `BotsStep` is retained but unreachable.
-const STEPS: Step[] = ['welcome', 'platform', 'mode', 'config', 'configure', 'finish']
+const STEPS: Step[] = ['welcome', 'config', 'configure', 'finish']
 
 // Author-provided MJAI bots installed by the first-run wizard. Same
 // install path as the manual Bots → Install From GitHub flow, just
 // pre-filled with author defaults.
-const BOT_REPO = 'shinkuan/Akagi-MjaiBot-Mortal'
 const BOT_4P_NAME = 'mortal'
 const BOT_3P_NAME = 'mortal3p'
-const BOT_4P_ASSET = 'release4p.zip'
-const BOT_3P_ASSET = 'release3p.zip'
 // The built-in bots (shared names from `@/lib/nativeBots`) are always
 // available (weights are embedded in the binary), so a native active bot is a
 // working assistant — the wizard must not report "no bot / no analysis".
@@ -65,7 +60,7 @@ export function Setup() {
   // (whichever path fires first depending on whether `stored` was ready at
   // mount) yields the same draft.
   const [draft, setDraft] = useState<AppConfig | null>(() =>
-    stored ? withFirstRunCaptureDefault(stored) : null,
+    stored ? stored : null,
   )
   const [step, setStep] = useState<Step>('welcome')
   const [busy, setBusy] = useState(false)
@@ -92,7 +87,7 @@ export function Setup() {
     if (!prev) {
       // Seed the editable draft once the config loads (first run → Chromium
       // pre-selected; see the useState initializer above).
-      setDraft(withFirstRunCaptureDefault(stored))
+      setDraft(stored)
       return
     }
     // The stored config changed mid-wizard (e.g. the purchase store persisted
@@ -227,10 +222,7 @@ export function Setup() {
         </CardHeader>
         <CardContent className="grid gap-6">
           {step === 'welcome' && <WelcomeStep />}
-          {step === 'platform' && <PlatformStep draft={draft} setDraft={setDraft} />}
-          {step === 'mode' && <ModeStep draft={draft} setDraft={setDraft} />}
-          {step === 'config' && <ConfigStep draft={draft} setDraft={setDraft} />}
-          {step === 'bots' && <BotsStep />}
+          {step === 'config' && <ChromiumConfigStep draft={draft} setDraft={setDraft} />}
           {step === 'configure' && (
             <ConfigureBotsStep
               draft={draft}
@@ -279,60 +271,6 @@ function Stepper({ current }: { current: number }) {
         <div
           key={i}
           className={`h-1 flex-1 rounded ${i <= current ? 'bg-primary' : 'bg-muted'}`}
-        />
-      ))}
-    </div>
-  )
-}
-
-function PlatformStep({
-  draft,
-  setDraft,
-}: {
-  draft: AppConfig
-  setDraft: (c: AppConfig) => void
-}) {
-  const { t } = useTranslation()
-  const current = draft.platform.kind
-  // Switching platforms inside the first-run wizard always rewrites
-  // chromium.start_url to the new platform's default — a user that's
-  // walking through the wizard hasn't had a chance to customise yet,
-  // and an old default left over from a previous platform pick is
-  // strictly wrong (it would land the launched browser on the wrong
-  // game). Re-customisation, if needed, happens on the Chromium config
-  // step that comes next.
-  const pick = (kind: PlatformKind) => {
-    if (kind === current) return
-    const info = platformInfo(kind)
-    setDraft({
-      ...draft,
-      platform: { kind },
-      capture: {
-        ...draft.capture,
-        // Native-only platforms (no web client) can't use Chromium capture —
-        // force MITM so the next steps configure the right backend.
-        mode: info.supportsChromium ? draft.capture.mode : 'mitm',
-        chromium: {
-          ...draft.capture.chromium,
-          start_url: info.defaultStartUrl,
-        },
-      },
-    })
-  }
-
-  return (
-    <div className="grid gap-3">
-      <h2 className="text-lg font-semibold">{t('setup.platform.title')}</h2>
-      <p className="text-sm text-muted-foreground">
-        {t('setup.platform.desc')}
-      </p>
-      {PLATFORMS.map((p) => (
-        <ModeCard
-          key={p.kind}
-          title={t(p.labelKey)}
-          active={current === p.kind}
-          onClick={() => pick(p.kind)}
-          description={t(p.descriptionKey)}
         />
       ))}
     </div>
@@ -398,125 +336,6 @@ function WelcomeStep() {
       </div>
     </div>
   )
-}
-
-function ModeStep({
-  draft,
-  setDraft,
-}: {
-  draft: AppConfig
-  setDraft: (c: AppConfig) => void
-}) {
-  const { t } = useTranslation()
-  const supportsChromium = platformInfo(draft.platform.kind).supportsChromium
-  // A native-only platform can only be captured via MITM; never leave the
-  // draft on the (now unavailable) Chromium mode.
-  const mode = supportsChromium ? draft.capture.mode : 'mitm'
-  return (
-    <div className="grid gap-3">
-      <h2 className="text-lg font-semibold">{t('setup.mode.title')}</h2>
-      <ModeCard
-        title={t('setup.mode.chromium_title')}
-        active={supportsChromium && mode === 'chromium'}
-        disabled={!supportsChromium}
-        onClick={() => setDraft({ ...draft, capture: { ...draft.capture, mode: 'chromium' } })}
-        description={t('setup.mode.chromium_desc')}
-      />
-      <ModeCard
-        title={t('setup.mode.mitm_title')}
-        active={mode === 'mitm'}
-        onClick={() => setDraft({ ...draft, capture: { ...draft.capture, mode: 'mitm' } })}
-        description={t('setup.mode.mitm_desc')}
-      />
-    </div>
-  )
-}
-
-function ModeCard({
-  title,
-  description,
-  active,
-  onClick,
-  disabled = false,
-}: {
-  title: string
-  description: string
-  active: boolean
-  onClick: () => void
-  disabled?: boolean
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`text-left rounded-md border p-4 transition-colors ${
-        disabled
-          ? 'border-border opacity-50 cursor-not-allowed'
-          : active
-            ? 'border-primary bg-primary/5'
-            : 'border-border hover:border-primary/40'
-      }`}
-    >
-      <div className="flex items-center gap-2">
-        <span
-          className={`h-3 w-3 rounded-full border-2 ${
-            active ? 'border-primary bg-primary' : 'border-muted-foreground/40'
-          }`}
-        />
-        <span className="font-medium">{title}</span>
-      </div>
-      <p className="text-sm text-muted-foreground mt-2">{description}</p>
-    </button>
-  )
-}
-
-function ConfigStep({
-  draft,
-  setDraft,
-}: {
-  draft: AppConfig
-  setDraft: (c: AppConfig) => void
-}) {
-  const { t } = useTranslation()
-  if (draft.capture.mode === 'mitm') {
-    return (
-      <div className="grid gap-3">
-        <h2 className="text-lg font-semibold">{t('setup.mitm.title')}</h2>
-        <Field label={t('setup.mitm.listen')}>
-          <Input
-            value={draft.proxy.addr}
-            onChange={(e) => setDraft({ ...draft, proxy: { ...draft.proxy, addr: e.target.value } })}
-            placeholder="127.0.0.1:23410"
-          />
-        </Field>
-        <Field
-          label={t('settings.ca_dir')}
-          hint={t('setup.mitm.ca_dir_hint')}
-        >
-          <Input
-            value={draft.proxy.ca_dir}
-            onChange={(e) => setDraft({ ...draft, proxy: { ...draft.proxy, ca_dir: e.target.value } })}
-          />
-        </Field>
-        <Field label={t('settings.proxy_enabled')} hint={t('setup.mitm.proxy_enabled_hint')}>
-          <Select
-            value={draft.proxy.enabled ? 'on' : 'off'}
-            onValueChange={(v) => setDraft({ ...draft, proxy: { ...draft.proxy, enabled: v === 'on' } })}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="on">{t('common.on')}</SelectItem>
-              <SelectItem value="off">{t('common.off')}</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
-      </div>
-    )
-  }
-  return <ChromiumConfigStep draft={draft} setDraft={setDraft} />
 }
 
 function ChromiumConfigStep({
@@ -586,6 +405,17 @@ function ChromiumConfigStep({
   return (
     <div className="grid gap-3">
       <h2 className="text-lg font-semibold">{t('setup.chromium.title')}</h2>
+      {draft.capture.unavailable_reason && <p role="alert">{draft.capture.unavailable_reason}</p>}
+      <Field label={t('settings.capture_enabled')}>
+        <Select value={draft.capture.enabled ? 'on' : 'off'} onValueChange={(v) => setDraft({ ...draft, capture: { ...draft.capture, enabled: v === 'on', unavailable_reason: null } })}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent><SelectItem value="on">{t('common.on')}</SelectItem><SelectItem value="off">{t('common.off')}</SelectItem></SelectContent>
+        </Select>
+      </Field>
+      <Field label={t('settings.attach_port')} hint={t('settings.attach_port_hint')}>
+        <Input type="number" min={0} max={65535} step={1} value={chromium.attach_port ?? 0}
+          onChange={(e) => setChromium({ attach_port: Math.max(0, Math.min(65535, Math.trunc(Number(e.target.value) || 0))) })} />
+      </Field>
       <Field label={t('settings.browser_executable')} hint={t('setup.chromium.exec_hint')}>
         <Input
           value={chromium.executable}
@@ -637,142 +467,20 @@ function ChromiumConfigStep({
       <Field
         label={t('settings.start_url')}
         hint={t('settings.start_url_hint', {
-          platform: t(platformInfo(draft.platform.kind).labelKey),
-          url: platformInfo(draft.platform.kind).defaultStartUrl,
+          platform: t(platformInfo().labelKey),
+          url: platformInfo().defaultStartUrl,
         })}
       >
         <Input
           value={chromium.start_url}
           onChange={(e) => setChromium({ start_url: e.target.value })}
-          placeholder={platformInfo(draft.platform.kind).defaultStartUrl}
+          placeholder={platformInfo().defaultStartUrl}
         />
       </Field>
       {!ready && (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
           {t('setup.chromium.warning_no_browser')}
         </div>
-      )}
-    </div>
-  )
-}
-
-function BotsStep() {
-  const { t } = useTranslation()
-  const [installed, setInstalled] = useState<BotInfo[] | null>(null)
-  const [installing, setInstalling] = useState<'4p' | '3p' | null>(null)
-  const [errors, setErrors] = useState<{ [k: string]: string }>({})
-
-  const refresh = async () => {
-    try {
-      const list = await invoke<BotInfo[]>('list_bots')
-      setInstalled(list)
-    } catch {
-      setInstalled([])
-    }
-  }
-
-  useEffect(() => {
-    refresh()
-  }, [])
-
-  const has4p = installed?.some((b) => b.name === BOT_4P_NAME) ?? false
-  const has3p = installed?.some((b) => b.name === BOT_3P_NAME) ?? false
-
-  const install = async (mode: '4p' | '3p') => {
-    setInstalling(mode)
-    setErrors((e) => {
-      const rest = { ...e }
-      delete rest[mode]
-      return rest
-    })
-    try {
-      await withInstallBlock(() =>
-        invoke('install_bot_from_github', {
-          repo: BOT_REPO,
-          assetGlob: mode === '4p' ? BOT_4P_ASSET : BOT_3P_ASSET,
-          name: mode === '4p' ? BOT_4P_NAME : BOT_3P_NAME,
-        }),
-      )
-      await refresh()
-    } catch (e) {
-      setErrors((prev) => ({ ...prev, [mode]: String(e) }))
-    } finally {
-      setInstalling(null)
-    }
-  }
-
-  return (
-    <div className="grid gap-3">
-      <h2 className="text-lg font-semibold">{t('setup.bots.title')}</h2>
-      <p className="text-sm text-muted-foreground">
-        {t('setup.bots.desc')}
-      </p>
-      <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-        <b>{t('setup.bots.license_label')}</b>{' '}
-        {t('setup.bots.license_body', { license: 'AGPL-3.0' })}
-      </div>
-      <BotInstallCard
-        title={t('setup.bots.yonma_title')}
-        description={t('setup.bots.yonma_desc')}
-        installed={has4p}
-        installing={installing === '4p'}
-        disabled={installing !== null}
-        error={errors['4p']}
-        onInstall={() => install('4p')}
-      />
-      <BotInstallCard
-        title={t('setup.bots.sanma_title')}
-        description={t('setup.bots.sanma_desc')}
-        installed={has3p}
-        installing={installing === '3p'}
-        disabled={installing !== null}
-        error={errors['3p']}
-        onInstall={() => install('3p')}
-      />
-      <p className="text-xs text-muted-foreground">
-        {t('setup.bots.install_note', { cmd: 'uv sync', file: 'pyproject.toml' })}
-      </p>
-    </div>
-  )
-}
-
-function BotInstallCard({
-  title,
-  description,
-  installed,
-  installing,
-  disabled,
-  error,
-  onInstall,
-}: {
-  title: string
-  description: string
-  installed: boolean
-  installing: boolean
-  disabled: boolean
-  error?: string
-  onInstall: () => void
-}) {
-  const { t } = useTranslation()
-  return (
-    <div className="rounded-md border p-3 grid gap-2">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="font-medium">{title}</div>
-          <div className="text-xs text-muted-foreground">{description}</div>
-        </div>
-        {installed ? (
-          <span className="text-xs px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-            {t('common.installed')}
-          </span>
-        ) : (
-          <Button onClick={onInstall} disabled={disabled} size="sm">
-            {installing ? t('common.installing') : t('common.install')}
-          </Button>
-        )}
-      </div>
-      {error && (
-        <div className="text-xs text-red-400 font-mono break-all">{error}</div>
       )}
     </div>
   )
@@ -992,14 +700,8 @@ function FinishStep({ draft }: { draft: AppConfig }) {
     <div className="grid gap-3">
       <h2 className="text-lg font-semibold">{t('setup.finish.title')}</h2>
       <div className="rounded-md border border-border/50 p-3 text-sm">
-        <div><b>{t('setup.finish.platform_label')}</b> {t(platformInfo(draft.platform.kind).labelKey)}</div>
-        <div><b>{t('setup.finish.mode_label')}</b> {m === 'chromium' ? t('setup.finish.mode_chromium') : t('setup.finish.mode_mitm')}</div>
-        {m === 'mitm' && (
-          <>
-            <div><b>{t('setup.finish.listen_label')}</b> {draft.proxy.addr}</div>
-            <div><b>{t('setup.finish.ca_dir_label')}</b> {draft.proxy.ca_dir}</div>
-          </>
-        )}
+        <div><b>{t('setup.finish.platform_label')}</b> {t(platformInfo().labelKey)}</div>
+        <div><b>{t('setup.finish.mode_label')}</b> {t('setup.finish.mode_chromium')}</div>
         {m === 'chromium' && (
           <>
             <div>

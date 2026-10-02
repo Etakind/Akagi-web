@@ -1,19 +1,7 @@
-//! Capture transports — the layer that supplies WebSocket frames to the
-//! [`crate::bridge::Bridge`] parser.
-//!
-//! Two backends today:
-//! - [`hudsucker_backend::HudsuckerBackend`] — MITM proxy (legacy, requires
-//!   system proxy + CA cert install).
-//! - [`chromium::ChromiumBackend`] — controlled Chromium browser, intercepts
-//!   WebSocket frames via CDP. No proxy/CA setup.
-//!
-//! Both implement [`CaptureBackend`] and feed frames through [`flow::FlowBridges`]
-//! into the platform bridge, which emits mjai events on [`crate::event_bus::MjaiBus`].
+//! 浏览器采集：通过 CDP 接收官方雀魂页面的网络事件，交给牌局解析层。
 
 pub mod chromium;
 pub mod flow;
-pub mod http;
-pub mod hudsucker_backend;
 
 use crate::autoplay::AutoplayContext;
 use crate::config::Platform;
@@ -30,14 +18,12 @@ use tokio::sync::Notify;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureKind {
-    Mitm,
     Chromium,
 }
 
 impl CaptureKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            CaptureKind::Mitm => "mitm",
             CaptureKind::Chromium => "chromium",
         }
     }
@@ -49,8 +35,6 @@ impl CaptureKind {
 #[derive(Debug, Clone)]
 pub struct CaptureDescriptor {
     pub kind: CaptureKind,
-    /// Human-readable description (listen addr for MITM, executable path
-    /// for Chromium). Surface in UI; do not parse.
     pub label: String,
 }
 
@@ -83,10 +67,6 @@ pub struct CaptureCtx {
     pub platform: Platform,
     pub mjai_bus: MjaiBus,
     pub notify_bus: NotifyBus,
-    /// Shared with the autoplay manager. The chromium backend writes the
-    /// per-tab `Page` handle here when it observes a Majsoul WS;
-    /// autoplay reads it to dispatch `Input.dispatchMouseEvent`. The
-    /// MITM backend simply ignores this — it has no `Page`.
     pub autoplay: Option<Arc<AutoplayContext>>,
     /// What to record of the HTTP traffic this backend intercepts. Both
     /// backends honour it; `static_assets` is chromium-only.

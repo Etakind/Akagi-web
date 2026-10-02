@@ -130,14 +130,12 @@ pub enum BotStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureKind {
-    Mitm,
     Chromium,
 }
 
 /// Lifecycle of the active capture backend.
 ///
-/// `descriptor` carries a human-readable label (proxy listen addr for
-/// MITM, executable path for Chromium) — surface in UI, do not parse.
+/// descriptor 是浏览器路径等展示文本，不作为协议字段解析。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CaptureStatus {
@@ -394,14 +392,14 @@ mod tests {
     #[test]
     fn capture_status_running_round_trips() {
         let s = CaptureStatus::Running {
-            kind: CaptureKind::Mitm,
+            kind: CaptureKind::Chromium,
             descriptor: "127.0.0.1:23410".into(),
         };
         let j = serde_json::to_string(&s).unwrap();
         let back: CaptureStatus = serde_json::from_str(&j).unwrap();
         assert_eq!(back, s);
         assert!(j.contains(r#""state":"running""#));
-        assert!(j.contains(r#""kind":"mitm""#));
+        assert!(j.contains(r#""kind":"chromium""#));
         assert!(j.contains(r#""descriptor":"127.0.0.1:23410""#));
     }
 
@@ -467,8 +465,8 @@ mod tests {
         let e = LogEntry {
             ts_ms: 1_700_000_000_000,
             level: "WARN".into(),
-            target: "akagi::proxy::handler".into(),
-            file: Some("src/proxy/handler.rs".into()),
+            target: "akagi::capture::chromium".into(),
+            file: Some("src/capture/chromium/mod.rs".into()),
             line: Some(42),
             message: "stalled".into(),
             fields,

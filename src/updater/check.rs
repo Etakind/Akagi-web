@@ -65,7 +65,6 @@ pub fn triple_for_current_platform() -> Option<&'static str> {
 
 fn triple_for(os: &str, arch: &str) -> Option<&'static str> {
     match (os, arch) {
-        ("linux", "x86_64") => Some("linux-x64"),
         ("macos", "aarch64") => Some("macos-arm64"),
         ("windows", "x86_64") => Some("windows-x64"),
         _ => None,
@@ -186,7 +185,7 @@ mod tests {
 
     #[test]
     fn triple_for_known_triples() {
-        assert_eq!(triple_for("linux", "x86_64"), Some("linux-x64"));
+        assert_eq!(triple_for("linux", "x86_64"), None);
         assert_eq!(triple_for("macos", "aarch64"), Some("macos-arm64"));
         assert_eq!(triple_for("windows", "x86_64"), Some("windows-x64"));
     }
@@ -206,28 +205,28 @@ mod tests {
     #[test]
     fn expected_asset_name_formats_correctly() {
         assert_eq!(
-            expected_asset_name("3.0.12", "linux-x64"),
-            "akagi-3.0.12-linux-x64.zip"
+            expected_asset_name("3.0.12", "macos-arm64"),
+            "akagi-3.0.12-macos-arm64.zip"
         );
     }
 
     #[test]
     fn pick_release_asset_matches_triple_suffix() {
         let assets = vec![
-            asset("akagi-3.0.12-linux-x64.zip", None, Some(10)),
+            asset("akagi-3.0.12-macos-arm64.zip", None, Some(10)),
             asset("akagi-3.0.12-macos-arm64.zip", None, Some(20)),
             asset("akagi-3.0.12-windows-x64.zip", None, Some(30)),
             asset("checksums.txt", None, None),
         ];
         assert_eq!(
-            pick_release_asset(&assets, "linux-x64").map(|a| a.name.as_str()),
-            Some("akagi-3.0.12-linux-x64.zip")
+            pick_release_asset(&assets, "macos-arm64").map(|a| a.name.as_str()),
+            Some("akagi-3.0.12-macos-arm64.zip")
         );
         assert_eq!(
             pick_release_asset(&assets, "windows-x64").map(|a| a.name.as_str()),
             Some("akagi-3.0.12-windows-x64.zip")
         );
-        assert!(pick_release_asset(&assets, "linux-arm64").is_none());
+        assert!(pick_release_asset(&assets, "unsupported-target").is_none());
     }
 
     #[test]
@@ -308,11 +307,11 @@ mod tests {
     fn build_update_info_returns_none_for_equal_version() {
         let release = release_with(
             "v3.0.11",
-            vec![asset("akagi-3.0.11-linux-x64.zip", None, Some(1))],
+            vec![asset("akagi-3.0.11-macos-arm64.zip", None, Some(1))],
         );
         let info = build_update_info(
             "3.0.11",
-            "linux-x64",
+            "macos-arm64",
             "owner/repo",
             &release,
             Source::Direct,
@@ -327,7 +326,7 @@ mod tests {
             "v3.0.12",
             vec![
                 asset(
-                    "akagi-3.0.12-linux-x64.zip",
+                    "akagi-3.0.12-macos-arm64.zip",
                     Some("sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"),
                     Some(12345),
                 ),
@@ -336,7 +335,7 @@ mod tests {
         );
         let info = build_update_info(
             "3.0.11",
-            "linux-x64",
+            "macos-arm64",
             "owner/repo",
             &release,
             Source::Direct,
@@ -346,7 +345,7 @@ mod tests {
         assert_eq!(info.current, "3.0.11");
         assert_eq!(info.latest_tag, "v3.0.12");
         assert_eq!(info.latest_version, "3.0.12");
-        assert_eq!(info.asset_name, "akagi-3.0.12-linux-x64.zip");
+        assert_eq!(info.asset_name, "akagi-3.0.12-macos-arm64.zip");
         assert_eq!(info.asset_size, 12345);
         assert!(info.asset_digest_sha256.is_some());
         assert_eq!(info.sig_url, None, "release ships no .minisig");
@@ -366,15 +365,15 @@ mod tests {
         let release = release_with(
             "v3.0.12",
             vec![
-                asset("akagi-3.0.12-linux-x64.zip", None, Some(1)),
-                asset("akagi-3.0.12-linux-x64.zip.minisig", None, None),
+                asset("akagi-3.0.12-macos-arm64.zip", None, Some(1)),
+                asset("akagi-3.0.12-macos-arm64.zip.minisig", None, None),
                 asset("akagi-3.0.12-windows-x64.zip", None, None),
                 asset("akagi-3.0.12-windows-x64.zip.minisig", None, None),
             ],
         );
         let info = build_update_info(
             "3.0.11",
-            "linux-x64",
+            "macos-arm64",
             "owner/repo",
             &release,
             Source::Mirror,
@@ -383,7 +382,7 @@ mod tests {
         .expect("should detect newer version");
         assert_eq!(
             info.sig_url.as_deref(),
-            Some("https://example.com/akagi-3.0.12-linux-x64.zip.minisig")
+            Some("https://example.com/akagi-3.0.12-macos-arm64.zip.minisig")
         );
         assert_eq!(info.meta_source, Source::Mirror);
     }
@@ -396,7 +395,7 @@ mod tests {
         );
         let info = build_update_info(
             "3.0.11",
-            "linux-x64",
+            "macos-arm64",
             "owner/repo",
             &release,
             Source::Direct,
@@ -415,7 +414,7 @@ mod tests {
         };
         assert!(build_update_info(
             "3.0.11",
-            "linux-x64",
+            "macos-arm64",
             "owner/repo",
             &release,
             Source::Direct

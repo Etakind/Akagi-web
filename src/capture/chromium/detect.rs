@@ -6,9 +6,6 @@
 //! page on every render.
 //!
 //! Per-OS strategy:
-//! - **Linux**: `which::which` for the well-known names, plus a few
-//!   distro-specific fixed paths. Flatpak Chrome is *intentionally
-//!   skipped* — its sandbox refuses external `--user-data-dir`.
 //! - **macOS**: well-known `.app` bundle paths under `/Applications` and
 //!   `~/Applications`.
 //! - **Windows**: `reg query` for the App Paths key, with fixed-path
@@ -57,46 +54,6 @@ fn dedup_by_path(mut found: Vec<DetectedBrowser>) -> Vec<DetectedBrowser> {
     let mut seen = std::collections::HashSet::new();
     found.retain(|b| seen.insert(b.path.clone()));
     found
-}
-
-#[cfg(target_os = "linux")]
-fn detect_into(found: &mut Vec<DetectedBrowser>) {
-    use BrowserKind::*;
-    // (which-name, kind) — try PATH first because distros put the binary
-    // in different places (snap, flatpak excluded).
-    let path_probes = [
-        ("google-chrome", Chrome),
-        ("google-chrome-stable", Chrome),
-        ("microsoft-edge", Edge),
-        ("brave-browser", Brave),
-        ("chromium", Chromium),
-        ("chromium-browser", Chromium),
-    ];
-    for (name, kind) in path_probes {
-        if let Ok(p) = which::which(name) {
-            // Skip flatpak shim — sandbox refuses external --user-data-dir.
-            if p.to_string_lossy().contains("/flatpak/") {
-                continue;
-            }
-            found.push(DetectedBrowser { kind, path: p });
-        }
-    }
-    // Fixed paths as backup (some installs don't expose to PATH).
-    let fixed = [
-        ("/usr/bin/google-chrome", Chrome),
-        ("/usr/bin/google-chrome-stable", Chrome),
-        ("/usr/bin/microsoft-edge", Edge),
-        ("/usr/bin/brave-browser", Brave),
-        ("/usr/bin/chromium", Chromium),
-        ("/usr/bin/chromium-browser", Chromium),
-        ("/snap/bin/chromium", Chromium),
-    ];
-    for (p, kind) in fixed {
-        let pb = PathBuf::from(p);
-        if pb.exists() {
-            found.push(DetectedBrowser { kind, path: pb });
-        }
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -213,7 +170,7 @@ fn reg_query_app_paths(exe: &str) -> Option<PathBuf> {
     None
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn detect_into(_found: &mut Vec<DetectedBrowser>) {
     // No detection on unsupported platforms.
 }

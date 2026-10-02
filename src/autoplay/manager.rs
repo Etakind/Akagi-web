@@ -15,18 +15,14 @@
 
 use crate::autoplay::cdp_input::{dispatch_click_shaped, evaluate_canvas_rect};
 use crate::autoplay::context::{AutoplayContext, CanvasRect};
-use crate::autoplay::inject::InjectFrame;
 use crate::autoplay::majsoul::MajsoulAutoplay;
 use crate::autoplay::platform::{ActionContext, PlatformAutoplay, Step};
-use crate::autoplay::riichi_city::RiichiCityAutoplay;
-use crate::autoplay::tenhou::TenhouAutoplay;
 use crate::autoplay::verify::InputTicket;
 use crate::bot::BotResponse;
 use crate::config::AppConfig;
 use crate::event_bus::{BotResponseBus, MjaiBus, NotifyBus};
 use crate::game_state::tracker::GameTracker;
 use crate::schema::MjaiEvent;
-use chromiumoxide::page::Page;
 use riichienv_core::action::Action;
 use riichienv_core::state::legal_actions::GameStateLegalActions;
 use riichienv_core::state_3p::legal_actions::GameState3PLegalActions;
@@ -46,14 +42,7 @@ pub struct AutoplayManager {
     /// For telling the user about a decision that came out wrong — see the
     /// riichi check in `handle_bot_response` and the dead-click reload.
     notify: NotifyBus,
-    /// One implementation per supported platform, selected per decision from
-    /// the live config so a platform switch takes effect without a restart.
-    /// Majsoul synthesises clicks; Tenhou encodes a client frame.
     majsoul: MajsoulAutoplay,
-    tenhou: TenhouAutoplay,
-    /// Riichi City: no page to click — plans a protocol frame the proxy
-    /// transmits (see `autoplay::inject`).
-    riichi: RiichiCityAutoplay,
     state: ManagerState,
     /// User Lua delay policy (hot-reloaded from disk; see
     /// `autoplay::delay::script`).
@@ -78,10 +67,6 @@ struct ManagerState {
     /// tsumo/dahai updates, and is available from the very first event
     /// rather than waiting for the first successful `handle_bot_response`.
     cached_our_seat: Option<u8>,
-    /// Tenhou: the decision window we last acted on, so the extra bot
-    /// responses that arrive for the same one are dropped before they are
-    /// planned rather than after.
-    acted_window: Option<Instant>,
 }
 
 impl AutoplayManager {
@@ -100,8 +85,6 @@ impl AutoplayManager {
             mjai_bus,
             notify,
             majsoul: MajsoulAutoplay::new(),
-            tenhou: TenhouAutoplay::new(),
-            riichi: RiichiCityAutoplay::new(),
             state: ManagerState::default(),
             delay_script: crate::autoplay::delay::ScriptHost::default(),
             config_dir,
@@ -113,21 +96,6 @@ impl AutoplayManager {
         let mut bot_rx = response_bus.subscribe();
         let mut mjai_rx = self.mjai_bus.subscribe();
         info!("autoplay manager started");
-        // The round-advance watcher runs on its own subscription: at hand
-        // end the plan loop is busy draining stale plans and the OK press
-        // must not inherit that delay.
-        let advance_cfg = self.cfg.clone();
-        let advance_inject = self.ctx.inject.clone();
-        let advance_bus = self.mjai_bus.clone();
-        tauri::async_runtime::spawn(async move {
-            crate::autoplay::riichi_city::round_advance::round_advance_watcher(
-                advance_cfg,
-                advance_inject,
-                advance_bus,
-            )
-            .await;
-        });
-
         loop {
             tokio::select! {
                 msg = bot_rx.recv() => match msg {
@@ -161,15 +129,7 @@ impl AutoplayManager {
         }
         let cfg = cfg_guard.autoplay.majsoul.clone();
         let delay_cfg = cfg_guard.autoplay.delay.clone();
-        let platform_kind = cfg_guard.platform.kind;
         drop(cfg_guard);
-
-        // Tenhou's planner needs the bridge's hand at Tenhou tile-index
-        // resolution; the slot stays empty on every other platform.
-        let tenhou_state = self.ctx.tenhou_state.read().ok().and_then(|g| g.clone());
-        // The window we plan against, kept as its own identity for the
-        // post-delay staleness check (see `tenhou_window_moved`).
-        let planned_window = tenhou_state.as_ref().and_then(|s| s.window);
 
         // Snapshot the server time budget for the current decision window
         // (written by the Majsoul bridge; None off-Majsoul or pre-game) and
@@ -238,28 +198,9 @@ impl AutoplayManager {
             budget,
             probs,
             delay_script: self.delay_script.script(),
-            tenhou: tenhou_state.as_ref(),
         };
 
-        let platform: &dyn PlatformAutoplay = match platform_kind {
-            crate::config::Platform::Tenhou => &self.tenhou,
-            crate::config::Platform::RiichiCity => &self.riichi,
-            _ => &self.majsoul,
-        };
-        // Every reply that gets here is one the engine asked for: the bot
-        // manager only reacts where our seat can act (`bot::manager`), so a
-        // `None` means a decline and not "nothing to say". Belt and braces
-        // all the same — one window is answered once. A second reply for it
-        // is at best a wasted press and at worst one aimed at whatever
-        // replaced it.
-        if let Some(w) = planned_window {
-            if self.state.acted_window == Some(w.opened_at) {
-                debug!("autoplay: already acted on this window; ignoring extra bot reply");
-                return;
-            }
-        }
-
-        let plan = platform.plan(&action_ctx);
+        let plan = self.majsoul.plan(&action_ctx);
         if plan.steps.is_empty() {
             return;
         }
@@ -301,133 +242,11 @@ impl AutoplayManager {
         // `Reach.pai`), so the reach action alone identifies it.
         let declares_reach = matches!(resp.action, MjaiEvent::Reach { .. });
 
-        if let Some(w) = planned_window {
-            self.state.acted_window = Some(w.opened_at);
-        }
-
-        // Riichi City plans are [Sleep, SendFrame]: run them as their own
-        // task instead of inline. Inline execution serialized every
-        // decision's sleeps, window waits, and verify pauses, so queued
-        // plans stacked — measured injections drifting 2→17s later as a
-        // session progressed. The task gates its send on the identity of
-        // the decision window it was planned against (see
-        // `execute_riichi_frame`), so parallel tasks cannot send into a
-        // later window by mistake.
-        if platform_kind == crate::config::Platform::RiichiCity {
-            let mut sleep_ms = 0;
-            let mut frame: Option<Vec<u8>> = None;
-            for step in &plan.steps {
-                match step {
-                    Step::Sleep { duration_ms } => sleep_ms = *duration_ms,
-                    Step::SendFrame(bytes) => frame = Some(bytes.clone()),
-                    other => warn!("autoplay: unexpected riichi plan step {other:?}"),
-                }
-            }
-            let Some(frame) = frame else {
-                return;
-            };
-            let inject = self.ctx.inject.clone();
-            let verify_input_ms = cfg.verify_input_ms;
-            let retries = cfg.click_retries;
-            let action = resp.action.clone();
-            let window_open_at_plan = inject.window_is_open();
-            let window_at_plan = inject.window_opened_at();
-            let plan_created = Instant::now();
-            tauri::async_runtime::spawn(async move {
-                execute_riichi_frame(
-                    sleep_ms as u64,
-                    frame,
-                    action,
-                    inject,
-                    verify_input_ms,
-                    retries,
-                    window_open_at_plan,
-                    window_at_plan,
-                    plan_created,
-                )
-                .await;
-            });
-            return;
-        }
-
         let mut window_checked = false;
         for step in &plan.steps {
             match step {
                 Step::Sleep { duration_ms } => {
                     tokio::time::sleep(Duration::from_millis(*duration_ms as u64)).await;
-                }
-                Step::AwaitReady { timeout_ms } => {
-                    let page_guard = self.ctx.page.read().await;
-                    let Some(page) = page_guard.as_ref() else {
-                        warn!("autoplay: no page handle — cannot wait for the client");
-                        return;
-                    };
-                    if !Self::await_turn_ready(page, *timeout_ms).await {
-                        return;
-                    }
-                }
-                Step::DomClick { selectors, label } => {
-                    if self.tenhou_window_moved(planned_window) {
-                        warn!(
-                            "autoplay: decision window closed mid-delay — dropping stale {label}"
-                        );
-                        return;
-                    }
-                    let page_guard = self.ctx.page.read().await;
-                    let Some(page) = page_guard.as_ref() else {
-                        warn!("autoplay: no page handle — cannot press {label}");
-                        return;
-                    };
-                    // The client only renders the buttons it is currently
-                    // offering, so a selector that matches nothing means the
-                    // decision resolved while we were thinking. Report it and
-                    // stop rather than pressing something else.
-                    // The buttons exist only between the end of the
-                    // client's animation for the triggering frame and
-                    // whatever resolves the window, and neither edge is
-                    // observable from here — a single look loses the race
-                    // either way. Wait for the element instead, bounded by
-                    // what is left of the turn.
-                    match self.press_when_offered(page, selectors, label).await {
-                        true => {}
-                        false => return,
-                    }
-                }
-                Step::Discard { tile_index } => {
-                    // The client's discard handler applies locally whether or
-                    // not it is our turn — its own UI only reaches it while
-                    // one is — so a stale call desyncs the board, not just
-                    // wastes a frame. The riichi plan is the exception: its
-                    // own button press replaces the window (the server acks
-                    // the declaration and the bridge re-opens it), and the
-                    // tile it owes is still this plan's to throw.
-                    if discard_needs_window_guard(&resp.action)
-                        && self.tenhou_window_moved(planned_window)
-                    {
-                        warn!(
-                            "autoplay: decision window closed mid-delay — dropping stale discard"
-                        );
-                        return;
-                    }
-                    let page_guard = self.ctx.page.read().await;
-                    let Some(page) = page_guard.as_ref() else {
-                        warn!("autoplay: no page handle — cannot discard");
-                        return;
-                    };
-                    match crate::autoplay::cdp_input::discard_tile(page, *tile_index).await {
-                        Ok(true) => info!("autoplay: discarded tile index {tile_index}"),
-                        Ok(false) => {
-                            warn!(
-                                "autoplay: the client script was not instrumented, so its \
-                                 discard handler is unreachable; skipping"
-                            );
-                            return;
-                        }
-                        Err(e) => {
-                            warn!("autoplay: discard failed: {e:#}");
-                            return;
-                        }
-                    }
                 }
                 Step::Click { x_norm, y_norm } => {
                     let Some(rect) = rect else {
@@ -503,20 +322,9 @@ impl AutoplayManager {
                     }
                     drop(page_guard);
                 }
-                // Riichi City SendFrames never reach this loop — they are
-                // spawned above as per-decision tasks.
-                Step::SendFrame(_) => unreachable!("riichi frames run as tasks"),
             }
         }
 
-        // Did the client accept any of that? A swallowed click reports
-        // success like any other — the page dispatched the events and the
-        // engine ignored them — so the proof has to come from the client's
-        // own uplink.
-        // Only canvas clicks need proving. The Tenhou steps run the client's
-        // own handlers — a DOM press or its discard call either resolved or
-        // reported that it did not, with no swallowed-input case in between —
-        // and `rect` is `None` for a plan built of those, which skips this.
         if let (true, Some(rect)) = (cfg.verify_input_ms > 0, rect) {
             // What counts as proof. A discard plan is proven by any input.
             // Every other plan pressed action buttons, and for those a
@@ -589,114 +397,6 @@ impl AutoplayManager {
         }
     }
 
-    /// Wait until the client is taking input, or give up.
-    ///
-    /// The turn does not begin when the frame arrives. Tenhou's server sends
-    /// as fast as the seats answer — against instant opponents that means
-    /// three seats' actions in one burst — and the client then animates them
-    /// for seconds before drawing its buttons and starting its clock. Timing
-    /// anything from frame arrival times it from the wrong instant, which is
-    /// why fixed delays kept landing either side of the window.
-    ///
-    /// The client raises its clock display and its highlight together, so the
-    /// highlight appearing is the readiness signal.
-    async fn await_turn_ready(page: &Page, timeout_ms: u32) -> bool {
-        const POLL_INTERVAL: Duration = Duration::from_millis(120);
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
-        let started = Instant::now();
-        loop {
-            match crate::autoplay::cdp_input::turn_clock_running(page).await {
-                Ok(true) => {
-                    debug!(
-                        "autoplay: client ready after {}ms",
-                        started.elapsed().as_millis()
-                    );
-                    return true;
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    warn!("autoplay: readiness probe failed: {e:#}");
-                    return false;
-                }
-            }
-            if Instant::now() >= deadline {
-                warn!(
-                    "autoplay: client never started its clock within {timeout_ms}ms; \
-                     skipping this decision"
-                );
-                return false;
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
-    }
-
-    /// Press `selector` as soon as the client offers it.
-    ///
-    /// A button is only in the DOM between the end of the client's animation
-    /// for the frame that opened the window and whatever closes it. Neither
-    /// edge is visible from here and the gap moves with animation length, so
-    /// a single `querySelector` races it — the first live run pressed
-    /// successfully three times and missed four, all with the client offering
-    /// nothing at the instant we looked. Polling turns that race into a
-    /// bounded wait.
-    async fn press_when_offered(&self, page: &Page, selectors: &[String], label: &str) -> bool {
-        const POLL_INTERVAL: Duration = Duration::from_millis(120);
-        const WAIT_BUDGET: Duration = Duration::from_millis(2_400);
-
-        let deadline = Instant::now() + WAIT_BUDGET;
-        let mut attempts = 0u32;
-        loop {
-            attempts += 1;
-            match crate::autoplay::cdp_input::click_dom(page, selectors).await {
-                Ok(true) => {
-                    info!("autoplay: pressed {label} ({selectors:?}) after {attempts} look(s)");
-                    return true;
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    warn!("autoplay: pressing {label} failed: {e:#}");
-                    return false;
-                }
-            }
-            if Instant::now() >= deadline {
-                let offered = crate::autoplay::cdp_input::list_action_buttons(page).await;
-                warn!(
-                    "autoplay: {label} button ({selectors:?}) never appeared in {:?}; \
-                     client is offering slots {offered:?} (its own order: highest first)",
-                    WAIT_BUDGET
-                );
-                return false;
-            }
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
-    }
-
-    /// Has the Tenhou decision window been replaced since we planned?
-    ///
-    /// The delay model sleeps for seconds, and a window can resolve in that
-    /// time — a claim we declined, or simply the next player acting. Acting on
-    /// the stale plan then answers a decision that is already over. The
-    /// window's `opened_at` is its identity, so a slot no longer holding the
-    /// same instant means what we planned for is gone.
-    ///
-    /// `None` planned means we never had a window to go stale (other
-    /// platforms), so nothing is dropped.
-    fn tenhou_window_moved(
-        &self,
-        planned: Option<crate::autoplay::tenhou_state::DecisionWindow>,
-    ) -> bool {
-        let Some(planned) = planned else {
-            return false;
-        };
-        let current = self
-            .ctx
-            .tenhou_state
-            .read()
-            .ok()
-            .and_then(|g| g.as_ref().and_then(|s| s.window));
-        current.map(|w| w.opened_at) != Some(planned.opened_at)
-    }
-
     /// Wait for the client's input command; press again if it never came.
     ///
     /// Retrying is bounded and gated on the decision window still being the
@@ -719,11 +419,7 @@ impl AutoplayManager {
             .iter()
             .filter_map(|s| match s {
                 Step::Click { x_norm, y_norm } => Some((*x_norm, *y_norm)),
-                Step::Sleep { .. }
-                | Step::DomClick { .. }
-                | Step::Discard { .. }
-                | Step::AwaitReady { .. }
-                | Step::SendFrame(_) => None,
+                Step::Sleep { .. } => None,
             })
             .collect();
         if clicks.is_empty() {
@@ -980,21 +676,6 @@ impl AutoplayManager {
     }
 }
 
-/// Does a `Step::Discard` for this action require the decision window it
-/// was planned against to still be open?
-///
-/// Everything but a riichi does: the window's identity is how a discard that
-/// out-waited its turn — the client timed out and threw for us, or a human
-/// beat the bot to it — is told apart from one that is still owed. A riichi
-/// plan cannot use that test, because passing its own declaration button is
-/// what replaces the window (the server acks with `REACH step=1` and the
-/// bridge re-opens it for the tile), so the move is expected rather than
-/// evidence of staleness — and the tile must still go out or the client sits
-/// on its clock and times the hand out.
-fn discard_needs_window_guard(action: &MjaiEvent) -> bool {
-    !matches!(action, MjaiEvent::Reach { .. })
-}
-
 /// Which clicks to press again on retry `attempt` (0-based).
 ///
 /// In a multi-click plan — a chi/pon/kan whose candidate row needs
@@ -1025,157 +706,6 @@ fn retry_slice(clicks: &[(f64, f64)], attempt: u32) -> &[(f64, f64)] {
 /// Capped so a user-configured long hold cannot escalate past 2 s.
 fn retry_hold_ms(base: u32, attempt: u32) -> u32 {
     base.saturating_mul(attempt + 2).min(2_000)
-}
-
-/// How long an action planned with no window open may wait for its window.
-/// Own-turn actions trail the deal animation by seconds; claim offers
-/// trail their discard broadcast by milliseconds, so a tight bound keeps
-/// a timed-out claim from ever landing in the next window.
-fn future_window_grace(action: &MjaiEvent) -> Duration {
-    match action {
-        MjaiEvent::Dahai { .. }
-        | MjaiEvent::Reach { .. }
-        | MjaiEvent::Ryukyoku { deltas: None } => Duration::from_secs(15),
-        _ => Duration::from_secs(3),
-    }
-}
-
-/// Execute one Riichi City decision off the plan loop: sleep the (already
-/// clamped) think time, wait for OUR decision window, hold the minimum
-/// visible think, send, and verify the server's ack — retrying the send if
-/// no ack lands.
-///
-/// Parallel tasks are safe because each gates its send on the *identity*
-/// of the window it was planned against (`window_opened_at`): the window
-/// that was open when the plan was created, or — for own-turn actions —
-/// the first window to open after planning. A task whose window resolved
-/// while it slept aborts instead of sending into whatever window is open
-/// now.
-#[allow(clippy::too_many_arguments)]
-async fn execute_riichi_frame(
-    sleep_ms: u64,
-    frame: Vec<u8>,
-    action: MjaiEvent,
-    inject: crate::autoplay::inject::SharedInjectBus,
-    verify_input_ms: u32,
-    retries: u32,
-    window_open_at_plan: bool,
-    window_at_plan: Option<Instant>,
-    plan_created: Instant,
-) {
-    if !inject.in_game() {
-        debug!("autoplay: dropping frame for {action:?} — no game in progress");
-        return;
-    }
-
-    // Resolve our window identity.
-    let identity = if window_open_at_plan {
-        // The window open at planning time is ours; require it to still
-        // be the one open.
-        let Some(id) = window_at_plan else {
-            return;
-        };
-        id
-    } else {
-        // Planned before any window opened: either an own-turn action
-        // whose window trails the deal animation, or a claim whose offer
-        // frame lost the race against the bot response (measured:
-        // responses can be planned milliseconds before the bridge
-        // processes the offer). Wait for the first window to open after
-        // planning, bounded per action kind — acting before the window
-        // opens is rejected (rsp code 1).
-        let deadline = plan_created + future_window_grace(&action);
-        loop {
-            if inject.window_is_open() {
-                if let Some(opened) = inject.window_opened_at() {
-                    if opened >= plan_created {
-                        break opened;
-                    }
-                }
-            }
-            if Instant::now() >= deadline {
-                debug!("autoplay: {action:?} window never opened; dropping");
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(150)).await;
-        }
-    };
-
-    // Wait until our window is open.
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while !(inject.window_is_open() && inject.window_opened_at() == Some(identity)) {
-        if Instant::now() >= deadline
-            || (inject.window_is_open() && inject.window_opened_at() != Some(identity))
-        {
-            debug!("autoplay: dropping stale {action:?} — the window moved on");
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(150)).await;
-    }
-
-    // Hold the humanizer's think time, measured from the WINDOW OPENING —
-    // the Lua contract: delay_ms is what the server observes between
-    // offering the decision and receiving the action. Anchoring to the
-    // window (not the triggering event) is what keeps the dealer's
-    // opening discard human-paced: the deal animation precedes the window
-    // and must not eat the think. Capped well under the ~15s window;
-    // floored so the timer is always visibly up before the send.
-    const MIN_VISIBLE_THINK_MS: u64 = 2_000;
-    const THINK_CAP_MS: u64 = 10_000;
-    let target_ms = sleep_ms.clamp(MIN_VISIBLE_THINK_MS, THINK_CAP_MS);
-    let elapsed_ms = identity.elapsed().as_millis() as u64;
-    if elapsed_ms < target_ms {
-        tokio::time::sleep(Duration::from_millis(target_ms - elapsed_ms)).await;
-    }
-    // The window may have resolved during the think.
-    if !(inject.window_is_open() && inject.window_opened_at() == Some(identity)) {
-        debug!("autoplay: dropping stale {action:?} — the window moved on");
-        return;
-    }
-
-    let ticket = inject.rsp_ticket();
-    let mut acked = false;
-    for attempt in 0..=retries {
-        if !inject.send(InjectFrame {
-            gameplay: true,
-            bytes: frame.clone(),
-        }) {
-            warn!(
-                "autoplay: no injection relay subscribed — is capture running? \
-                   dropping frame for {action:?}"
-            );
-            return;
-        }
-        info!("autoplay: injected frame for {action:?} (attempt {attempt})");
-        // The server's round trip is ~200ms; the floor keeps a short
-        // verify_input_ms from spuriously retrying.
-        let wait = u64::from(verify_input_ms.max(500));
-        let deadline = Instant::now() + Duration::from_millis(wait);
-        loop {
-            if inject.rsp_since(ticket) {
-                acked = true;
-                break;
-            }
-            if Instant::now() >= deadline {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        if acked {
-            break;
-        }
-        warn!("autoplay: no rsp_game_action within {wait}ms for {action:?} (attempt {attempt})");
-    }
-    if acked {
-        let code = inject.last_rsp_code();
-        if code != 0 {
-            warn!("autoplay: the server rejected {action:?} (rsp code {code})");
-        } else if retries > 0 {
-            debug!("autoplay: rsp ok for {action:?}");
-        }
-    } else {
-        warn!("autoplay: {action:?} was never answered by the server — the action did not happen");
-    }
 }
 
 /// Spawn point for the autoplay loop. Wired by `crate::lib::run` so the
@@ -1366,98 +896,6 @@ mod tests {
         assert_eq!(retry_hold_ms(120, 1), 360);
         assert_eq!(retry_hold_ms(1_500, 1), 2_000, "capped at 2s");
         assert_eq!(retry_hold_ms(u32::MAX, 5), 2_000, "no overflow");
-    }
-
-    /// Regression (stale discard into a live board): the client's discard
-    /// handler applies locally even when the turn is over, so a discard must
-    /// be dropped once the window it was planned against is gone. The riichi
-    /// plan is exempt — its own button press is what replaces the window,
-    /// and the tile is still owed.
-    #[test]
-    fn a_discard_is_guarded_by_its_window_except_for_riichi() {
-        let dahai = MjaiEvent::Dahai {
-            actor: 0,
-            pai: "1m".into(),
-            tsumogiri: false,
-        };
-        assert!(discard_needs_window_guard(&dahai));
-        let reach = MjaiEvent::Reach {
-            actor: 0,
-            pai: Some("2m".into()),
-        };
-        assert!(!discard_needs_window_guard(&reach));
-    }
-
-    /// Own-turn actions wait out the deal animation (long grace); claim
-    /// offers follow their discard within milliseconds, so their grace is
-    /// tight — a timed-out claim must never land in the next window.
-    #[test]
-    fn future_window_grace_is_tight_for_claims() {
-        let own = MjaiEvent::Dahai {
-            actor: 0,
-            pai: "1m".into(),
-            tsumogiri: false,
-        };
-        assert_eq!(future_window_grace(&own), Duration::from_secs(15));
-        let claim = MjaiEvent::Chi {
-            actor: 0,
-            target: 1,
-            pai: "3p".into(),
-            consumed: ["2p".into(), "4p".into()],
-        };
-        assert_eq!(future_window_grace(&claim), Duration::from_secs(3));
-        assert_eq!(
-            future_window_grace(&MjaiEvent::None),
-            Duration::from_secs(3)
-        );
-        // Kyuushu rides our own first-turn draw, so it gets the own-turn
-        // grace — not the claim-tight one.
-        assert_eq!(
-            future_window_grace(&MjaiEvent::Ryukyoku { deltas: None }),
-            Duration::from_secs(15)
-        );
-    }
-
-    /// The window's `opened_at` is its identity: a slot holding a different
-    /// instant — or nothing — means the plan is stale. No planned window
-    /// (other platforms) never reports movement.
-    #[test]
-    fn tenhou_window_moved_tracks_the_slot() {
-        use crate::autoplay::tenhou_state::{DecisionWindow, TenhouState};
-        let m = make_manager();
-        let w1 = DecisionWindow {
-            ops: 0,
-            opened_at: std::time::Instant::now(),
-        };
-        let put = |window| {
-            *m.ctx.tenhou_state.write().unwrap() = Some(TenhouState {
-                seat: 0,
-                hand: vec![0],
-                melds: Vec::new(),
-                is_tsumo: true,
-                window,
-            });
-        };
-
-        put(Some(w1));
-        assert!(
-            !m.tenhou_window_moved(Some(w1)),
-            "same instant — still live"
-        );
-        assert!(
-            !m.tenhou_window_moved(None),
-            "nothing planned, nothing stale"
-        );
-
-        put(None);
-        assert!(m.tenhou_window_moved(Some(w1)), "window resolved — stale");
-
-        let w2 = DecisionWindow {
-            ops: 8,
-            opened_at: std::time::Instant::now(),
-        };
-        put(Some(w2));
-        assert!(m.tenhou_window_moved(Some(w1)), "window replaced — stale");
     }
 
     /// Observer/replay mode: `StartGame` with `id: None` must not cache a

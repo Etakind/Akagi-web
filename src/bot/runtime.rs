@@ -108,32 +108,12 @@ impl PythonRuntime {
             if venv_python_alive(&venv) && venv_home_exists(&venv) {
                 return Ok(());
             }
-            // Stamp says the deps are in sync, but the venv's baked-in
-            // absolute pointers to the base interpreter are stale. Two
-            // ways this happens:
-            //   1. AppImage: each launch creates a fresh
-            //      `/tmp/.mount_Akagi_<rand>/` mount, so the `bin/python`
-            //      symlink built under a previous mount now dangles
-            //      (`venv_python_alive` is false).
-            //   2. The user moved/renamed the whole Akagi folder, so the
-            //      `pyvenv.cfg.home` directory uv baked in at sync time is
-            //      gone (`venv_home_exists` is false). On Unix this also
-            //      dangles the symlink, but on Windows `Scripts/python.exe`
-            //      is a real copy that survives the move, so the missing
-            //      `home` dir is the only on-disk tell — without it we'd
-            //      hand a dead interpreter to the runner and the first
-            //      stdin write dies with `os error 232` ("The pipe is
-            //      being closed").
-            // The standalone python + installed wheels are binary-identical
-            // regardless of location, so we repoint the venv to the current
-            // python without paying for a full re-sync (which would
-            // otherwise re-run on every single launch under AppImage).
             match repoint_venv(&venv, &self.python).await {
                 Ok(()) => {
                     info!(
                         bot = %bot_dir.display(),
                         python = %self.python.display(),
-                        "repointed venv to current python (AppImage mount changed)"
+                        "repointed venv to current python after relocation"
                     );
                     return Ok(());
                 }
@@ -194,37 +174,10 @@ impl PythonRuntime {
     }
 }
 
-/// Drop Python env vars that the AppImage runtime (and some AUR
-/// wrappers) export for *Akagi's* host process. Inherited as-is they
-/// override the bot venv's `pyvenv.cfg`, so the venv python looks for
-/// its stdlib under the AppImage mount and dies with
-/// `Fatal Python error: init_fs_encoding: failed to get the Python
-/// codec of the filesystem encoding / No module named 'encodings'`
-/// before the bot ever reads stdin — the next `react()` then surfaces
-/// as `Broken pipe (os error 32)`. Bundled python-build-standalone
-/// (used both for `uv sync` and for the venv it seeds) is relocatable
-/// and resolves its stdlib via `sys._base_executable`, so removing
-/// these is strictly safer than inheriting them.
 fn scrub_python_env(cmd: &mut Command) {
     cmd.env_remove("PYTHONHOME").env_remove("PYTHONPATH");
 }
 
-/// True when `bot_dir`'s Python environment is already installed — i.e.
-/// `ensure_synced` would short-circuit instead of running `uv sync`. A bot
-/// with no `pyproject.toml` has nothing to install and is always ready.
-///
-/// Inspects only the on-disk stamp + venv (no `uv`, no async), so it's cheap
-/// enough to call while listing bots or gating activation. Deliberately does
-/// NOT require `venv_python_alive`: a dangling venv symlink (the AppImage
-/// mount-changed case) is repaired by a cheap repoint inside `ensure_synced`,
-/// not a slow full re-sync, so it shouldn't block a bot from being activated.
-///
-/// It DOES, however, report not-installed for a venv that survived a
-/// folder move but can only be repaired by a full re-sync (see
-/// [`needs_out_of_band_resync`]). That keeps the readiness signal honest:
-/// the UI re-offers "Install environment", `set_active_bot` won't (re)gate
-/// it active, and game-start skips it instead of stalling a live game on an
-/// inline `uv sync`.
 pub fn is_synced(bot_dir: &Path) -> bool {
     let pyproject = bot_dir.join("pyproject.toml");
     if !pyproject.is_file() {
@@ -289,7 +242,7 @@ pub async fn reset_sync_state(bot_dir: &Path) {
 /// executable. This is the layout shipped by the portable zip
 /// distribution: `<exe_parent>/runtime/{python,uv}/<triple>/...`.
 ///
-/// On Linux/macOS, `tauri::path::resource_dir()` does not return
+/// On macOS, `tauri::path::resource_dir()` does not return
 /// exe-adjacent paths in a portable layout — it tries Tauri-bundled
 /// install locations like `/usr/lib/akagi/` and returns `Err` or a
 /// non-existent path otherwise. Checking exe-adjacent here ensures the
@@ -340,9 +293,6 @@ pub(crate) fn venv_python(venv: &Path) -> PathBuf {
     }
 }
 
-/// True when the venv's python interpreter resolves to an existing
-/// file. `metadata` follows symlinks, so a dangling symlink (the
-/// AppImage mount-changed case) returns Err and we report dead.
 fn venv_python_alive(venv: &Path) -> bool {
     std::fs::metadata(venv_python(venv))
         .map(|m| m.is_file())
@@ -395,15 +345,6 @@ fn venv_home_exists(venv: &Path) -> bool {
     }
 }
 
-/// Repoint a venv at `new_python` without re-running `uv sync`. Used
-/// when the venv was sync'd under a previous AppImage mount whose
-/// `/tmp/.mount_Akagi_<rand>/` path is gone. Rewrites the `bin/python`
-/// symlink and the `home = …` line in `pyvenv.cfg`; everything else in
-/// the venv (site-packages, .pyc) stays valid because
-/// python-build-standalone is binary-identical across launches.
-///
-/// Unix-only — the AppImage failure mode doesn't exist on Windows
-/// (resource dir is stable there).
 #[cfg(unix)]
 async fn repoint_venv(venv: &Path, new_python: &Path) -> Result<()> {
     let target = tokio::fs::canonicalize(new_python)
@@ -603,7 +544,7 @@ mod tests {
 
     /// Regression: portable zip relies on `try_bundled_exe_adjacent` to
     /// find `<exe_parent>/runtime/...` because Tauri's `resource_dir()`
-    /// doesn't return exe-adjacent on Linux/macOS in a portable layout.
+    /// doesn't return exe-adjacent on macOS in a portable layout.
     /// In the test runner the binary lives in `target/<profile>/deps/`
     /// with no `runtime/` next to it, so this must return `None` (and
     /// must not panic on the optional chain).
@@ -612,14 +553,6 @@ mod tests {
         assert!(try_bundled_exe_adjacent().is_none());
     }
 
-    /// Regression: AppImage runtimes export `PYTHONHOME` / `PYTHONPATH`
-    /// for Akagi's host process. If we let those leak into the bot
-    /// venv's python, the venv crashes at startup with
-    /// `init_fs_encoding ... No module named 'encodings'` and the next
-    /// `react()` writes hit a broken pipe (manager.rs surfaces this as
-    /// `bot react failed: write events to bot stdin: Broken pipe`). The
-    /// `command_for` builder must explicitly remove them so the venv
-    /// python falls back to its `pyvenv.cfg`-based stdlib resolution.
     #[test]
     fn command_for_strips_pythonhome_and_pythonpath() {
         use std::ffi::OsStr;
@@ -639,15 +572,6 @@ mod tests {
         );
     }
 
-    /// Regression: under AppImage, every launch creates a new
-    /// `/tmp/.mount_Akagi_<rand>/` mount, and uv bakes that absolute
-    /// path into the venv at sync time. On the next launch the venv's
-    /// `bin/python` symlink target is gone and `cmd.spawn()` returns
-    /// ENOENT, surfacing as `spawn bot mortal: No such file or
-    /// directory` from `runner.rs`. `repoint_venv` must rewrite the
-    /// symlink and `pyvenv.cfg` `home =` line so the venv works again
-    /// without re-running uv sync (which would otherwise re-run on
-    /// every launch and cost minutes).
     #[cfg(unix)]
     #[tokio::test]
     async fn repoint_venv_rewrites_symlink_and_pyvenv_cfg() {
@@ -656,8 +580,6 @@ mod tests {
         let bin = venv.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
 
-        // Stale mount path — neither file exists. This mirrors what an
-        // AppImage second-launch venv looks like on disk.
         let stale = tmp.path().join("mount_OLD/python3");
         std::os::unix::fs::symlink(&stale, bin.join("python")).unwrap();
         std::fs::write(
@@ -834,12 +756,6 @@ mod tests {
         assert!(venv_python_alive(&venv));
     }
 
-    /// `needs_out_of_band_resync` must fire only for the move shape that
-    /// truly can't be repaired cheaply at game-start: the interpreter file
-    /// survived (Windows copy) but its baked base `home` is gone. A dangling
-    /// symlink (the Unix move/AppImage shape) is cheaply repointable, and an
-    /// absent or healthy venv needs nothing — all three must return false so
-    /// game-start isn't needlessly downgraded to analysis-only.
     #[test]
     fn needs_out_of_band_resync_only_for_alive_interp_with_dead_home() {
         let tmp = TempDir::new().unwrap();

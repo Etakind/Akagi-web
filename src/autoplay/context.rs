@@ -1,22 +1,4 @@
-//! Shared state between the chromium capture backend and the autoplay
-//! manager.
-//!
-//! - `page`: the [`chromiumoxide::page::Page`] handle for the tab where
-//!   Majsoul (or another supported platform) is loaded. Written by
-//!   `src/capture/chromium/cdp.rs` when it observes a WebSocket whose URL
-//!   host matches a known platform. The handle tracks the **tab**, not the
-//!   WebSocket: it survives the many short-lived Route-probe / lobby-
-//!   reconnect sockets Majsoul opens and closes during a game, and is
-//!   cleared only when its owning tab is removed from the page snapshot.
-//!   Read by `AutoplayManager` whenever it needs to dispatch input.
-//! - `canvas_rect`: cached `getBoundingClientRect()` of the game canvas,
-//!   used to translate 16:9-normalised coordinates into CSS pixels.
-//!   Filled lazily by the autoplay manager (one `Runtime.evaluate` per
-//!   refresh) and invalidated on round transitions.
-//!
-//! Both fields are populated only when the chromium capture backend is
-//! active. The MITM backend leaves the context untouched, so reads return
-//! `None` and the manager skips the click.
+//! 浏览器采集与自动操作共用的页面、画布、时间预算及输入确认状态。
 
 use chromiumoxide::page::Page;
 use serde::{Deserialize, Serialize};
@@ -40,16 +22,6 @@ pub struct AutoplayContext {
     /// click and asks afterwards whether the count moved — the proof that
     /// the click registered (see `autoplay::verify`).
     pub input_watch: crate::autoplay::verify::SharedInputWatch,
-    /// Tenhou's hand at tile-index resolution plus its current decision
-    /// window, written by the Tenhou bridge (see `autoplay::tenhou_state`).
-    /// Read by the Tenhou autoplay planner, which encodes a client frame
-    /// rather than synthesising clicks.
-    pub tenhou_state: crate::autoplay::tenhou_state::SharedTenhouState,
-    /// Frame injection channel for platforms whose client is not a browser
-    /// page (Riichi City): the manager sends built wire frames, the MITM
-    /// proxy's client→server relay transmits them. The `in_game` gate is
-    /// maintained by the Riichi City bridge. See `autoplay::inject`.
-    pub inject: crate::autoplay::inject::SharedInjectBus,
 }
 
 impl AutoplayContext {

@@ -5,8 +5,6 @@ import { invoke } from '@/lib/tauri'
 // duplicated across components.
 export const AKAGI_GITHUB_URL = 'https://github.com/shinkuan/Akagi'
 export const AKAGI_DISCORD_URL = 'https://discord.gg/Z2wjXUK8bN'
-export const AKAGIMS_GITHUB_URL = 'https://github.com/shinkuan/AkagiMS'
-export const AKAGIMS_DOWNLOAD_URL = 'https://github.com/shinkuan/AkagiMS/releases/latest'
 
 // Tauri 2's webview doesn't reliably honour `<a target="_blank">`
 // without the opener plugin, so route external links through the

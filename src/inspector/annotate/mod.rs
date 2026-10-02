@@ -1,32 +1,4 @@
-//! Recognizers that read meaning out of captured HTTP exchanges.
-//!
-//! Capture is generic: [`crate::capture::http`] records every exchange a
-//! backend intercepts without understanding any of it. Understanding is
-//! this layer's job, and it is strictly additive — a recognizer returns an
-//! [`HttpAnnotation`] that rides along with the exchange, and knows
-//! nothing about how the exchange was captured.
-//!
-//! That split is the whole design. Vendor vocabulary (`logstore`,
-//! `log_category`, …) lives inside an annotation's `data`, never in
-//! [`crate::schema::HttpExchange`]. Adding a recognizer for a new
-//! analytics vendor, a new game, or a new protocol therefore touches this
-//! directory and nothing else — not the schema, not the capture
-//! backends, not the reader, not the UI.
-//!
-//! Annotations are also how Akagi describes **its own** behaviour: when
-//! the proxy declines to intercept something, that decision is recorded
-//! as an annotation on the CONNECT (see `akagi_bypass` in the proxy
-//! handler). A blind spot that announces itself is not a blind spot.
-//!
-//! ## Adding a recognizer
-//!
-//! 1. Add a module here that inspects a [`RequestView`] and returns
-//!    `Option<HttpAnnotation>`.
-//! 2. Call it from [`annotate_request`].
-//! 3. Give it a stable `kind` string — the UI groups and filters on it.
-//!
-//! Keep recognizers cheap. [`annotate_request`] runs on every intercepted
-//! request, the overwhelming majority of which match nothing.
+//! 识别浏览器 HTTP 元数据的类别。注释在记录和广播前脱敏，不保存请求正文。
 
 pub mod sls;
 

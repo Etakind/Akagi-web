@@ -131,8 +131,6 @@ fn is_controlled_browser(name: &str, cmd: &[String], profile: &Path) -> bool {
     const RULES: PathMatchRules = PathMatchRules::WINDOWS;
     #[cfg(target_os = "macos")]
     const RULES: PathMatchRules = PathMatchRules::MACOS;
-    #[cfg(all(unix, not(target_os = "macos")))]
-    const RULES: PathMatchRules = PathMatchRules::LINUX;
     let profile = profile.display().to_string();
     let has_profile = cmd
         .iter()
@@ -142,14 +140,14 @@ fn is_controlled_browser(name: &str, cmd: &[String], profile: &Path) -> bool {
 }
 
 /// Per-OS rules for comparing a `--user-data-dir` value against our profile
-/// path. Modeled as data rather than `cfg`-selected code so all three
+/// path. Modeled as data rather than `cfg`-selected code so both supported
 /// platforms' behaviors are unit-testable from any host; call sites pick
 /// their rule set with `cfg` (see [`is_controlled_browser`]).
 #[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 struct PathMatchRules {
     /// Compare ignoring case — the default filesystem behavior on Windows
-    /// (NTFS) and macOS (APFS/HFS+); Linux filesystems are case-sensitive.
+    /// (NTFS) and macOS (APFS/HFS+); case-sensitive volumes use exact comparisons.
     /// This matters because the profile path derives from
     /// `std::env::current_exe()`, whose casing can vary with how the exe was
     /// invoked — a byte-exact compare would then silently miss the surviving
@@ -171,7 +169,7 @@ impl PathMatchRules {
         case_insensitive: true,
         unify_separators: false,
     };
-    const LINUX: Self = Self {
+    const CASE_SENSITIVE: Self = Self {
         case_insensitive: false,
         unify_separators: false,
     };
@@ -468,7 +466,7 @@ mod tests {
     fn resolve_default_lands_at_chrome_profile() {
         let p = resolve_profile_dir("").unwrap();
         // ends with chrome-profile regardless of which arm of resolve_dir
-        // fired (exe-adjacent on portable, user_root on AppImage).
+        // fired (exe-adjacent on portable, user directory fallback).
         assert!(
             p.ends_with("chrome-profile"),
             "expected ending in chrome-profile: {}",
@@ -585,14 +583,18 @@ mod tests {
 
         let p = "/home/akagi/chromium-profile";
         let arg = format!("--user-data-dir={p}");
-        assert!(user_data_dir_arg_matches(&arg, p, PathMatchRules::LINUX));
+        assert!(user_data_dir_arg_matches(
+            &arg,
+            p,
+            PathMatchRules::CASE_SENSITIVE
+        ));
         assert!(user_data_dir_arg_matches(&arg, p, PathMatchRules::MACOS));
 
         // An arg that isn't --user-data-dir at all never matches.
         assert!(!user_data_dir_arg_matches(
             "--remote-debugging-port=1234",
             p,
-            PathMatchRules::LINUX
+            PathMatchRules::CASE_SENSITIVE
         ));
     }
 
@@ -608,7 +610,7 @@ mod tests {
         assert!(!user_data_dir_arg_matches(
             "--user-data-dir=/x/chromium-profile-backup",
             "/x/chromium-profile",
-            PathMatchRules::LINUX
+            PathMatchRules::CASE_SENSITIVE
         ));
         assert!(!user_data_dir_arg_matches(
             "--user-data-dir=/x/chromium-profile-backup",
@@ -627,7 +629,7 @@ mod tests {
     /// invoked): must match on case-insensitive filesystems (Windows NTFS,
     /// macOS APFS) but not on case-sensitive Linux.
     #[test]
-    fn udd_case_folding_windows_macos_not_linux() {
+    fn udd_case_folding_windows_macos_case_sensitive() {
         assert!(user_data_dir_arg_matches(
             r"--user-data-dir=c:\P\CHROME-PROFILE",
             r"C:\p\chrome-profile",
@@ -636,7 +638,11 @@ mod tests {
         let arg = "--user-data-dir=/Users/Akagi/Chrome-Profile";
         let p = "/users/akagi/chrome-profile";
         assert!(user_data_dir_arg_matches(arg, p, PathMatchRules::MACOS));
-        assert!(!user_data_dir_arg_matches(arg, p, PathMatchRules::LINUX));
+        assert!(!user_data_dir_arg_matches(
+            arg,
+            p,
+            PathMatchRules::CASE_SENSITIVE
+        ));
     }
 
     /// A double-quoted value must still match (defensive: sysinfo on Windows
@@ -649,7 +655,7 @@ mod tests {
         assert!(user_data_dir_arg_matches(
             "--user-data-dir=\"/p/chrome-profile\"",
             "/p/chrome-profile",
-            PathMatchRules::LINUX
+            PathMatchRules::CASE_SENSITIVE
         ));
     }
 
@@ -670,7 +676,7 @@ mod tests {
         assert!(!user_data_dir_arg_matches(
             r"--user-data-dir=\p\chrome-profile",
             "/p/chrome-profile",
-            PathMatchRules::LINUX
+            PathMatchRules::CASE_SENSITIVE
         ));
         assert!(!user_data_dir_arg_matches(
             r"--user-data-dir=\p\chrome-profile",
@@ -701,7 +707,7 @@ mod tests {
         assert!(user_data_dir_arg_matches(
             "--user-data-dir=/p/chrome-profile/",
             "/p/chrome-profile",
-            PathMatchRules::LINUX
+            PathMatchRules::CASE_SENSITIVE
         ));
         assert!(user_data_dir_arg_matches(
             "--user-data-dir=/p/chrome-profile",
@@ -721,7 +727,7 @@ mod tests {
         assert!(!user_data_dir_arg_matches(
             "--log-cmd=--user-data-dir=/p/chrome-profile",
             "/p/chrome-profile",
-            PathMatchRules::LINUX
+            PathMatchRules::CASE_SENSITIVE
         ));
     }
 

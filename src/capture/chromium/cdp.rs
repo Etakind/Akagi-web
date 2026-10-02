@@ -65,22 +65,6 @@ fn decode_payload(b64: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
-/// Outcome of decoding a `Network.webSocketFrame*` payload into raw bytes
-/// for the bridge.
-///
-/// CDP's `WebSocketFrame.payloadData` is shaped by the WS opcode (RFC 6455):
-///
-/// - opcode `1` (text): the field is a **plain UTF-8 string**. Tenhou
-///   uses this — frames look like `{"tag":"INIT",…}` and the heartbeat
-///   `<Z/>`. We pass the bytes straight through; the bridge re-parses them.
-/// - opcode `2` (binary): the field is a **base64-encoded string**.
-///   Majsoul uses this (length-prefixed protobuf).
-/// - everything else (`0` continuation, `8` close, `9` ping, `10` pong):
-///   carries no game data — drop.
-///
-/// Splitting this out so the dispatch is unit-testable: prior to this
-/// fix the inline branches only handled opcode 2, which silently dropped
-/// every Tenhou frame on the chromium backend.
 #[derive(Debug, PartialEq, Eq)]
 enum FrameDecode {
     Bytes(Vec<u8>),
@@ -124,12 +108,7 @@ pub fn page_handle_cleared_by_removal(owner: Option<&str>, removed: &[String]) -
     matches!(owner, Some(o) if removed.iter().any(|r| r == o))
 }
 
-/// Hosts whose WebSocket creation hands the page handle to autoplay.
-/// `maj-soul.com` covers en/cn/jp portals; `mahjongsoul.com` is the
-/// Yostar mirror. `tenhou.net` and `mjv.jp` are Tenhou's portal and its
-/// game gateway respectively — Tenhou autoplay speaks on the page's own
-/// socket, so it needs the same page handle.
-const AUTOPLAY_HOST_HINTS: &[&str] = &["maj-soul.com", "mahjongsoul.com", "tenhou.net", "mjv.jp"];
+const AUTOPLAY_HOST_HINTS: &[&str] = &["maj-soul.com", "mahjongsoul.com"];
 
 fn is_autoplay_target_url(ws_url: &str) -> bool {
     AUTOPLAY_HOST_HINTS.iter().any(|h| ws_url.contains(h))
@@ -428,181 +407,6 @@ pub(super) fn official_majsoul_page(value: &str) -> bool {
         && url.password().is_none()
 }
 
-/// URL of the script that carries the Tenhou client.
-///
-/// Versioned (`/4/1141.js`, reached through a redirect from `latest.js`), so
-/// the pattern matches by shape rather than by version.
-const TENHOU_CLIENT_URL_PATTERN: &str = "*tenhou.net/4/*.js";
-
-/// Ask the browser to hand us the Tenhou client script before the page runs
-/// it, so it can be rewritten to expose its handler registry.
-///
-/// Paused at the *response* stage: we want the bytes, not just the request.
-async fn enable_script_rewrite(page: &Page) -> Result<()> {
-    use chromiumoxide::cdp::browser_protocol::fetch::{EnableParams, RequestPattern, RequestStage};
-    let pattern = RequestPattern {
-        url_pattern: Some(TENHOU_CLIENT_URL_PATTERN.to_string()),
-        resource_type: None,
-        request_stage: Some(RequestStage::Response),
-    };
-    let params = EnableParams {
-        patterns: Some(vec![pattern]),
-        handle_auth_requests: None,
-    };
-    page.execute(params).await.context("Fetch.enable")?;
-    Ok(())
-}
-
-/// Reload the page if its client script slipped past the interceptor.
-///
-/// Attaching is racy by construction: the browser opens on the game URL and
-/// we subscribe afterwards, so the client script is usually fetched — or
-/// served from disk cache — before `Fetch.enable` takes effect. The
-/// interceptor is then armed for a request that has already happened.
-///
-/// Reloading past the cache puts the script back through it. Done once, at
-/// attach, so it lands on the lobby rather than mid-game; a page that already
-/// carries the door is left alone, which is what keeps this from looping.
-async fn reload_if_uninstrumented(page: &Page) -> Result<()> {
-    use chromiumoxide::cdp::browser_protocol::page::ReloadParams;
-
-    let expr = format!(
-        "(()=>{{try{{return !!window.{} || !/tenhou\\.net/.test(location.host);}}\
-          catch(e){{return true}}}})()",
-        crate::autoplay::tenhou::inject::EXPORT_GLOBAL
-    );
-    let done = page
-        .evaluate(expr)
-        .await
-        .ok()
-        .and_then(|r| r.value().and_then(|v| v.as_bool()))
-        .unwrap_or(true);
-    if done {
-        return Ok(());
-    }
-    info!("CDP: re-loading the Tenhou client so it passes through the interceptor");
-    let params = ReloadParams::builder().ignore_cache(true).build();
-    page.execute(params).await.context("Page.reload")?;
-    Ok(())
-}
-
-/// Rewrite one paused response and let it through.
-///
-/// Every outcome continues the request — instrumentation that fails must cost
-/// the discard path, never the page. A derivation failure is surfaced to the
-/// user because it means the client changed shape and the pattern that finds
-/// its handler registry needs revisiting; that is a report worth having.
-async fn rewrite_paused_script(
-    page: &Page,
-    notify: &NotifyBus,
-    request_id: chromiumoxide::cdp::browser_protocol::fetch::RequestId,
-    url: &str,
-) {
-    use crate::autoplay::tenhou::inject;
-    use chromiumoxide::cdp::browser_protocol::fetch::{
-        ContinueRequestParams, FulfillRequestParams, GetResponseBodyParams,
-    };
-
-    let passthrough = |id: chromiumoxide::cdp::browser_protocol::fetch::RequestId| {
-        ContinueRequestParams::builder().request_id(id).build().ok()
-    };
-
-    let body = match page
-        .execute(GetResponseBodyParams::new(request_id.clone()))
-        .await
-    {
-        Ok(r) => {
-            let inner = r.result;
-            if inner.base64_encoded {
-                base64::engine::general_purpose::STANDARD
-                    .decode(inner.body.as_bytes())
-                    .ok()
-                    .and_then(|b| String::from_utf8(b).ok())
-            } else {
-                Some(inner.body)
-            }
-        }
-        Err(e) => {
-            // Redirects and other bodiless responses land here. The pattern
-            // is deliberately loose enough to catch the client whatever
-            // version it is served under, so it also catches its neighbours;
-            // that is expected, not a fault.
-            debug!("CDP: no body for {url}: {e:#}");
-            None
-        }
-    };
-
-    let rewritten = match body.as_deref().map(inject::rewrite_client) {
-        Some(Ok(js)) => Some(js),
-        // Not the client at all — the URL pattern matches its neighbours
-        // too (`inflate_min.js`, the `latest.js` redirect). Nothing to say.
-        Some(Err(inject::InjectError::NoDiscardHandler)) => {
-            debug!("CDP: {url} is not the Tenhou client; passing through");
-            None
-        }
-        // It *is* the client — it registers a discard handler — but the
-        // registry could not be recovered. That means the client changed
-        // shape, which is the one failure here that cannot be diagnosed from
-        // logs alone, so ask for a report.
-        Some(Err(e)) => {
-            warn!("CDP: cannot instrument the Tenhou client ({url}): {e}");
-            let _ = notify.send(
-                crate::schema::Notification::warn("Tenhou autoplay unavailable")
-                    .body(format!(
-                        "This build of the Tenhou client could not be instrumented ({e}).                          Discards will not be played. Please report this so the client                          pattern can be updated."
-                    ))
-                    .sticky(),
-            );
-            None
-        }
-        None => None,
-    };
-
-    let sent = match rewritten {
-        Some(js) => {
-            let encoded = base64::engine::general_purpose::STANDARD.encode(js.as_bytes());
-            match FulfillRequestParams::builder()
-                .request_id(request_id.clone())
-                .response_code(200)
-                // A fulfilled response carries none of the original headers.
-                // Today the browser sniffs the missing type and executes
-                // anyway, but one `X-Content-Type-Options: nosniff` on
-                // tenhou.net's side would turn that into a blocked script —
-                // so say what it is.
-                .response_header(
-                    chromiumoxide::cdp::browser_protocol::fetch::HeaderEntry::new(
-                        "Content-Type",
-                        "text/javascript",
-                    ),
-                )
-                .body(encoded)
-                .build()
-            {
-                Ok(p) => {
-                    if let Err(e) = page.execute(p).await {
-                        warn!("CDP: could not serve the instrumented client: {e:#}");
-                        false
-                    } else {
-                        info!("CDP: Tenhou client instrumented ({url})");
-                        true
-                    }
-                }
-                Err(e) => {
-                    warn!("CDP: could not build the instrumented response: {e}");
-                    false
-                }
-            }
-        }
-        None => false,
-    };
-
-    if !sent {
-        if let Some(p) = passthrough(request_id) {
-            let _ = page.execute(p).await;
-        }
-    }
-}
-
 /// Enable Network on the page, subscribe to the four WS events, and
 /// spawn a routing task. Returns the task handle so the poll loop can
 /// abort it when the tab closes.
@@ -618,24 +422,6 @@ async fn attach_page(
     notify: NotifyBus,
     official_majsoul_only: bool,
 ) -> Result<JoinHandle<()>> {
-    // The pause listener has to exist before `Fetch.enable` arms the
-    // interceptor: a request paused with no listener yet is a request nobody
-    // ever continues, and the page hangs on it. The stream buffers
-    // (unbounded) until the routing task below starts polling, so
-    // subscribing early costs nothing.
-    let mut on_paused = page
-        .event_listener::<chromiumoxide::cdp::browser_protocol::fetch::EventRequestPaused>()
-        .await
-        .context("subscribe requestPaused")?;
-    // The existing-browser mode only captures Majsoul. Do not install Tenhou
-    // interception or run its page JavaScript on a personal browser tab.
-    if !official_majsoul_only {
-        if let Err(e) = enable_script_rewrite(&page).await {
-            warn!("CDP: client instrumentation unavailable: {e:#}");
-        } else if let Err(e) = reload_if_uninstrumented(&page).await {
-            warn!("CDP: client instrumentation unavailable: {e:#}");
-        }
-    }
     let mut on_created = page
         .event_listener::<EventWebSocketCreated>()
         .await
@@ -673,10 +459,6 @@ async fn attach_page(
         let mut readiness: HashMap<String, GameReadiness> = HashMap::new();
         loop {
             tokio::select! {
-                Some(ev) = on_paused.next() => {
-                    let url = ev.request.url.clone();
-                    rewrite_paused_script(&page, &notify, ev.request_id.clone(), &url).await;
-                }
                 Some(ev) = on_created.next() => {
                     let key = FlowKey {
                         target: target_id.clone(),
@@ -820,10 +602,6 @@ async fn attach_page(
                     // cleared by the poll loop when the tab itself closes.
                 }
                 Some(ev) = on_request.next() => {
-                    // Fires for every subresource the page loads — the
-                    // asymmetry with the MITM leg, where a whole session
-                    // is a couple of dozen requests. Filter first, and
-                    // keep the recognizers' work off the hot path.
                     if is_static_asset(ev.r#type.as_ref()) && !http_cfg.static_assets {
                         continue;
                     }
@@ -846,8 +624,6 @@ async fn attach_page(
                         ts_ms: Local::now().timestamp_millis(),
                         source: CaptureSource::Chromium,
                         exchange: HttpExchange {
-                            // CDP hands out a real request id, so pairing
-                            // here is exact — unlike the MITM leg.
                             exchange_id: Some(ev.request_id.inner().clone()),
                             phase: HttpPhase::Request,
                             method: ev.request.method.clone(),
@@ -880,10 +656,6 @@ async fn attach_page(
                             version: String::new(),
                             status: Some(ev.response.status as u16),
                             headers: headers_of(&ev.response.headers),
-                            // Reading a body here costs a separate
-                            // `Network.getResponseBody` round-trip per
-                            // request, which the MITM leg does not need.
-                            // Say so rather than look like there was none.
                             body: Some(HttpBody {
                                 text: None,
                                 bytes: None,
@@ -902,9 +674,6 @@ async fn attach_page(
     Ok(handle)
 }
 
-/// Subresource types that say nothing about the client and would bury
-/// everything else. A WebGL game pulls thousands; the MITM leg never sees
-/// them at all because the game fetches them outside the proxied path.
 fn is_static_asset(kind: Option<&ResourceType>) -> bool {
     matches!(
         kind,
@@ -917,9 +686,6 @@ fn is_static_asset(kind: Option<&ResourceType>) -> bool {
     )
 }
 
-/// CDP delivers headers as a JSON object, which has no wire order to
-/// preserve — unlike the MITM leg, where order is a real fingerprint.
-/// Sorted so two captures of the same request compare equal.
 fn headers_of(headers: &Headers) -> Vec<HttpHeader> {
     let Some(map) = headers.inner().as_object() else {
         return Vec::new();
@@ -1055,8 +821,6 @@ mod tests {
         assert!(!page_handle_cleared_by_removal(None, &["TAB_A".into()]));
     }
 
-    /// Regression: prior code dropped every non-binary frame, which
-    /// silently broke Tenhou capture (Tenhou uses opcode 1 / text).
     #[test]
     fn text_frame_passes_through_as_utf8_bytes() {
         let payload = r#"{"tag":"INIT","seed":"1,0,0,2,5,134"}"#;
@@ -1068,7 +832,6 @@ mod tests {
 
     #[test]
     fn text_heartbeat_passes_through() {
-        // Tenhou's `<Z/>` heartbeat is a 4-byte text frame.
         assert_eq!(
             decode_frame_payload(1, "<Z/>"),
             FrameDecode::Bytes(b"<Z/>".to_vec())

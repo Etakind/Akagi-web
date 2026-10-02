@@ -7,7 +7,6 @@ mod merge;
 mod network;
 mod overlay;
 mod platform;
-mod proxy;
 
 pub use autoplay::{
     AutoplayConfig, DelayDistribution, DelayMode, DelayModelConfig, MajsoulAutoplayConfig,
@@ -20,23 +19,88 @@ pub use merge::merge_into;
 pub use network::{GithubMirrorMode, NetworkConfig};
 pub use overlay::{OverlayConfig, TOP_N_MAX, TOP_N_MIN};
 pub use platform::{Platform, PlatformConfig};
-pub use proxy::ProxyConfig;
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct AppConfig {
     pub general: GeneralConfig,
     pub logging: LoggingConfig,
     pub platform: PlatformConfig,
-    pub proxy: ProxyConfig,
     pub bot: BotConfig,
     pub capture: CaptureConfig,
     pub autoplay: AutoplayConfig,
     pub overlay: OverlayConfig,
     pub network: NetworkConfig,
+}
+
+// 仅在读取边界识别废弃字段，运行配置不携带代理或其他游戏实现。
+impl<'de> Deserialize<'de> for AppConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut raw = serde_json::Value::deserialize(deserializer)?;
+        let object = raw
+            .as_object_mut()
+            .ok_or_else(|| serde::de::Error::custom("configuration must be a table"))?;
+        let had_legacy_proxy = object.contains_key("proxy");
+        let legacy_enabled = object
+            .get("proxy")
+            .and_then(|p| p.get("enabled"))
+            .and_then(|v| v.as_bool());
+        let unsupported_game = object
+            .get("platform")
+            .and_then(|p| p.get("kind"))
+            .is_some_and(|v| v.as_str() != Some("Majsoul"));
+        let capture = object
+            .entry("capture")
+            .or_insert_with(|| serde_json::json!({}));
+        let capture = capture
+            .as_object_mut()
+            .ok_or_else(|| serde::de::Error::custom("capture must be a table"))?;
+        let unsupported_mode = capture
+            .get("mode")
+            .is_some_and(|v| v.as_str() != Some("chromium"))
+            || (had_legacy_proxy
+                && !capture.contains_key("mode")
+                && !capture.contains_key("enabled"));
+        if !capture.contains_key("enabled") {
+            capture.insert(
+                "enabled".into(),
+                serde_json::json!(legacy_enabled.unwrap_or(true)),
+            );
+        }
+        capture.insert("mode".into(), serde_json::json!("chromium"));
+        object.insert("platform".into(), serde_json::json!({"kind":"Majsoul"}));
+        #[derive(Default, Deserialize)]
+        #[serde(default)]
+        struct CurrentConfig {
+            pub general: GeneralConfig,
+            pub logging: LoggingConfig,
+            pub platform: PlatformConfig,
+            pub bot: BotConfig,
+            pub capture: CaptureConfig,
+            pub autoplay: AutoplayConfig,
+            pub overlay: OverlayConfig,
+            pub network: NetworkConfig,
+        }
+        let c: CurrentConfig = serde_json::from_value(raw)
+            .map_err(|_| serde::de::Error::custom("invalid configuration; details omitted"))?;
+        let mut config = Self {
+            general: c.general,
+            logging: c.logging,
+            platform: c.platform,
+            bot: c.bot,
+            capture: c.capture,
+            autoplay: c.autoplay,
+            overlay: c.overlay,
+            network: c.network,
+        };
+        if unsupported_game || unsupported_mode {
+            config.capture.enabled = false;
+            config.capture.unavailable_reason = Some("此版本仅支持雀魂网页端 Chromium 采集；旧游戏或 MITM 配置已停用，请在设置中确认浏览器后重新启用采集。".into());
+        }
+        Ok(config)
+    }
 }
 
 enum ResolvedPath {
@@ -45,17 +109,12 @@ enum ResolvedPath {
 }
 
 fn resolve_config_path(cli_path: Option<&Path>) -> ResolvedPath {
-    resolve_config_path_inner(
-        cli_path,
-        crate::util::user_config_root(),
-        crate::util::is_appimage(),
-    )
+    resolve_config_path_inner(cli_path, crate::util::user_config_root())
 }
 
 fn resolve_config_path_inner(
     cli_path: Option<&Path>,
     user_cfg_root: Option<PathBuf>,
-    appimage: bool,
 ) -> ResolvedPath {
     if let Some(p) = cli_path {
         if p.exists() {
@@ -84,14 +143,6 @@ fn resolve_config_path_inner(
     let cwd_candidate = PathBuf::from("configs.toml");
     if cwd_candidate.exists() {
         return ResolvedPath::Existing(cwd_candidate);
-    }
-
-    // No existing config. Choose a writable target. Under AppImage (or
-    // whenever exe dir is read-only), write to the user config dir.
-    if appimage {
-        if let Some(user_cfg) = user_cfg_root {
-            return ResolvedPath::Missing(user_cfg.join("config.toml"));
-        }
     }
 
     let target = std::env::current_exe()
@@ -130,8 +181,6 @@ pub fn load_config(cli_path: Option<&Path>) -> (AppConfig, PathBuf) {
             match write_default_config(&target) {
                 Ok(()) => target,
                 Err(e) => {
-                    // Read-only fs (AppImage on hosts that don't set $APPIMAGE,
-                    // or system installs in /usr): retry under user config dir.
                     if let Some(user_cfg) = crate::util::user_config_root() {
                         let fallback = user_cfg.join("config.toml");
                         if fallback != target {
@@ -171,7 +220,11 @@ pub fn load_config(cli_path: Option<&Path>) -> (AppConfig, PathBuf) {
             Ok(config) => config,
             Err(_) => {
                 eprintln!("Failed to parse config; details omitted, using defaults");
-                AppConfig::default()
+                let mut config = AppConfig::default();
+                config.capture.enabled = false;
+                config.capture.unavailable_reason =
+                    Some("配置无法读取，请在设置中检查后启用采集。".into());
+                config
             }
         },
         Err(e) => {
@@ -310,27 +363,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Regression: under AppImage the exe dir is read-only squashfs. The
-    /// missing-config target must point at the user config dir instead of
-    /// `<exe_dir>/configs/config.toml`, otherwise the default-write fails
-    /// with `Read-only file system (os error 30)`.
-    #[test]
-    fn appimage_routes_missing_target_to_user_config_dir() {
-        let user_cfg = temp_dir("appimage-user-cfg");
-        let resolved = resolve_config_path_inner(None, Some(user_cfg.clone()), true);
-        match resolved {
-            ResolvedPath::Missing(p) => {
-                assert_eq!(p, user_cfg.join("config.toml"));
-            }
-            ResolvedPath::Existing(p) => panic!("expected Missing, got Existing({})", p.display()),
-        }
-        std::fs::remove_dir_all(&user_cfg).ok();
-    }
-
     #[test]
     fn non_appimage_does_not_route_to_user_config_dir() {
         let user_cfg = temp_dir("non-appimage-user-cfg");
-        let resolved = resolve_config_path_inner(None, Some(user_cfg.clone()), false);
+        let resolved = resolve_config_path_inner(None, Some(user_cfg.clone()));
         match resolved {
             ResolvedPath::Missing(p) => {
                 assert!(
