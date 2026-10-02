@@ -1,19 +1,6 @@
 name: CI
 
-# Fast PR gate: lint + test on Linux, plus a compile-only check on the other
-# two release targets. The full cross-platform build and packaging still lives
-# in release.yml (manual only in this fork). The goal here is to catch fmt / clippy /
-# compile / test / frontend breakage before merge — `cargo test --lib` alone
-# misses integration-test compile breaks, so we also compile every test target.
-#
-# The macOS/Windows check exists because Linux alone is not enough to prove the
-# code compiles: an API can be `cfg`'d out on another platform and still build
-# clean here. That is not hypothetical — `WebviewWindowBuilder::transparent` is
-# gated behind Tauri's `macos-private-api` feature on macOS, so the overlay
-# window compiled fine on Linux, passed every PR, and only blew up when the
-# v3.3.2 tag reached release.yml, which is the first thing that ever compiles
-# for macOS.
-
+# 雀魂网页维护版：双平台 Rust 回归，Linux 仅运行通用检查。
 on:
   pull_request:
     branches: [dev]
@@ -30,13 +17,14 @@ permissions:
 
 jobs:
   rust:
-    name: Rust (fmt + clippy + test)
-    runs-on: ubuntu-22.04
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Fork setup regression (offline)
-        run: python3 scripts/test_setup_fork.py
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -52,64 +40,27 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The crate links tauri, so even `cargo test --lib` needs the GTK /
-      # WebKit dev libs to compile. Mirrors release.yml's Linux deps
-      # (minus the bundling-only patchelf / libfuse2).
-      - name: Linux system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            libsoup-3.0-dev \
-            libssl-dev
-
       - name: rustfmt
         run: cargo fmt --all -- --check
 
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: test (lib)
-        run: cargo test --lib
+      - name: test all targets
+        run: cargo test --locked --all-targets
 
-      # Compile every test target (integration tests, benches) without
-      # running them. This is the check that would have caught the
-      # spawn_with_command arity break in tests/example_bot.rs.
-      - name: build all test targets
-        run: cargo test --no-run --all-targets
+      - name: Native bot regression
+        run: cargo test --locked --manifest-path native_bot/Cargo.toml
 
-  # Compile-only on the other two release targets. No tests, no packaging — the
-  # point is purely "does this platform's cfg path still build", which is the
-  # one thing the Linux gate above structurally cannot tell us. `macos-14` is
-  # arm64, matching release.yml's `aarch64-apple-darwin`.
-  compile:
-    name: Compile (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14, windows-latest]
+  tools:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      # build.rs runs prost-build on liqi.proto and needs protoc on PATH.
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v3
+      - uses: actions/setup-python@v5
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # --all-targets so the bin (and its `generate_context!`) is compiled too,
-      # not just the lib.
-      - name: cargo check
-        run: cargo check --all-targets --locked
+          python-version: '3.12'
+      - run: python3 scripts/test_setup_fork.py
+      - run: python3 scripts/test_web_only.py
 
   frontend:
     name: Frontend (lint + build)

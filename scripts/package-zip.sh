@@ -37,7 +37,6 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(grep -m1 '^version = ' "$ROOT/Cargo.toml" | cut -d'"' -f2)"
 
 case "$TARGET" in
-  x86_64-unknown-linux-gnu) OS=linux;   ARCH=x64;   EXE=akagi ;;
   aarch64-apple-darwin)     OS=macos;   ARCH=arm64; EXE=akagi ;;
   x86_64-pc-windows-msvc)   OS=windows; ARCH=x64;   EXE=akagi.exe ;;
   *)
@@ -88,10 +87,10 @@ Quick start
 -----------
 1. Move this folder anywhere you have write permission (e.g. ~/Apps/, Desktop, etc.).
 2. Run the binary:
-     Linux/macOS:  ./akagi
+     macOS:  ./akagi
      Windows:      akagi.exe
 3. On first launch, Akagi creates these directories alongside the binary:
-     config.toml   logs/   history/   ca/   mjai_bot/
+     config.toml   logs/   history/   chrome-profile/   mjai_bot/
 
 Platform notes
 --------------
@@ -109,27 +108,15 @@ EOF
     ;;
   macos)
     cat >> "$STAGE/README.txt" <<EOF
-- The binary is unsigned. macOS Gatekeeper will block the first launch.
-  Either run once with the quarantine bit removed:
-    xattr -cr "\$(pwd)/$PKG"
-  or right-click the binary and choose "Open" the first time.
+- The binary is unsigned. Verify its source before using the macOS Open action.
 - Apple Silicon only — no Intel build.
-EOF
-    ;;
-  linux)
-    cat >> "$STAGE/README.txt" <<'EOF'
-- Built on ubuntu-22.04, requires glibc 2.35 or newer.
-- Requires WebKit2GTK 4.1:
-    Debian/Ubuntu:  apt install libwebkit2gtk-4.1-0
-    Fedora:         dnf install webkit2gtk4.1
-    Arch:           pacman -S webkit2gtk-4.1
 EOF
     ;;
 esac
 
 cat >> "$STAGE/README.txt" <<'EOF'
 
-Full documentation: https://github.com/shinkuan/AkagiV3
+Full documentation: https://github.com/Etakind/Akagi/blob/dev/README.md
 EOF
 
 # Pick a zip tool. windows-latest GHA runners ship 7z but not zip;
