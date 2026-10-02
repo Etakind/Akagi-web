@@ -1,3 +1,5 @@
+> 个人维护版：开发规则、与上游的差异及同步方法见[仓库维护指导](docs/FORK_MAINTENANCE.md)。
+
 > 本地安全构建：请先阅读[安全行为、依赖适用条件与手动验收](SECURITY_HARDENING.md)。新日志不记录原始帧或 HTTP 正文，应用内覆盖更新已禁用。
 
 <!-- markdownlint-disable MD033 MD041 -->

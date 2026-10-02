@@ -1,3 +1,5 @@
+> 個人維護版：開發規則、與上游的差異及同步方式見[倉庫維護指南](docs/FORK_MAINTENANCE.md)。
+
 > 本機安全版本：請先閱讀[安全行為、依賴適用條件與手動驗收](SECURITY_HARDENING.md)。新日誌不記錄原始訊框或 HTTP 內文，應用程式內覆蓋更新已停用。
 
 <!-- markdownlint-disable MD033 MD041 -->

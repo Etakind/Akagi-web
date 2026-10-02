@@ -1,11 +1,7 @@
 name: Auto Liqi
 
 on:
-  schedule:
-    - cron: '0 0 * * *'
   workflow_dispatch:
-  repository_dispatch:
-    types: [update_available]
 
 permissions:
   contents: write
@@ -13,6 +9,8 @@ permissions:
 
 jobs:
   auto-liqi:
+    # Personal fork receives protocol changes through upstream/v3 merges.
+    if: github.repository == 'shinkuan/Akagi'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout v3

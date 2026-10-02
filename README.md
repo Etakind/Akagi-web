@@ -1,3 +1,5 @@
+> Personal fork: see the [maintenance and upstream synchronization guide](docs/FORK_MAINTENANCE.md).
+
 > Local security build: see [security behavior, dependency conditions and manual acceptance](SECURITY_HARDENING.md). New logs omit raw frames and HTTP bodies; upstream automatic installation is disabled.
 
 <!-- markdownlint-disable MD033 MD041 -->

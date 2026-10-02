@@ -3,6 +3,14 @@
 Build / release / protocol-update tooling. Each script is invoked from
 the repo root.
 
+## Personal fork setup
+
+Run `python3 scripts/setup-fork.py` after cloning the personal repository, and
+`python3 scripts/setup-fork.py --check` to verify local configuration. It installs
+an upstream push guard without changing global Git settings. Offline regression:
+`python3 scripts/test_setup_fork.py`. See [the maintenance guide](../docs/FORK_MAINTENANCE.md)
+for branch roles, synchronization commands and hook compatibility.
+
 ## `fetch-runtime.sh`
 
 Downloads `python-build-standalone` and `uv` for a target triple, into
@@ -57,7 +65,9 @@ used so the zip stays small (~half the size of a flattened copy).
 
 ## `extract_liqi.py`
 
-Polled daily by `.github/workflows/auto-liqi.yml`. Reconstructs the Mahjong
+The upstream version was polled daily by `.github/workflows/auto-liqi.yml`.
+This fork receives protocol changes through upstream merges; its automatic
+protocol workflow is disabled. The script reconstructs the Mahjong
 Soul liqi protocol **directly from the live Unity client asset bundles** —
 the protobuf descriptors shipped as Lua in `Protol/*_pb.lua` and the service
 table in `docs/proto_config.bytes` — and writes:
@@ -66,7 +76,7 @@ table in `docs/proto_config.bytes` — and writes:
 - `src/bridge/majsoul/liqi.json` — flat rpc-map `".lq.Svc.method" → {req, resp}`.
 
 It exposes `product_version`, `bundle_hash`, and `changed=true/false` as GHA
-outputs; the workflow opens a PR on `v3` when the schema moved. Requires
+outputs; the original workflow opens a PR on `v3` when the schema moved. Requires
 `requests`, `UnityPy`, and `protobuf`. There is no dependency on any external
 proto release or on the legacy `res/proto/liqi.json` CDN file (a lagging
 Laya-era artifact since Mahjong Soul's Unity WASM migration).

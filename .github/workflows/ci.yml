@@ -2,7 +2,7 @@ name: CI
 
 # Fast PR gate: lint + test on Linux, plus a compile-only check on the other
 # two release targets. The full cross-platform build and packaging still lives
-# in release.yml (tag-triggered). The goal here is to catch fmt / clippy /
+# in release.yml (manual only in this fork). The goal here is to catch fmt / clippy /
 # compile / test / frontend breakage before merge — `cargo test --lib` alone
 # misses integration-test compile breaks, so we also compile every test target.
 #
@@ -16,9 +16,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [v2, v3]
+    branches: [dev]
   push:
-    branches: [v2, v3]
+    branches: [dev]
 
 # A newer push to the same ref cancels the in-flight run.
 concurrency:
@@ -34,6 +34,9 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+
+      - name: Fork setup regression (offline)
+        run: python3 scripts/test_setup_fork.py
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -129,6 +132,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Test
+        run: npm test
 
       # `npm run build` is `tsc -b && vite build` — type-checks too.
       - name: Build

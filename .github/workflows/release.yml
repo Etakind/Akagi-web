@@ -1,9 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v3.*'
   workflow_dispatch:
     inputs:
       publish_release:
@@ -20,28 +17,7 @@ env:
   UV_VERSION: '0.11.8'
 
 jobs:
-  guard:
-    name: Verify tag is on v3 branch
-    # Skip the branch check on manual dispatch — the user picks the ref
-    # themselves in the dispatch UI, and there is no tag to verify.
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Check tag reachable from origin/v3
-        run: |
-          set -euo pipefail
-          git fetch origin v3
-          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/v3; then
-            echo "tag ${GITHUB_REF} commit ${GITHUB_SHA} is not on the v3 branch" >&2
-            exit 1
-          fi
-
   build:
-    needs: guard
-    if: ${{ always() && (needs.guard.result == 'success' || needs.guard.result == 'skipped') }}
     name: ${{ matrix.target }}
     strategy:
       fail-fast: false
@@ -187,11 +163,7 @@ jobs:
   sign:
     name: Sign artifacts
     needs: build
-    # `always()` because the implicit success() condition requires every
-    # *transitive* ancestor to have succeeded — and on workflow_dispatch
-    # the guard job is skipped, which would silently skip this job too
-    # (same reason `build` carries it).
-    if: ${{ always() && needs.build.result == 'success' }}
+    if: ${{ needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       # Needed for minisign.pub, which the fresh signatures are verified
@@ -207,15 +179,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${MINISIGN_SECRET_KEY:-}" ]]; then
-            # A tagged release must never silently ship unsigned: the
-            # in-app updater refuses unsigned assets over mirrors, so the
-            # breakage would surface only for the users this feature
-            # exists for, one release too late. Manual dispatch keeps
-            # the soft path for pre-secret experimentation.
-            if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
-              echo "::error::MINISIGN_SECRET_KEY secret is not set — refusing to publish an unsigned tagged release"
-              exit 1
-            fi
+            # Manual builds remain useful before a personal signing key is set.
             echo "::warning::MINISIGN_SECRET_KEY secret is not set — assets will be UNSIGNED"
             exit 0
           fi
@@ -244,12 +208,8 @@ jobs:
   release:
     name: Publish GitHub release
     needs: sign
-    # Only publish on tag push, or when manually dispatched with the
-    # publish_release input checked. Plain workflow_dispatch (no tag, no
-    # input) just leaves artifacts + signatures on the run page.
-    # `always() && sign == success` for the same skipped-guard reason as
-    # `sign` — and a failed sign job must block publishing.
-    if: ${{ always() && needs.sign.result == 'success' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_release)) }}
+    # Publishing requires an explicit manual choice; the default only builds.
+    if: ${{ needs.sign.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
