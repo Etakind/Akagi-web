@@ -61,6 +61,8 @@ const RESET_GRACE_MS: u64 = 500;
 ///
 /// Implementations own the transport (subprocess pipe, in-process Python,
 /// ...) and any per-game state. Calls are sequential — no internal queueing.
+// async_trait 0.1.89 adds #[must_use] to an already must-use boxed Future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait BotRunner: Send {
     /// Push a batch of events; return the bot's reaction.

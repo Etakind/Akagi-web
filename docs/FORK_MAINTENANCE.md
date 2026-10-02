@@ -134,4 +134,6 @@ cargo build --locked --release --features custom-protocol
 - GitHub 工作流 YAML 及触发条件检查通过。CI 的矩阵维持原状；远端执行结果以 [dev 对应的 Actions 记录](https://github.com/Etakind/Akagi/actions?query=branch%3Adev) 为准，不能将本地结果当作远端或 Windows 实测。
 - 待提交清单完成敏感路径与常见令牌格式检查；账号、会话、私钥、日志、本机配置及未知用途的 `command` 均未纳入。该检查不是穷尽所有秘密格式的保证。
 - 整理时修复了一个依赖本地 `logs` 是否存在的旧测试，改用独立临时路径；修正严格 Clippy 指出的等价分支、默认值写法及代码排列，没有改变其业务语义。
-- 本次没有重新操作真实游戏、启用自动打牌或执行 Windows 实机验收；正式版构建及远端设置的最终结果随交付说明报告。
+- 首次远端 CI 在 Rust 1.99 的 Clippy 阶段发现 `async_trait` 0.1.89 生成重复 `must_use` 的告警；仅在 `src/bot/runner.rs` 的 `BotRunner` 与 `src/capture/mod.rs` 的 `CaptureBackend` trait 上允许该宏生成告警，保留其余 `-D warnings` 检查。后续升级宏库时重新评估此兼容标记。
+- 正式版构建通过；全新本地克隆切换到 main 后防护仍生效，且不包含本机私密路径。GitHub 已确认仓库私有、默认分支为 dev；main 仍与上述上游基线一致。
+- 本次没有重新操作真实游戏、启用自动打牌或执行 Windows 实机验收；远端 CI 的最终结果随交付说明报告。
