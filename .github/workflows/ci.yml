@@ -33,6 +33,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # 首次 Windows 编译较慢；测试失败也保存已构建的依赖。
+          cache-on-failure: true
 
       # build.rs runs prost-build on liqi.proto and needs protoc on PATH.
       - name: Setup protoc
