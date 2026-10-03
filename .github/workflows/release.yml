@@ -83,6 +83,9 @@ jobs:
           version=$(python3 -c 'import re; print(re.search(r"^version = \"([^\"]+)\"", open("Cargo.toml").read(), re.M).group(1))')
           [[ "$RELEASE_TAG" == "v$version" ]] || { echo 'Release tag and application version must match'; exit 1; }
           gh release create "$RELEASE_TAG" release-assets/* --draft --verify-tag --title "Akagi Web $RELEASE_TAG" --notes-file "$notes"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/uploaded-release.json"
+          # GitHub's tag endpoint does not reliably resolve an unpublished draft.
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > "$RUNNER_TEMP/release-drafts.json"
+          release_id=$(python3 -c 'import json, os, sys; matches = [r for page in json.load(open(sys.argv[1])) for r in page if r["tag_name"] == os.environ["RELEASE_TAG"] and r["draft"]]; assert len(matches) == 1, "Expected one matching draft"; print(matches[0]["id"])' "$RUNNER_TEMP/release-drafts.json")
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > "$RUNNER_TEMP/uploaded-release.json"
           python3 scripts/verify_release.py release-assets --uploaded-metadata "$RUNNER_TEMP/uploaded-release.json" --tag "$RELEASE_TAG"
-          gh release edit "$RELEASE_TAG" --draft=false --latest
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false -f make_latest=true --silent
