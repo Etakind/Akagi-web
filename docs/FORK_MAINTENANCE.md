@@ -94,6 +94,12 @@ Manual release defaults to building artifacts; publishing requires an explicit e
 for that commit. There are no tag-triggered releases, scheduled protocol changes or automatic
 merges.
 
+The application and standalone `native_bot` manifests optimize `gemm-common` and
+`gemm-f16` in development/test profiles. This works around their [AArch64 debug-build
+issue](https://github.com/sarah-quinones/gemm/issues/31) while preserving runtime CPU
+feature dispatch; do not replace it with a global `+fp16` or `target-cpu=native` setting.
+Revisit these package overrides when the dependency fixes its helper annotations.
+
 ## Remaining risks and improvements
 
 | Risk / trigger | Current protection | Improvement direction |
