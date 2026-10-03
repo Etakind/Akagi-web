@@ -1,45 +1,182 @@
-# 个人维护版开发与同步指导
+# Maintaining the local web fork
 
-本文件记录 Etakind/Akagi 与 shinkuan/Akagi 的差异及用户逐项确认的维护规则。
-它是后续开发、上游合并和多设备同步的依据；不使用 AGENTS.md 承载这些规则。
-详细测试证据、历史排查及依赖公告见 [SECURITY_HARDENING.md](../SECURITY_HARDENING.md)。
+**English** | [简体中文](FORK_MAINTENANCE.zh-CN.md) · [User guide](../README.md)
 
-## 仓库与支持目标
+This document records the owner's approved scope and merge rules for `Etakind/Akagi`.
+The current change is `feature/local-web-platforms`, based on personal `dev` commit
+`68b47ada54982f46a1206887193fd8ada1f80df9`. The inspected upstream baseline is
+`shinkuan/Akagi` branch `v3`, commit `cd68865f9e93eddcda6451cd18874a6f68c5fb49`.
+Comparisons below describe that baseline, not an unverified future upstream release.
 
-| 名称 | 用途 | 允许的修改 |
-| --- | --- | --- |
-| `upstream` | `https://github.com/shinkuan/Akagi`，原开源仓库 | 只获取更新，禁止推送。上游主线实际名为 `v3`。 |
-| `origin` | `git@github.com:Etakind/Akagi.git`，个人私有仓库 | 个人分支与设备间同步的唯一常规推送目标。 |
-| `main` | 镜像 `upstream/v3`，跟踪 `origin/main` | 只快进，不加入个人代码、文档或工作流。 |
-| `dev` | 个人集成分支，跟踪 `origin/dev`；个人仓库默认分支 | 本维护版代码、文档及工作流。 |
-| `feature/*`、`fix/*`、`experiment/*` | 从 `dev` 创建的短期分支 | 完成验证后合并回 `dev`。 |
+## Scope and differences
 
-初始上游基线为 `cd68865f9e93eddcda6451cd18874a6f68c5fb49`。原本名为 `upsteam` 的远端更名为 `upstream`。
+Only **Majsoul and Tenhou official web clients** are runtime choices. Keep the desktop
+UI, local 3p/4p advice, Majsoul overlay, history, Inspector and opt-in automatic play.
+Do not restore MITM, certificate management, system proxy, native-game interception,
+cloud services, external executable bots or bundled Python/uv during an upstream merge.
+Old protocol labels in history/Inspector remain read compatibility, not capabilities.
 
-维护范围现为 **macOS / Windows 上的雀魂网页端**；正式构建目标为 macOS Apple Silicon 与 Windows x64。
-保留 Edge 附加模式和独立 Chromium 模式，不安装证书或修改系统代理。Linux 仅可运行通用 CI，不维护应用运行、下载或打包路径。
-本地 Intel macOS 开发回归不代表新增 Intel 安装包承诺。Windows 编译及自动测试也不能替代实机浏览器和文件权限验收。
+| Area | Upstream baseline → maintenance behavior | Reason and merge rule | Implementation and migration | Evidence / follow-up |
+|---|---|---|---|---|
+| Capture | Multiple capture/game backends → Chromium CDP with two official web clients | Reduce privileged interception and unused attack surface. Never install a CA, change system proxy, disable TLS, sandbox or Origin checks. | `src/capture/chromium/`, `src/config/platform.rs`, `src/bridge/{majsoul,tenhou}/`; mode stays `chromium`. | Restored Tenhou code selectively from the stated baseline; no current replay/live-game regression. |
+| Browser attachment | HTTP-centric endpoint discovery → HTTP then fixed local locator fallback when no profile is specified | Edge's UI-enabled server may return 404 for `/json/version`. Never inspect session databases to find a browser. | `launch.rs`, `detect.rs`, `connection.rs`, `discovery.rs`; details below. | Local production build passed; locator discovery reached authorization, which timed out. No official-page subscription confirmed in this attempt. |
+| Actions | Platform adapters → opt-in, unique selected official page, generation/window guards | A stale action must not reach a different page, game or decision. Failure pauses input, never refreshes the game. | `src/autoplay/`, `cdp.rs`; game/autoplay changes invalidate context. | Source review only for this revision; real input and client-change behavior unverified. |
+| Inference | Local / external / remote options → embedded `native` / `native3p` only | Remove remote game uploads and arbitrary Python bot/dependency execution. | `src/bot/{native,manager,supervisor}.rs`; external selections migrate to bundled models and disable autoplay. | Local compilation; no inference consistency regression executed now. Training/conversion tools remain development-only. |
+| Review and accounts | Cloud review, sharing, keys, billing and subscriptions → removed | Eliminate application upload paths and remote account/credit state. | Removed API modules, IPC handlers, routes/stores/translations. `src/network.rs` owns remaining HTTP client construction. | Source network inventory, not a packet-capture proof. No local review or model import feature added. |
+| Themes | Remote/theme expressions → local JSON and constrained literal colors | Prevent theme CSS from fetching remote resources. Production WebView CSP restricts resources to local assets and Tauri IPC. | `themeStore.ts`, `tauri.conf.json`, `main.tsx`; unsafe cached CSS is not injected at boot. | Production frontend compilation; CSP/WebView behavior on other systems unverified. |
+| Logs and files | Raw protocol/config information could persist → metadata redaction and private files | Login frames, raw HTTP bodies and secrets must not reach logs or Inspector. Keep parsing data intact. | `src/privacy.rs`, `logger/`, `inspector/`, `schema/inspector.rs`, `util/private_fs.rs`; legacy `FrameRaw.text/binary` readable, new frames `redacted`. | Existing regression sources retained; not executed this revision. Historical results are separately versioned. |
+| Updates/downloads | Upstream auto-install/mirrors and bot installers → personal release metadata, manual installation, explicit official browser downloads | Preserve the reviewed build and avoid untrusted executable additions. Do not reinstate upstream overwrite installation. | `updater/check.rs`, `capture/chromium/cft.rs`, `network.rs`; old mirror configuration is unused. | Static review; no release/download installation performed. |
+| Distribution | Upstream packaging → five declared targets, no Python/uv or AppImage | One target inventory avoids divergent workflows and filenames. Installed data must use writable user locations. | `build/targets.json`, `build_targets.rs`, `platform.rs`, `util/mod.rs`, `scripts/package.py`, workflows. | Only host macOS x86_64 binary built. Matrix entries are not build/device acceptance. |
 
-## 必须保留的差异
+### Network boundary
 
-以下规则已由用户批准。上游合并不能以“恢复上游行为”为由撤销它们。
+Akagi does not upload accounts, games, history, logs or inference data to remote services.
+Inference runs locally. Update checks and user-initiated downloads remain available.
+This is the implemented source boundary; a full traffic audit is still a future check.
+The game website still connects to its own servers, and optional actions use its client.
+An open browser is not an offline system.
 
-| 差异与原因 | 保留规则 | 代码入口 | 验证状态与限制 |
-| --- | --- | --- | --- |
-| 日志可能包含登录凭据及会话数据 | WS 原帧、完整协议载荷和 HTTP 正文不落盘、不广播；URL 去用户信息、查询与片段；敏感头及配置 Debug 脱敏。仅改变记录副本，保留 MJAI、分析与历史。旧 `bodies=true` 不恢复正文；兼容旧 Inspector 记录。 | `src/privacy.rs`、`src/logger/`、`src/inspector/`、`src/schema/inspector.rs` | 有虚构凭据泄露回归及本机日志检查；不追溯保证旧日志、副本或其他软件。 |
-| 凭据与本地敏感数据保护 | 不提交账号、会话、配置、日志；Unix 私有文件 0600、目录 0700，拒绝不安全链接及所有者。移除 MITM 后不再创建或使用 CA，已有文件和系统信任由用户处理。 | `src/util/private_fs.rs`、`src/util/credentials.rs` | Unix 有自动测试；Windows 等效 ACL/链接保护仍待专项补齐，不能声称已验证。 |
-| 只维护雀魂网页接入，减少代理攻击面与维护成本 | 删除 MITM/CA/证书改写、天凤与一番街运行代码；HTTP/CDP 元数据仍脱敏，剩余 HTTPS 请求严格验证 TLS。上游合并不得恢复已删后端。 | `src/capture/chromium/`、`src/bridge/majsoul/`、`src/config/` | 旧 MITM TLS 测试属于历史证据；当前版本不存在该链路。浏览器、日志及配置回归结果见下文。 |
-| 常用 Edge 接入和页面发现不稳定 | 仅回环 CDP；只采集官方雀魂页面；发现与订阅有超时、传输重连有预算；403 与授权超时不循环重试；中途接入缺状态时提示游戏自身重连，不自动刷新牌桌。 | `src/capture/chromium/{launch,connection,discovery,cdp,mod}.rs` | 有模拟 CDP 回归和本机订阅证据；未证明彻底解决浏览器所有授权拒绝条件。 |
-| 附加模式原先没有自动操作页面 | 建议为基础；自动打牌须用户主动开启；只有唯一官方游戏页时绑定，每次操作检查页面，断开清理绑定。保留解析、建议及历史。 | `src/autoplay/`、`src/capture/chromium/cdp.rs`、`src/bridge/majsoul/` | 有解析、自动操作与页面边界测试；用户确认第一局建议可用。真实自动点击及整场历史落盘的专项实机验收仍待完成。 |
-| 下载内容可能执行代码 | CfT 只用官方 HTTPS 清单及源，不使用未验证镜像、不自动移除隔离属性；机器人镜像仅有效签名或直接 GitHub 可信摘要匹配时允许安装，存在无效签名始终拒绝。 | `src/capture/chromium/cft.rs`、`src/bot/install.rs`、`src/github/` | 有摘要及签名拒绝测试；本机未安装外部机器人。主动安装的本地机器人以当前用户权限执行，Python venv 不是安全沙箱。 |
-| 云上传和上游包覆盖会改变本构建边界 | 云功能默认关闭，实测配置不使用云推理及云复盘；保留版本信息与发布页入口，禁止应用内上游更新包覆盖个人构建。 | `src/config/bot.rs`、`src/ipc/commands.rs`、`frontend/src/components/UpdateDialog.tsx` | 代码检查及回归；“默认关闭”不等于移除所有用户主动启用的云功能。 |
-| 依赖公告需结合实际调用路径 | 优先兼容更新，大版本单独评估；剩余公告记录受影响平台、启用条件及待办，不用扫描条数代替风险判断。 | `Cargo.toml`、两个 `Cargo.lock`、`frontend/package*.json`、`scripts/audit_dependencies.py` | 历史审计快照见 `dependency-audit.json`；具体适用条件见安全记录。更新依赖后应重新审计。 |
-| 构建范围与上游不同 | dev/目标为 dev 的 PR 检查；Rust 回归仅 macOS/Windows，Linux 只跑通用检查。PR/手动构建仅两种正式目标；无定时协议更新及标签自动发布。 | `.github/workflows/`、`scripts/test_web_only.py` | 不自动发布安装包；验证状态见下文。 |
+Remaining app requests have explicit purposes:
 
-## 新设备与推送防护
+| Purpose | Destination and constraints | Data |
+|---|---|---|
+| Release information | Fixed GitHub API endpoint for `Etakind/Akagi`, strict HTTPS, no redirect fallback | Ordinary metadata GET and app version in User-Agent; no game/account payload |
+| User-requested browser acquisition | Official Chrome for Testing manifests and exact official HTTPS assets; redirects rejected | Version/platform selection; no gameplay payload |
+| Browser control | Loopback-only HTTP/CDP endpoint, no discovery proxy or redirects | Game observation and optional input inside the local browser |
 
-需要 Git 与 Python 3；Windows 使用 Git for Windows（hook 由其 sh 执行），Python 须可运行。
-首次默认分支切换完成后，新的克隆会检出 dev；显式命令如下：
+Private GitHub API access may fail anonymously. Offer the personal release page through
+the user's browser; do not ask for browser Cookies, borrow its credentials, or substitute
+an upstream installation. No inference/capture startup path downloads missing browsers.
+The remaining URL-opening command is a user action, not a background uploader.
+
+### Edge discovery and connection rules
+
+- Explicit user-data directory: read its `DevToolsActivePort` with file/owner/link/port
+  checks. Reject an unsafe or mismatched locator; do not connect another browser. A
+  missing locator can use standard HTTP discovery on the same configured port.
+- Empty directory: try standard HTTP discovery first; if unavailable, inspect only known
+  browser user-data roots. An explicit executable restricts the browser family. Read only
+  the locator, without recursion, Cookie/session reads or profile permission changes.
+- Deduplicate valid loopback endpoints matching the selected port. Connect only one;
+  ambiguity requires an explicit directory. Rediscover on every transport reconnection.
+- Distinguish unreachable port, unavailable discovery, rejected locator, ambiguity,
+  authorization rejection/timeout, no official page, and missing initial game state.
+  Full endpoints, locator contents and arbitrary handshake responses stay out of logs.
+- A 403 is not automatically a user denial: Origin and unknown refusal are separate
+  classifications. No repeated automatic 403 retries or Origin bypass flags.
+- Attach mode leaves the user's browser open when capture stops. Independent mode uses
+  a private Akagi profile and rejects known ordinary browser roots. Do not reset the
+  user's session files or navigate an attached page to make attachment succeed.
+
+The allowlist is exact HTTPS origin/path scope: `game.maj-soul.com/1/` and `tenhou.net/4/`,
+with no URL credentials or nondefault port. Similar domains are rejected. Multiple
+matching pages disable binding instead of arbitrarily choosing one. A matching URL
+alone does not prove a hand can be reconstructed; parsing readiness is a separate gate.
+
+### Tenhou adapter and automatic play
+
+Automatic play is off by default. Observe WebSocket messages without script modification
+when it is off. When enabled, prepare a response interceptor only for the selected
+Tenhou page and recognized official `/4/` client scripts. Require successful status,
+bounded size and the expected source structure before exposing the internal discard entry.
+The adapter does not relax browser TLS or execute arbitrary downloaded bot code.
+
+Independent launch prepares listeners and the adapter before navigating a new page.
+Attachment to an already loaded client may have no adapter: report that input is paused;
+the user can safely re-enter later. Do not refresh on their behalf. Unknown client code,
+missing adapter, page ambiguity, stale decision window or missing initial hand stops
+input while available observation/advice remains. Delay Lua stays in its restricted
+runtime, without file/process/network APIs. Tenhou 3p/4p behavior and actual automatic
+clicks still require dedicated future regression and human acceptance.
+
+## Configuration and local data
+
+| Setting / old data | Current behavior |
+|---|---|
+| `capture.enabled` | Explicit value wins; otherwise read old `proxy.enabled`; default true. |
+| `capture.mode` | Only `chromium`. A removed mode stops capture and shows an explanation. |
+| `platform.kind` | `Majsoul` or `Tenhou`; known old Tenhou Chromium configs work again. Removed games stop capture without resetting unrelated settings. |
+| `capture.chromium.attach_port` | Nonzero attaches; zero launches an isolated browser. Empty `user_data_dir` means automatic locator discovery only in attach mode. |
+| `bot.active_4p/active_3p` | Fixed bundled models. Old external selections produce a notice and disable autoplay. Old remote API flags cannot restore uploads. |
+| Saved obsolete fields | On normal save, remove known proxy/cloud/external-bot/mirror fields; preserve unrelated settings and unknown user fields. Unknown fields do not create executable capabilities. |
+| `capture.http.bodies` / `record_all` | Bodies never captured; `record_all` only broadens redacted HTTP metadata. |
+| History / Inspector | Existing files are not rewritten. Legacy source labels and raw frame formats remain readable; new recordings are redacted. |
+
+Only tracked obsolete code/resources are removed. The application does not clean old
+`account`, local configs, browser profiles, CA keys, logs, histories, external bot folders
+or Python environments. They may remain sensitive and unused. Old CA files and OS trust
+are separate: deleting implementation does not revoke installed trust. The owner must
+review any cleanup or trust removal. Do not commit any of these artifacts, even privately.
+
+Unix private files use 0600 and private directories 0700 with safe-write/link checks.
+Existing Windows ACL and reparse-point behavior still needs a dedicated device review;
+Unix modes are not a Windows confidentiality guarantee. Writable portable installs use
+executable-relative data paths; read-only installed locations fall back to user config/data
+roots. Existing configuration search order and explicit absolute paths remain respected.
+Do not write application data into `/usr` or silently move prior histories.
+
+## Building, packaging and release rules
+
+`build/targets.json` is the target source for Rust browser mapping, CI and packaging:
+
+| Target | Native runner / baseline | Assets |
+|---|---|---|
+| `x86_64-pc-windows-msvc` | Windows | ZIP |
+| `x86_64-apple-darwin` | Intel macOS | ZIP |
+| `aarch64-apple-darwin` | Apple Silicon macOS | ZIP |
+| `x86_64-unknown-linux-gnu` | Ubuntu 22.04 | ZIP / DEB / RPM |
+| `aarch64-unknown-linux-gnu` | Ubuntu 22.04 ARM | ZIP / DEB / RPM |
+
+See [README build commands](../README.md#build-from-source). Linux needs GTK3/WebKitGTK
+4.1 and the dependencies declared in `tauri.conf.json`. DEB targets Ubuntu 22.04/24.04 and
+Debian 12/13; RPM is documented for Fedora; Arch builds from source. These are intended
+compatibility targets, not distro acceptance results. Ubuntu 22.04 is the chosen older
+[Tauri baseline](https://v2.tauri.app/distribute/appimage/); no AppImage code is restored.
+
+Packaging validates the target before creating/copying/downloading/deleting anything.
+It includes the embedded models, licenses, NOTICE, and usage docs, not Python/uv or local
+runtime data. Linux native packages come from the matching Tauri build. Each target has
+an asset inventory and SHA256 file. Hashes establish consistency, not publisher identity.
+Optional minisign uses an already configured key only after a probe verifies against the
+repository public key. Missing keys leave assets unsigned; mismatch stops signing. Never
+automatically generate/rotate signing identities or claim macOS notarization/Windows signing.
+
+CI covers `dev` pushes and PRs targeting `dev`. The authorized `/build-artifacts` PR
+workflow and manual release reuse the same five-target builder. No tag-triggered releases,
+scheduled protocol updates or automatic merges. Manual release defaults to artifacts only;
+publishing requires an explicit existing tag for that exact build commit. This revision
+only changes configurations: no workflows, packages or formal Release were dispatched.
+
+## Remaining risks and improvements
+
+| Risk and trigger | Current boundary | Follow-up |
+|---|---|---|
+| CDP grants access to a browser session | Loopback, explicit browser authorization, official-page selection; never read session databases | Prefer isolated profiles; close debugging when unused; review changes in browser authorization and locator security. |
+| Automatic play and game rules | User opt-in, page/window checks, fail closed | User must assess account/game policy consequences; validate actions manually on each client version before relying on them. |
+| Tenhou client changes | Recognized source shape only; missing adapter pauses input | Recorded replay and changed-script fixtures, UI adapter versioning and real input acceptance. |
+| Local information | Redacted transport logs, private new files; MJAI/history still include game and player information | Review old logs/backups and Windows permissions; do not distribute local histories or old raw Inspector exports casually. |
+| Unsigned desktop binaries | Manual provenance/hash/signature checks; no automatic OS trust modifications | Provision owner's signing/notarization identities separately if desired. |
+| Linux glib advisory | Restoring Linux makes GTK/glib a runtime dependency again | `glib 0.18.5` is affected by [RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html), unsafe `VariantStrIter` iteration. A malicious/invalid variant reaching that iterator is the relevant condition; application reachability is not established here. The earlier “Linux disabled” exclusion no longer applies. Coordinate GTK/Tauri compatible upgrades or a reviewed backport; upstream fixed glib at 0.20.0. |
+| Other dependency/system-library defects | Strict TLS retained; no forced major dependency upgrades | Reaudit the changed lockfile and enabled features; maintain supported OS libraries and assess actual parsers/inputs, not just alert counts. |
+
+`dependency-audit.json` is an older snapshot, not a new scan. Historical quick-xml concerns
+involved attribute/namespace processing through plist; historical rand findings depended
+on reentrant logging; npm mahgen transitives involved Node image/file/download paths.
+Those old reachability notes are leads for a fresh audit, not proof for this revision.
+Unmaintained dependencies remain maintenance debt. Nothing here establishes malicious
+exfiltration; removing unused upload paths reduces exposure without claiming all bugs are gone.
+
+## Repository synchronization and push protection
+
+| Ref | Role |
+|---|---|
+| `origin` | Private `git@github.com:Etakind/Akagi.git`; personal code and multi-device synchronization |
+| `upstream` | `https://github.com/shinkuan/Akagi`; fetch only, actual baseline branch `v3` |
+| `main` | Exact upstream mirror, tracks `origin/main`; fast-forward only, no personal commits |
+| `dev` | Personal default/integration branch, tracks `origin/dev` |
+| `feature/*`, `fix/*`, `experiment/*` | Start from `dev`; review before integration |
+
+New clone:
 
 ```sh
 git clone --branch dev git@github.com:Etakind/Akagi.git
@@ -48,33 +185,25 @@ python3 scripts/setup-fork.py
 python3 scripts/setup-fork.py --check
 ```
 
-Windows 的 Python 命令如为 `python`，将上述 `python3` 替换为 `python`。
-脚本检查 origin 身份，新增 upstream 或将 upsteam 更名，设置仅本仓库生效的默认推送及拉取策略。
-它不读取账号、浏览器会话或私钥，不修改全局 Git 配置，不自动获取、提交或推送代码。
+Use `python` if that is Python 3's Windows command. The standard-library/Git script sets
+repository-local `remote.pushDefault=origin`, `push.default=simple`, `pull.ff=only`, an
+unusable upstream push URL and a local `pre-push` guard. The guard blocks upstream by
+remote name and SSH/HTTPS URL. It lives under Git's local management directory, so it
+survives checkout of `main`; existing hooks are preserved/chained. External shared hooks
+are not overwritten. Reinstall after cloning/moving or changing Python installations.
+This prevents accidents and is deliberately bypassable; it is not a remote permission wall.
 
-防护包含不可用的 `remote.upstream.pushurl` 和本地 `pre-push` 检查器：后者同时拦截 upstream 名称及原仓库 SSH/HTTPS 地址。
-检查器保存在本地 Git 管理目录，切换到 main 仍有效。已有 pre-push 保留为 `pre-push.akagi-original`，允许的推送继续调用它，参数、标准输入及退出状态得到保留。
-若配置了外部共享 `core.hooksPath`，脚本拒绝覆盖并报告；先自行安排仓库本地 hooks 后再运行。
-新克隆、移动仓库或更换 Python 安装后重新运行配置脚本。Git 配置和 hook 不随普通克隆复制。
-这些是防误操作措施，主动修改配置或绕过 hook 可以绕开，不能替代远端权限控制。
-
-## 日常开发与上游同步
-
-先确认 `git status --short` 为空；把正在进行的修改提交到合适的个人分支，不能用 reset/clean 丢弃它们。
-日常开发示例：
+Require a clean working tree; never discard user changes to synchronize. Daily work:
 
 ```sh
 git switch dev
 git pull --ff-only origin dev
 git switch -c feature/example
-# 开发、测试，明确选择文件 git add 并提交
+# Stage reviewed files explicitly, commit, then:
 git push -u origin feature/example
 ```
 
-在 origin 发起目标为 dev 的 PR，检查 CI 和差异表后合并。普通 dev 拉取只允许快进；
-发生分叉时先检查两侧历史，再显式合并。只可对未发布的个人提交显式 rebase，不改写已发布历史，不强推。
-
-同步上游时逐步执行并检查每一步成功；发生失败立即停止，不把整段当作忽略错误的批处理：
+Run each upstream synchronization step separately and stop on failure:
 
 ```sh
 git fetch --no-tags origin
@@ -84,98 +213,43 @@ git merge --ff-only origin/main
 git merge-base --is-ancestor main upstream/v3
 git merge --ff-only upstream/v3
 git rev-parse main upstream/v3
-# 上一行必须得到两个相同 SHA；否则停止，不推送
+# Both hashes must match before pushing:
 git push origin main:main
 git switch dev
 git merge --ff-only origin/dev
 git merge main
-# 检查冲突、安全底线、差异表及测试，通过后才执行：
+# Review personal differences, resolve conflicts, perform the agreed validation:
 git push origin dev:dev
 ```
 
-main 无法快进或 SHA 不一致时停下分析，不 reset 或强推。dev 合并发生冲突时，逐项核对上表，
-解决后明确暂存文件并完成 merge；若需要放弃本次合并，工作区原本干净的前提下使用 `git merge --abort`。
-修复应在 dev/个人分支完成，不能在 main 留下个人提交。没有定时自动合并任务，也不批量推送标签。
+Stop if main diverges; no force push/reset to hide it. Resolve dev conflicts against this
+document; `git merge --abort` returns to the clean pre-merge state if abandoning the merge.
+Only unpublished personal commits may be explicitly rebased; never rewrite published history.
+Normally review CI before merging. For **this change**, the owner explicitly requested no
+CI, PR or merge: push only the feature branch and leave `dev`/`main` untouched.
 
-## 验证与文档维护
+## Evidence and future validation
 
-当前 CI 在 macOS/Windows 运行 Rust 检查与测试；Linux 运行前端、推送防护及裁剪边界检查。
-CI 编译通过不能替代本机权限保护、浏览器授权、实际自动点击等实机验证。
-开发时按相关变更运行，并在首次整理提交时完整核对：
+Current evidence: source/static review and production frontend plus host release builds.
+[Browser acceptance note](validation/2026-10-03-browser-attachment.md) separates endpoint
+discovery success from authorization timeout and unconfirmed official-page attachment.
+No automated tests, Clippy regression, CI, traffic audit, cross-platform builds, real game,
+automatic click, or other-device acceptance was performed for this revision.
 
-```sh
-python3 scripts/test_setup_fork.py
-python3 scripts/setup-fork.py --check
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets
-cargo test --locked --manifest-path native_bot/Cargo.toml
-cd frontend
-npm ci
-npm test
-npm run lint
-npm run build
-cd ..
-cargo build --locked --release --features custom-protocol
-```
+Future regression checklist (not marked passed):
 
-凭据、私钥、Cookie/站点会话、日志及本机配置不提交。仅提交审查过的源文件、测试、工具与文档；
-临时文件和用途不明文件留在本地。私有仓库也不能当作敏感数据备份。
-旧日志不自动删除或重写，其处理范围见安全记录。提交前的检查不得把真实凭据输出到终端、模型或 CI。
+- Locator discovery/reconnect, unsafe files, ambiguity, 403/timeouts, unique-page binding.
+- Tenhou/Majsoul replay, local advice consistency, late attachment, history and PT results.
+- Script changes, disabled autoplay, stale windows and disabled/changed game during a plan.
+- Old cloud/external configuration migration, unknown-field preservation, no-upload inventory.
+- Fictional credential redaction across all logs and Inspector, legacy record compatibility.
+- Linux glib reachability and renewed Cargo/npm audit; CSP on each native WebView.
+- Rust/frontend/native-bot regression and five-target native packaging/device acceptance.
 
-每次修改上述行为或合并上游，都同步更新差异表的代码入口及验证状态，并记录新的上游基线。
-普通版本和测试证据随提交维护；改变支持目标、安全底线、自动操作边界、同步或发布规则时，仍须用户逐项确认。
-不以旧测试结果冒充新版本验证；未运行、失败或受环境阻塞的检查须明确记录。
+Older successful tests belong to their old commits and remain in
+[SECURITY_HARDENING.md](../SECURITY_HARDENING.md) and Git history. Never use them as current
+results. Update both language versions, code pointers and evidence with related code or
+upstream merges. Changes to support scope, safety rules, automation or release policy need
+the owner's item-by-item agreement; routine version/evidence updates follow commits.
 
-### 历史：首次仓库整理验收（2026-10-02，裁剪前）
-
-- 本机 Rust 主项目 997 项测试通过、7 项按既有条件忽略；原生机器人 49 项、前端 121 项通过。TypeScript、前端 lint / 生产构建、Rust 格式与严格 Clippy 检查通过。
-- 推送防护 9 项离线测试通过，覆盖重复安装、原 hook 参数/输入/退出码、SSH/HTTPS 地址、共享目录及符号链接拒绝、错误 origin，以及本地 bare 仓库实际推送。upstream dry-run 被拒绝，未向上游执行真实推送。
-- GitHub 工作流 YAML 及触发条件检查通过。CI 的矩阵维持原状；远端执行结果以 [dev 对应的 Actions 记录](https://github.com/Etakind/Akagi/actions?query=branch%3Adev) 为准，不能将本地结果当作远端或 Windows 实测。
-- 待提交清单完成敏感路径与常见令牌格式检查；账号、会话、私钥、日志、本机配置及未知用途的 `command` 均未纳入。该检查不是穷尽所有秘密格式的保证。
-- 整理时修复了一个依赖本地 `logs` 是否存在的旧测试，改用独立临时路径；修正严格 Clippy 指出的等价分支、默认值写法及代码排列，没有改变其业务语义。
-- 首次远端 CI 在 Rust 1.99 的 Clippy 阶段发现 `async_trait` 0.1.89 生成重复 `must_use` 的告警；仅在 `src/bot/runner.rs` 的 `BotRunner` 与 `src/capture/mod.rs` 的 `CaptureBackend` trait 上允许该宏生成告警，保留其余 `-D warnings` 检查。后续升级宏库时重新评估此兼容标记。
-- 正式版构建通过；全新本地克隆切换到 main 后防护仍生效，且不包含本机私密路径。GitHub 已确认仓库私有、默认分支为 dev；main 仍与上述上游基线一致。
-- 本次没有重新操作真实游戏、启用自动打牌或执行 Windows 实机验收；远端 CI 的最终结果随交付说明报告。
-
-## 网页维护版裁剪规则（2026-10-02）
-
-| 变更与原因 | 保留规则与入口 | 验证与限制 |
-| --- | --- | --- |
-| 只使用雀魂网页，不再维护其他协议或客户端 | 删除代理、天凤、一番街解析和自动操作、注入与专属 PT 算法。`src/bridge/majsoul/` 和通用 MJAI/分析/历史继续维护。 | 旧历史标签、房间显示和 Inspector 来源仅为读取兼容保留，不作为运行入口。 |
-| 一个采集后端不需要多游戏/代理向导 | `capture.mode` 固定 `chromium`、`platform.kind` 固定 `Majsoul`；设置及向导提供端口 0/非零两种浏览器连接方式。 | 独立和附加模式都只采集官方雀魂页面，自动操作仅绑定唯一页面；不自动刷新对局。 |
-| 原启动开关属于已移除的代理配置 | `capture.enabled` 默认 true；缺失时读取旧 `proxy.enabled`，显式新值优先。`src/config/mod.rs` 读取并标记不可用模式，保存由 `merge.rs` 清理已废弃已知字段。 | 旧其他游戏/MITM 停止采集并提示；不重置机器人配置，不自动改写原文件，未知字段继续保留。 |
-| 无用的平台代码与资源增加维护负担 | 删除 Linux 浏览器/启动/AppImage 路径、移动图标及 Linux 打包目标。macOS 所需的 Unix 安全文件、进程和 Python 目录搬迁修复保留。 | 打包/运行时下载脚本在任何文件副作用前拒绝不支持目标；不承诺 Intel/ARM Windows 包。 |
-| 文档及界面宣传与维护范围不一致 | 根 `README.md` 是唯一中文使用入口；删除重复语言 README、无用产品宣传、旧游戏公告和代理设置翻译。界面多语言保留。 | 必要模块说明保持中文；安全记录保留历史事实并明确版本，许可证和归属不删除。 |
-
-接口变化：运行 IPC 的 CaptureKind/CaptureMode 只输出 Chromium；配置不再包含 proxy，新增 capture.enabled 与只读 unavailable_reason 提示。
-`FrameRaw` 的 redacted/text/binary 兼容不变；历史平台/MatchInfo 与旧 Inspector 的 MITM 来源保留为只读兼容数据。
-旧配置的代理未知用户字段保留，已废弃的已知代理字段在正常保存时删除；不主动扫描或改写其他配置文件。
-
-清理只针对 Git 跟踪内容。`account`、本机配置、`chrome-profile/`、`edge-game-profile/`、旧 CA、日志和历史目录保持原状。
-旧 CA 的文件及已安装信任分别处理：删除代码不会撤销系统信任，也不自动轮换或移除证书。具体遗留项见安全记录。
-
-上游合并时检查上述删除是否被重新引入；只有仍被保留功能引用的代码可以恢复。恢复支持范围或改变安全规则须逐项确认。
-旧实现直接查 Git 历史，不放归档源码副本。协议定义继续随上游同步，人工开发工具仍可使用。
-
-### 本次裁剪验证
-
-- 本机 `cargo test --locked --all-targets`：759 项通过、7 项忽略；配置迁移专项 8 项通过。覆盖脱敏、雀魂回放、建议、历史、旧 Inspector 格式、浏览器连接与自动操作边界。
-- 原生机器人 49 项通过；前端 16 个文件、113 项测试通过，lint、TypeScript 与生产构建通过。Rust fmt、严格 Clippy 和 `custom-protocol` release 构建通过。
-- 仓库防误推 9 项、网页裁剪/双目标脚本 3 项测试通过；工作流 YAML 解析及内部 Markdown 文件链接检查通过。提交内容检查不包含账号、会话、私钥、运行日志或本机配置。
-- 本机为 macOS x86_64 开发环境：release 命令行和禁用采集/机器人/自动操作的临时目录进程启动检查通过；正式产物目标仍为 Apple Silicon 与 Windows x64，本次不生成或发布安装包。
-- 临时独立 Edge 使用实际 Chromium 后端启动并订阅官方雀魂页面成功，随后关闭并清理临时目录。常用 Edge 的 9222 接口本次不可用，附加实机验收未完成；相关连接、授权失败、发现/重连和唯一页面边界由自动测试覆盖。
-- 本次未登录真实账号、开局或执行自动点击；Windows 实机、真实对局和自动点击保持未验收。此前真实使用记录仅见历史安全记录。
-- 远端双平台 CI 以 [PR #1](https://github.com/Etakind/Akagi/pull/1) 当前提交为准；通过后才合入 dev。首轮 macOS/前端/工具检查通过，Windows 严格 Clippy 发现凭据工具的 Unix 专用导入及 Windows 测试的多余 clone；已通过条件编译和等价测试写法修正，不放宽告警或凭据读取保护。第二轮 Windows 库测试 730 项通过后，旧工作流断言因 CRLF 换行失败；测试已统一换行并在两个格式上断言相同权限，CI 允许失败时保存依赖缓存。最终结果见 PR 检查记录。
-
-### 本次依赖审计适用条件
-
-重新查询 OSV 的 676 个 Cargo 包版本；明细保存在 `dependency-audit.json`。删除仅代理使用的 hudsucker、x509-parser 等直接依赖后，保留 rustls/h2 的安全版本约束，不做强制大版本升级。
-
-- `glib 0.18.5` 的两条 ID 是同一迭代器安全问题；来自 Tauri 的 Linux GTK 依赖，在两个正式目标的功能树中不启用。Cargo.lock 保留平台依赖不等于产品支持 Linux。
-- `quick-xml 0.38.4` 的 RUSTSEC-2026-0194/0195 分别要求检查大量 XML 属性或使用 NsReader。当前来自 `plist 1.8.0`；已检查它使用普通 Reader，没有调用属性迭代或 NsReader，雀魂帧也不走 XML。修复要求 quick-xml >=0.41，超出当前传递约束，后续随 plist/Tauri 兼容升级评估，不直接替换锁文件版本绕过约束。
-- `rand 0.7.3` 的两个 ID 描述同一自定义日志器重入线程 RNG 问题。当前为 HTML/CSS 构建工具链间接依赖，未启用其 log 功能，本项目日志器也不调用该 RNG。
-- `fxhash`、`paste`、`proc-macro-error` 为停止维护公告，分别存在于上游解析/构建/数值依赖链；记录维护风险，不等同于已发现的数据外传。
-- npm 剩余 `@jimp/core`、`file-type`、`phin` 三项中等风险条目来自 mahgen 的 Node 图像处理依赖。恶意 ASF 文件可能卡住旧解析器，phin 重定向可能携带敏感头；应用前端仅使用麻将牌渲染模块，未导入或调用这些下载/文件识别路径。后续升级 mahgen 时复核，不强制改变牌面渲染依赖的大版本。
-
-审计快照不证明没有其他漏洞；后续输入路径、启用功能或依赖变更都必须重查上述适用条件。
+The [current implementation record](validation/2026-10-03-local-web-platforms.md) lists exact build/static checks and deferred acceptance.

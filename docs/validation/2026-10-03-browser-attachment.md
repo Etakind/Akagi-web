@@ -13,5 +13,11 @@ No Cookie, account, session database or session-restore file is inspected.
 
 Executed: production frontend build and `cargo build --locked --release --features
 custom-protocol` succeeded on the current macOS host. No automated tests or CI
-were executed. Manual connection of the rebuilt application has been initiated;
-authorization/page subscription results will be recorded separately when known.
+were executed. The manual result below belongs to the standalone discovery fix
+(commit `51a936e`), before the broader local-web/platform changes.
+
+Manual result: the new release reached the browser authorization handshake,
+confirming locator discovery succeeded. The handshake timed out after 120 seconds
+(`approval_timeout=true`, `cdp_connected=false`). Official page subscription was
+not reached. No rejection/Origin bypass, browser restart, navigation or game action
+was attempted. The check process was then stopped; the attached Edge was left open.

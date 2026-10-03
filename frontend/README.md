@@ -1,20 +1,11 @@
-# 前端开发
+# Frontend development
 
-Tauri 桌面界面使用 React、TypeScript、Vite、Zustand 和 i18next。界面语言继续保留多语言；项目使用说明只维护根目录中文 README。
+React / TypeScript / Vite / Zustand / i18next desktop UI. Root user and maintenance guides are maintained in English and Simplified Chinese; existing UI languages remain.
 
-```sh
-npm ci
-npm test
-npm run lint
-npm run build
-```
+From this directory, `npm ci` then `npm run build` produces the production frontend. Future regression commands are `npm test` and `npm run lint`; neither was run for this revision.
 
-`types.ts` 与 Rust schema/config 保持一致；`lib/tauri.ts` 调用命令，`hooks/useTauriBridge.ts` 订阅事件。
-`stores/` 保存界面状态，`routes/Setup.tsx` 和 `routes/Settings.tsx` 只配置雀魂浏览器采集，端口 0 为独立模式，非零为回环附加模式。
-`capture.enabled` 是采集启动开关，`unavailable_reason` 显示旧配置被停用的原因。
-
-`tiles/CaptureControlTile.tsx` 保留历史布局 ID `proxy-control`，仅为已保存布局兼容，界面和运行功能均为浏览器采集。
-历史平台标签、房间显示和旧 Inspector text/binary/mitm 来源继续兼容读取；不提供其他游戏运行入口或 PT 规则。
-
-Inspector 收到的帧已脱敏，应显示 redacted 原因；不得在前端恢复原始帧或请求正文。
-界面测试和生产构建不代表 macOS/Windows 浏览器实机验收。前端通用 CI 可在 Linux 运行。
+`types.ts` mirrors Rust config/schema; `lib/tauri.ts` handles IPC; `useTauriBridge.ts` subscribes to local events.
+Setup and Settings select Majsoul/Tenhou and attach/isolated Chromium. Cloud, billing, sharing and external-bot routes are removed.
+Local themes accept constrained JSON colors; production CSP is in root tauri.conf.json. No remote theme fetch or cached arbitrary CSS injection.
+Inspector displays redacted reasons while retaining old record compatibility. Old platform/source labels and the saved `proxy-control` layout ID are compatibility data only.
+Production builds do not establish browser/game/platform acceptance. See the root maintenance guide for current evidence.

@@ -1,9 +1,12 @@
 # 配置与兼容
 
-`AppConfig` 提供通用、日志、雀魂平台、机器人、浏览器采集、自动操作、悬浮窗和下载配置。完整使用说明见根 README。
+`AppConfig` 提供通用、日志、Majsoul/Tenhou、内置机器人、浏览器采集、自动操作及悬浮窗设置。
+`capture.enabled` 显式值优先，否则读取旧 `proxy.enabled`；默认 true。模式固定 `chromium`。
+旧 MITM 或不支持游戏停采并提示，不重置无关设置。Tenhou Chromium 配置恢复识别。
 
-`capture.enabled` 控制自动启动；缺失时读取旧 `proxy.enabled`。模式固定 `chromium`，游戏固定 `Majsoul`。旧 MITM 或其他游戏配置标为不可用并暂停采集，不重置无关设置。新模式从 Rust 默认配置到首次设置向导保持一致。
+`merge.rs` 正常保存时删除已废弃的已知代理、云、机器人、镜像与云开发开关字段，保留未知字段和注释。
+未知字段不会恢复已删除运行能力。旧外部机器人选择迁移到内置模型，提示并关闭自动操作。
+`record_all` 仅扩大脱敏元数据范围；旧 `bodies=true` 不恢复正文。
 
-`merge.rs` 在保存时合并已知字段、保留未知字段和注释，删除已废弃的已知代理字段。配置读取错误不输出原始内容。`capture.http.record_all` 仅扩大脱敏元数据范围；旧 `bodies=true` 不恢复正文。
-
-浏览器参数不能关闭沙箱或证书校验，调试接口仅允许回环；云推理默认关闭。敏感配置 Debug 脱敏；文件经 private_fs 写入。配置解析和保存须同时验证 TOML 与 IPC JSON。
+附加模式目录为空可发现标准浏览器；独立模式仅用隔离目录。只允许回环，不能关闭沙箱/TLS/Origin 检查。
+配置错误不输出原始内容；文件由 private_fs 保护。后续迁移回归需同时覆盖 TOML 和 IPC JSON，本次未执行测试。

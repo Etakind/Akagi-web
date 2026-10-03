@@ -1,19 +1,17 @@
-# 开发与验收工具
+# 开发工具
 
-所有命令从仓库根目录运行。
+从仓库根目录执行，应用不依赖 Python 运行时。
 
-- `setup-fork.py` / `test_setup_fork.py`：安装及离线验证本地防误推配置。
-- `test_web_only.py`：验证双平台打包边界、不支持目标无文件副作用、废弃运行模块未恢复。
-- `fetch-runtime.sh <target>` / `package-zip.sh <target>`：仅支持 aarch64-apple-darwin、x86_64-pc-windows-msvc，供手动构建使用。
-- `audit_dependencies.py`：查询公开依赖元数据并更新根审计快照，不读取凭据。
-- `extract_liqi.py`：手动协议工具；日常协议更新优先随上游同步。
-- `prepare_edge_game_profile.py`：历史手动独立会话准备工具；常用 Edge 附加模式无需复制会话。只在明确需要独立目录时主动使用。
+- `setup-fork.py` / `test_setup_fork.py`：安装本地防误推配置及后续离线回归。
+- `package.py --matrix`：读取 `build/targets.json`；`--target <triple>` 打包已有同目标二进制，生成资产清单与 SHA256。
+- `package-zip.sh <triple>`：上述标准库打包器的兼容入口。Linux 还需先用 Tauri 生成 DEB/RPM。
+- `test_web_only.py`：后续检查运行功能边界和五目标清单；本次没有执行。
+- `audit_dependencies.py`：查询公开依赖元数据；历史快照不能代替新版本审计。
+- `extract_liqi.py`：人工协议工具；日常协议定义随上游同步。
 
-Rust examples 中 login_acceptance 是手动凭据验收，audit_session_logs 在本地内存检查凭据泄露，replay_session_analysis 用于牌局回放。不得在 CI 调用真实账号工具，不得打印 account 或会话内容。
+打包/审计使用 Python 3.11+，Git 配置脚本使用 Python 3 标准库。Python/uv 不随应用分发。
+旧复制浏览器会话工具已经删除；常用 Edge 附加只读取 DevToolsActivePort，不需要复制会话。
 
-本次主用已安装浏览器及内置机器人，不自动下载或安装外部机器人。虚拟环境不是安全沙箱。
-
-`RUST_LOG=off cargo run --locked --example browser_probe -- attach` 检查本机 9222；`isolated` 使用临时无登录 Edge 目录。
-该工具运行实际 Chromium 后端，输出固定结果码，诊断沿用项目脱敏；不读取 account、复制 Cookie、登录、刷新游戏或执行任何点击。
-`BROWSER_PAGE_SUBSCRIBED` 只证明官方页面已订阅，不证明完成牌局或自动操作验收。
-依赖审计工具需要 Python 3.11+ 的 tomllib；Git 配置及裁剪离线测试仅需 Python 3 标准库。
+Rust 手动工具：`browser_probe` 检查实际浏览器接入，`replay_session_analysis` 分析本地回放；
+`login_acceptance` 与 `audit_session_logs` 涉及本机内存凭据检查，只在用户明确授权时运行，绝不用于 CI。
+本次没有读取 account 或调用凭据工具。页面订阅成功也不能代表牌局/自动操作通过。

@@ -1,68 +1,165 @@
-# Akagi 雀魂网页维护版
+# Akagi — local web maintenance fork
 
-这是 [Etakind/Akagi](https://github.com/Etakind/Akagi) 的个人维护分支，基于 [shinkuan/Akagi](https://github.com/shinkuan/Akagi) 开发。
-仅支持 **雀魂网页端**；正式构建提供 **macOS Apple Silicon / Windows x64**。Akagi 本身仍是桌面程序。
+**English** | [简体中文](README.zh-CN.md)
 
-保留实时牌局解析、内置本地机器人建议、分析、悬浮窗、历史记录、脱敏 Inspector，以及用户主动开启的自动打牌。
-不提供 MITM、根证书管理、雀魂原生客户端、天凤、一番街、Linux 应用或移动端版本。
+This private maintenance fork of [shinkuan/Akagi v3](https://github.com/shinkuan/Akagi/tree/v3)
+uses **Majsoul and Tenhou official web clients** with bundled local inference.
 
-- [仓库维护、上游同步与差异表](docs/FORK_MAINTENANCE.md)
-- [安全行为与历史验证记录](SECURITY_HARDENING.md)
-- [开发与验收工具](scripts/README.md)
+## What differs from upstream
 
-## 常用 Edge 接入
+| Area | This maintenance version |
+|---|---|
+| Capture | Chromium CDP only: attach to an existing Edge/Chrome or launch an isolated browser. No MITM, CA installation or system proxy. |
+| Inference | Embedded four-player and three-player models only. No cloud inference, cloud review/sharing, API keys, subscriptions or external Python bots. |
+| Diagnostics | Redacted protocol/HTTP metadata, local analysis, history and Inspector. Raw login frames, headers and bodies are not stored. |
+| Automatic play | Opt-in; requires a unique official page and a current decision state. Failures never refresh a game automatically. |
+| Updates | Personal maintenance releases; manual installation. Upstream packages cannot replace this build. |
+| Distribution | Five configured targets below; no bundled Python/uv, AppImage or mobile client. |
 
-1. 在 Edge 开启仅本机访问的远程调试，确认页面显示 `127.0.0.1:9222`。若显示 `starting…`，服务尚未就绪。
-2. 在这个 Edge 实例打开官方雀魂页面，例如 `https://game.maj-soul.com/1/`，正常登录。
-3. 启动 Akagi，在设置的浏览器采集中填写调试端口 `9222`，启用采集并保存。浏览器出现本机调试授权提示时允许连接。
-4. 只保留一个官方游戏页供自动操作绑定。建议先在大厅接通，再进入人机局；中途接入缺少初始状态时，按提示通过游戏自身恢复连接。
-5. 确认牌局和建议正常后，可单独开启自动打牌。接入或点击失败时 Akagi 不自动刷新正在进行的对局。
+These changes reduce credential persistence, remove remote inference/upload paths and
+avoid trusting a local interception CA or downloaded executable bots. CDP still grants
+powerful browser access. See the [maintenance guide](docs/FORK_MAINTENANCE.md) for
+implementation boundaries, migration, remaining risks and upstream merge rules.
 
-附加模式不复制 Cookie，不要求提供账号密码，也不会在停止采集或退出 Akagi 时关闭常用 Edge。
-403 表示调试连接被拒绝，不能通过关闭 TLS 校验解决；确认授权及调试服务后手动重启采集。
+Akagi does not upload accounts, games, history, logs or inference data to remote services.
+Inference runs locally. Update checks and user-initiated downloads remain available.
+The game website itself still communicates with its game server; Akagi's optional actions
+use that client. This statement is a source-level design boundary, not a claim that a
+traffic audit was completed for this revision.
 
-## 独立浏览器模式
+## Games and features
 
-将调试端口设为 `0`，选择本机已安装的 Edge / Chrome，启动独立浏览器目录并在其中登录。
-设置中的配置目录仅用于此独立会话；不要把常用浏览器目录当作独立目录交给 Akagi 管理。
-附加模式指定目录时只读取其 `DevToolsActivePort`。没有系统浏览器时，可主动下载官方 Chrome for Testing。
-此模式无需安装根证书或配置系统代理，也不使用关闭沙箱、忽略证书错误的参数。
+| Official web client | Features |
+|---|---|
+| [Majsoul](https://game.maj-soul.com/1/) | 3p/4p parsing and local advice, overlay, history, Inspector, optional autoplay |
+| [Tenhou](https://tenhou.net/4/) | 3p/4p parsing and local advice, history and PT statistics, Inspector, optional autoplay |
 
-## 功能与数据
+Tenhou autoplay needs its client adapter. It is prepared only when autoplay is enabled.
+If attaching after the client script has loaded, re-enter or refresh **yourself when safe**.
+If the client changes or the current hand cannot be reconstructed, actions stop; wait
+for a complete next hand. No live Tenhou or automatic-input acceptance was done in this change.
+History is finalized when the complete game ends, not after each individual hand.
 
-- 内置四麻、三麻机器人无需另行安装。手动安装的外部机器人以当前用户权限执行，Python 虚拟环境不是安全沙箱。
-- 云推理默认关闭，云复盘需要主动提交。开启云服务会向相应服务发送推理或复盘数据。
-- 悬浮窗、日志级别、自动操作时序等在设置中调整。历史列表在整场结束后写入，一局结束不等于整场结束。
-- 新日志仅记录脱敏元数据；原始 WS 帧、HTTP 正文、认证头和 URL 查询不落盘或广播。MJAI 和历史仍包含牌局信息，应按个人数据管理。
-- 上游版本提示仅供参考；禁止上游更新包覆盖本维护版。个人构建通过 Git 同步及手动构建更新。
+## Packages and running
 
-旧 `proxy.enabled` 仅作为 `capture.enabled` 的读取兼容项，显式新值优先；保存设置时清理旧代理字段。
-旧 MITM 或其他游戏配置会停止采集并显示提示，机器人等无关设置保留。旧历史与 Inspector 文件仍可读取，不会被自动改写。
+| OS | CPU | Configured artifacts |
+|---|---|---|
+| Windows | x86_64 | `windows-x64.zip` |
+| macOS | x86_64 | `macos-x64.zip` |
+| macOS | ARM64 | `macos-arm64.zip` |
+| Linux | x86_64 | `linux-x64.zip`, DEB, RPM |
+| Linux | ARM64 | `linux-arm64.zip`, DEB, RPM |
 
-## 开发与构建
+These are build configurations, **not five completed builds or device validations**.
+Get personal builds from [maintenance releases](https://github.com/Etakind/Akagi/releases)
+(access requires your normal repository permission). Verify the asset's SHA256; verify
+its minisign signature when one is supplied. No release is published by this change.
 
-需要 Rust、Node.js/npm、Python 3、Git、Protobuf 编译器；Windows 使用 MSVC 构建工具和 WebView2。
-本地源码可在 macOS 开发工具链上回归；CI 分别验证正式目标，不能将本地结果当作 Windows 实机证明。
+Unzip into a user-owned directory. Run `akagi.exe` on Windows (WebView2 required),
+`./akagi` on macOS/Linux. Linux also needs its GTK/WebKitGTK runtime libraries; ZIPs do
+not bundle a Linux system. DEB targets Ubuntu 22.04/24.04 and Debian 12/13; RPM instructions
+target Fedora. Install with `sudo apt install ./akagi-*.deb` or `sudo dnf install ./akagi-*.rpm`.
+Arch uses source builds. Compatibility with these distributions has not been tested here.
+
+Programs may be unsigned/not notarized: verify provenance before authorizing OS execution.
+Do not disable browser TLS/sandboxing or globally remove OS quarantine protection.
+In a writable portable directory, data is normally next to the executable; read-only
+system installations use user configuration/data directories. Existing explicit paths
+remain respected. Nothing migrates or deletes existing user data automatically.
+
+## Connect a browser
+
+**Existing Edge:** enable its local remote-debugging service, note the loopback port
+(e.g. `127.0.0.1:9222`), select the game in Akagi Settings, set Attach port to `9222`,
+and restart capture. Approve the current browser prompt. Keep exactly one official
+page for the selected game open. Start Akagi before entering a hand when possible.
+
+Leave User data directory blank for automatic discovery. If `/json/version` is unavailable
+(as with Edge's UI-enabled debugging), Akagi checks only known `DevToolsActivePort`
+locations. An explicit executable limits discovery to that browser family. Port mismatch,
+unsafe locators or multiple candidates do not cause arbitrary browser selection. For a
+custom profile, enter its **user-data root**, not `Default` or an individual profile folder.
+No Cookie or session database is read/copied. Every reconnect rediscovers the endpoint.
+
+**Independent browser:** set Attach port to `0`. Leave the directory blank for Akagi's
+isolated profile, or select a separate directory. Never select your regular browser's
+profile. Choose an installed browser; if absent, explicitly download official Chrome for
+Testing from Settings. Downloads never occur as part of inference/capture startup.
+
+A missing port/locator, authorization rejection/timeout, missing game page and missing
+hand state are different failures. A previous approval may not authorize the next
+connection. Akagi does not repeatedly retry a 403 or bypass Origin checks. It never
+refreshes an in-progress game to recover.
+
+## Build from source
+
+Use Git, stable Rust, Node.js **22+**, npm, Python **3.11+** for packaging/configuration
+tools, and Protocol Buffers `protoc`. Python is not an application runtime.
+Follow [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for OS toolchains.
+
+macOS (run native builds on the intended Intel/Apple Silicon host):
 
 ```sh
-git clone --branch dev git@github.com:Etakind/Akagi.git
-cd Akagi
-python3 scripts/setup-fork.py
-cd frontend
-npm ci
-npm run build
-cd ..
-cargo test --locked --all-targets
-cargo test --locked --manifest-path native_bot/Cargo.toml
-cargo build --locked --release --features custom-protocol
+xcode-select --install
+brew install node protobuf
 ```
 
-运行 `target/release/akagi`（Windows 为 `akagi.exe`）。开发界面使用 `cargo tauri dev`，需要 Tauri CLI。
-手动 Actions 构建默认只保存构建产物，不创建发布；打包脚本仅接受 `aarch64-apple-darwin` 与 `x86_64-pc-windows-msvc`。
-Linux 可跑前端、Python 等通用 CI，不构建应用。
+Windows: install Visual Studio Build Tools with **Desktop development with C++** and a
+Windows SDK, WebView2, Rust's MSVC toolchain, Node.js and `protoc` on PATH. In PowerShell:
 
-## 本地遗留文件
+```powershell
+npm ci --prefix frontend
+npm run build --prefix frontend
+cargo build --locked --release --features custom-protocol
+.\target\release\akagi.exe
+```
 
-`account`、配置、浏览器目录、CA 私钥、日志和历史均不提交。删除 MITM 代码不等于删除本机旧 CA 或撤销系统信任。
-旧 `ca/`、自定义证书目录、系统中手工信任的 Akagi 证书、旧日志及导出副本需用户自行核查处理；本项目不会代为删除。
-保留的 `LICENSE.txt`、`NOTICE` 及第三方归属信息继续适用。
+Ubuntu/Debian build dependencies:
+
+```sh
+sudo apt update
+sudo apt install build-essential pkg-config libssl-dev libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev protobuf-compiler patchelf
+```
+
+Fedora: install GCC/C++, `pkgconf-pkg-config`, `openssl-devel`, `webkit2gtk4.1-devel`,
+`gtk3-devel`, `libappindicator-gtk3-devel`, `librsvg2-devel`, `libxdo-devel`, `protobuf-compiler`.
+Arch: install `base-devel`, `pkgconf`, `openssl`, `webkit2gtk-4.1`, `gtk3`,
+`libappindicator-gtk3`, `librsvg`, `xdotool`, `protobuf`, plus Rust and Node.js/npm.
+Then on macOS/Linux:
+
+```sh
+npm ci --prefix frontend
+npm run build --prefix frontend
+cargo build --locked --release --features custom-protocol
+./target/release/akagi
+```
+
+`custom-protocol` embeds the production frontend. A plain Cargo release build without it
+uses the development-server URL. Use [build/targets.json](build/targets.json) for exact
+triples. On a matching host, build packages (substitute one listed triple):
+
+```sh
+npm exec --prefix frontend -- tauri build --no-bundle --target aarch64-apple-darwin
+python3 scripts/package.py --target aarch64-apple-darwin
+```
+
+For Linux use `tauri build --target <triple> --bundles deb,rpm`, then the same packaging
+script. Linux workflows use Ubuntu 22.04 as the older
+[Tauri build baseline](https://v2.tauri.app/distribute/appimage/), without producing AppImage.
+Cross-compilation is not promised by these native build commands.
+
+## Risks and validation status
+
+CDP can access your browser session; keep it loopback-only and disable it when no longer
+needed. Automated play may violate game rules and cause account penalties. Client changes
+can invalidate automation. Local history/logs remain sensitive; unsigned binaries and
+system/library vulnerabilities also need review. Linux's existing glib advisory requires
+follow-up; see the [detailed risk register](docs/FORK_MAINTENANCE.md#remaining-risks-and-improvements).
+
+This revision runs no automatic tests, CI, real games, autoplay clicks or other-device
+acceptance. The local browser-discovery repair compiled; its manual Edge handshake reached
+authorization but timed out before page subscription. Current evidence is recorded in the
+[validation note](docs/validation/2026-10-03-browser-attachment.md); older results in
+[SECURITY_HARDENING.md](SECURITY_HARDENING.md) are historical, not current regression results.
+
+Licensing and third-party attribution: [LICENSE.txt](LICENSE.txt), [NOTICE](NOTICE).
