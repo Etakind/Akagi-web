@@ -178,7 +178,9 @@ feature branches when no longer needed. No scheduled automatic merges are config
 
 For a release, synchronize the Cargo version, frontend fallback and reviewed bilingual
 notes in `docs/releases/vX.Y.Z.md`. Tag the reviewed commit and run the manual Release
-workflow for that tag. It builds all five targets and validates their inventories and
-SHA256 files before publication. The upstream key retained as `upstream.minisign.pub`
+workflow for that tag. It requires passing checks and builds for all five targets and validates their inventories and
+SHA256 files. Assets are uploaded to a draft; the complete uploaded file list, sizes and GitHub SHA256 digests
+must match before the release becomes public. An interrupted or failed upload leaves a draft, not a partial public release.
+The upstream key retained as `upstream.minisign.pub`
 is not an Akagi Web signing identity. Optional signing requires a separate publisher
 `minisign.pub` and matching configured secret; unsigned releases are identified as such.

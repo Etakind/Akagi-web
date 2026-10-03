@@ -1,5 +1,7 @@
 """Offline package regression with fake binaries; never packages user data."""
 import json
+import hashlib
+import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
@@ -34,6 +36,36 @@ class PackageTests(unittest.TestCase):
         result = self.run_script('package.py', '--target', 'unsupported')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / 'dist').exists())
+
+    def test_uploaded_release_rejects_partial_corrupt_or_public_assets(self):
+        spec = importlib.util.spec_from_file_location('verify_release', ROOT / 'scripts/verify_release.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        directory = self.root / 'uploads'
+        directory.mkdir()
+        (directory / 'package.zip').write_bytes(b'fixture')
+        metadata = self.root / 'uploaded.json'
+        valid = {'draft': True, 'tag_name': 'v0.1.0', 'assets': [{
+            'name': 'package.zip', 'state': 'uploaded', 'size': 7,
+            'digest': 'sha256:' + hashlib.sha256(b'fixture').hexdigest(),
+        }]}
+        metadata.write_text(json.dumps(valid))
+        module.verify_uploaded(directory, metadata, 'v0.1.0')
+        for change in ['missing', 'corrupt', 'pending', 'public', 'wrong_tag']:
+            data = json.loads(json.dumps(valid))
+            if change == 'missing':
+                data['assets'] = []
+            elif change == 'corrupt':
+                data['assets'][0]['digest'] = 'sha256:incorrect'
+            elif change == 'pending':
+                data['assets'][0]['state'] = 'starter'
+            elif change == 'public':
+                data['draft'] = False
+            else:
+                data['tag_name'] = 'v0.0.0'
+            metadata.write_text(json.dumps(data))
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                module.verify_uploaded(directory, metadata, 'v0.1.0')
 
     def test_all_formats_and_hashes_without_retired_report(self):
         for target in self.targets:

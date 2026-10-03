@@ -147,5 +147,7 @@ git push -u origin maintenance/upstream-sync
 
 发布前同步 Cargo 版本、前端回退版本和 `docs/releases/vX.Y.Z.md` 中的双语发布说明。
 为审查后的提交创建标签，再对该标签运行手动 Release 工作流；五目标构建及资产清单、SHA256 校验通过后才能发布。
+所有目标检查通过后，附件先上传到草稿；上传后的文件列表、大小和 GitHub SHA256 摘要全部匹配才公开。
+上传中断或校验失败时保留草稿，不公开缺件版本。
 保留的 `upstream.minisign.pub` 仅属于上游，不是 Akagi Web 签名身份。可选签名需要独立发布者的 `minisign.pub`
 和匹配的已配置密钥；未签名发布应明确标注。

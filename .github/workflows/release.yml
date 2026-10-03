@@ -12,6 +12,9 @@ on:
         default: ''
 permissions:
   contents: read
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
 jobs:
   checks:
     uses: ./.github/workflows/ci.yml
@@ -77,4 +80,9 @@ jobs:
           notes="docs/releases/${RELEASE_TAG}.md"
           [[ -f "$notes" ]] || { echo 'Reviewed release notes are required'; exit 1; }
           python3 scripts/verify_release.py release-assets
-          gh release create "$RELEASE_TAG" release-assets/* --verify-tag --title "Akagi Web $RELEASE_TAG" --notes-file "$notes"
+          version=$(python3 -c 'import re; print(re.search(r"^version = \"([^\"]+)\"", open("Cargo.toml").read(), re.M).group(1))')
+          [[ "$RELEASE_TAG" == "v$version" ]] || { echo 'Release tag and application version must match'; exit 1; }
+          gh release create "$RELEASE_TAG" release-assets/* --draft --verify-tag --title "Akagi Web $RELEASE_TAG" --notes-file "$notes"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/uploaded-release.json"
+          python3 scripts/verify_release.py release-assets --uploaded-metadata "$RUNNER_TEMP/uploaded-release.json" --tag "$RELEASE_TAG"
+          gh release edit "$RELEASE_TAG" --draft=false --latest

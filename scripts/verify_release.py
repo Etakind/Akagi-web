@@ -9,6 +9,23 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
+def verify_uploaded(directory, metadata, tag):
+    data = json.loads(metadata.read_text())
+    assert data['draft'] is True and data['tag_name'] == tag, 'Unexpected release identity or visibility'
+    assets = data['assets']
+    local = {path.name: path for path in directory.iterdir()}
+    assert len(assets) == len(local), 'Uploaded asset count mismatch'
+    assert {asset['name'] for asset in assets} == set(local), 'Uploaded assets incomplete'
+    for asset in assets:
+        path = local[asset['name']]
+        assert asset['state'] == 'uploaded', 'Asset upload incomplete'
+        assert asset['size'] == path.stat().st_size, 'Uploaded asset size mismatch'
+        digest = hashlib.sha256()
+        with path.open('rb') as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+        assert asset['digest'] == 'sha256:' + digest.hexdigest(), 'Uploaded asset digest mismatch'
+
 def verify(directory):
     targets = json.loads((ROOT / 'build/targets.json').read_text())
     version = re.search(r'^version = "([0-9A-Za-z.+-]+)"', (ROOT / 'Cargo.toml').read_text(), re.M).group(1)
@@ -57,6 +74,12 @@ def verify(directory):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
+    parser.add_argument('--uploaded-metadata', type=Path)
+    parser.add_argument('--tag')
     args = parser.parse_args()
     verify(args.directory)
+    if args.uploaded_metadata:
+        if not args.tag:
+            parser.error('--tag is required with --uploaded-metadata')
+        verify_uploaded(args.directory, args.uploaded_metadata, args.tag)
     print('RELEASE_ASSETS_VERIFIED')
