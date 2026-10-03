@@ -181,6 +181,9 @@ notes in `docs/releases/vX.Y.Z.md`. Tag the reviewed commit and run the manual R
 workflow for that tag. It requires passing checks and builds for all five targets and validates their inventories and
 SHA256 files. Assets are uploaded to a draft; the complete uploaded file list, sizes and GitHub SHA256 digests
 must match before the release becomes public. An interrupted or failed upload leaves a draft, not a partial public release.
+Each native runner extracts the ZIP executable and checks its CLI startup without loading configuration or opening a game.
+Linux also checks shared-library resolution and DEB/RPM architecture. Install npm dependencies before invoking Tauri;
+the build hook only builds the frontend, since reinstalling the running CLI locks files on Windows.
 The upstream key retained as `upstream.minisign.pub`
 is not an Akagi Web signing identity. Optional signing requires a separate publisher
 `minisign.pub` and matching configured secret; unsigned releases are identified as such.

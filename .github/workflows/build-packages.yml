@@ -71,6 +71,8 @@ jobs:
           fi
       - name: Package reviewed files and hashes
         run: python3 scripts/package.py --target ${{ matrix.target }}
+      - name: Verify packaged executable and native package architecture
+        run: python3 scripts/smoke_package.py --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: akagi-${{ matrix.target }}

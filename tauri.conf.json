@@ -10,7 +10,7 @@
       "cwd": "./frontend"
     },
     "beforeBuildCommand": {
-      "script": "npm ci && npm run build",
+      "script": "npm run build",
       "cwd": "./frontend"
     }
   },

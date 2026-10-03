@@ -149,5 +149,7 @@ git push -u origin maintenance/upstream-sync
 为审查后的提交创建标签，再对该标签运行手动 Release 工作流；五目标构建及资产清单、SHA256 校验通过后才能发布。
 所有目标检查通过后，附件先上传到草稿；上传后的文件列表、大小和 GitHub SHA256 摘要全部匹配才公开。
 上传中断或校验失败时保留草稿，不公开缺件版本。
+各原生构建机解压 ZIP 中的程序并检查 CLI 启动，不读取配置或打开游戏；Linux 另核对共享库和 DEB/RPM 架构。
+调用 Tauri 前安装 npm 依赖，构建钩子只构建前端，避免 Windows 重新安装正在使用的 CLI 时触发文件锁。
 保留的 `upstream.minisign.pub` 仅属于上游，不是 Akagi Web 签名身份。可选签名需要独立发布者的 `minisign.pub`
 和匹配的已配置密钥；未签名发布应明确标注。

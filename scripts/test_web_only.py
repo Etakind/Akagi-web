@@ -6,6 +6,11 @@ import re
 import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 class WebOnlyTests(unittest.TestCase):
+    def test_build_hook_does_not_reinstall_running_cli(self):
+        config = json.loads((ROOT / 'tauri.conf.json').read_text())
+        script = config['build']['beforeBuildCommand']['script']
+        self.assertNotRegex(script, r'\bnpm\s+(ci|install)\b')
+        self.assertIn('npm run build', script)
     def test_tauri_rust_and_frontend_minor_versions_match(self):
         rust = re.search(r'name = "tauri"\nversion = "([^"\n]+)"', (ROOT / 'Cargo.lock').read_text()).group(1)
         frontend = json.loads((ROOT / 'frontend/package-lock.json').read_text())
