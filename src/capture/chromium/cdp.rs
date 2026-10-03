@@ -108,12 +108,6 @@ pub fn page_handle_cleared_by_removal(owner: Option<&str>, removed: &[String]) -
     matches!(owner, Some(o) if removed.iter().any(|r| r == o))
 }
 
-const AUTOPLAY_HOST_HINTS: &[&str] = &["maj-soul.com", "mahjongsoul.com"];
-
-fn is_autoplay_target_url(ws_url: &str) -> bool {
-    AUTOPLAY_HOST_HINTS.iter().any(|h| ws_url.contains(h))
-}
-
 /// Run the CDP loop until the browser disconnects or an unrecoverable
 /// error occurs. Frames flow through `bridges` into `mjai_bus`, and each
 /// frame is also recorded into `inspector` for the Logs → Inspector tab.
@@ -132,17 +126,23 @@ pub async fn run(
     autoplay: Option<Arc<AutoplayContext>>,
     http_cfg: HttpCaptureConfig,
     notify: NotifyBus,
-    official_majsoul_only: bool,
+    attached: bool,
+    initial_url: Option<String>,
 ) -> Result<()> {
+    let official_pages_only = true;
+    let platform = bridges.platform();
     if let Some(ctx) = &autoplay {
-        ctx.official_majsoul_only
-            .store(official_majsoul_only, std::sync::atomic::Ordering::Relaxed);
+        *ctx.platform.write().unwrap() = platform;
+        ctx.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *ctx.tenhou_state.write().unwrap() = None;
+        *ctx.time_budget.write().unwrap() = None;
         *ctx.page.write().await = None;
         *ctx.canvas_rect.write().await = None;
     }
     info!("CDP connection starting");
     let (browser_owned, mut handler) =
-        super::connection::connect(endpoint, &notify, official_majsoul_only).await?;
+        super::connection::connect(endpoint, &notify, attached).await?;
     // `Browser` is not `Clone`; share via Arc for the page-poll task.
     let browser = Arc::new(browser_owned);
 
@@ -153,8 +153,11 @@ pub async fn run(
     // non-fatal noise and the stream keeps running.
     let mut pump = AbortTask(tokio::spawn(async move {
         while let Some(ev) = handler.next().await {
-            if let Err(e) = ev {
-                debug!("chromiumoxide handler event error: {e:?}");
+            if ev.is_err() {
+                debug!(
+                    handler_error = true,
+                    "chromiumoxide handler event error; details omitted"
+                );
                 break;
             }
         }
@@ -162,13 +165,37 @@ pub async fn run(
 
     // Per-page subscription registry. Key: TargetId stringified.
     let mut subscribed: HashMap<String, AbortTask> = HashMap::new();
+    // A newly created isolated tab is instrumented before its first navigation.
+    // Existing tabs are never refreshed to install hooks.
+    if let Some(url) = initial_url {
+        let page = browser
+            .new_page("about:blank")
+            .await
+            .map_err(|_| anyhow::anyhow!("Could not create the isolated game tab"))?;
+        let id = page.target_id().inner().clone();
+        let handle = attach_page(
+            page.clone(),
+            id.clone(),
+            bridges.clone(),
+            mjai_bus.clone(),
+            inspector.clone(),
+            autoplay.clone(),
+            http_cfg.clone(),
+            notify.clone(),
+        )
+        .await?;
+        subscribed.insert(id, AbortTask(handle));
+        page.goto(url)
+            .await
+            .map_err(|_| anyhow::anyhow!("Official game navigation failed"))?;
+    }
 
     let poll_loop = async {
         let mut failed_discovery = 0u8;
         let mut unavailable_game = 0u8;
         let mut last_counts = None;
         loop {
-            let snapshot = match super::discovery::snapshot(&browser, official_majsoul_only).await {
+            let snapshot = match super::discovery::snapshot(&browser, platform).await {
                 Ok(snapshot) => {
                     failed_discovery = 0;
                     snapshot
@@ -186,7 +213,12 @@ pub async fn run(
                     continue;
                 }
             };
-            let current = snapshot.current;
+            let mut current = snapshot.current;
+            if current.len() > 1 {
+                current.clear();
+                let _ = notify.send(Notification::warn("Multiple official game pages")
+                    .body("Keep one page for the selected game open; capture and automatic actions are suspended until it is unambiguous.").id("cdp-connection"));
+            }
             let pages = snapshot.pages;
             let counts = (current.len(), pages.len());
             if last_counts != Some(counts) {
@@ -219,6 +251,10 @@ pub async fn run(
             // game-gateway socket; clearing the handle on those closes was
             // silently stopping autoplay mid-game.
             if let (Some(ctx), false) = (&autoplay, removes.is_empty()) {
+                ctx.generation
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                *ctx.tenhou_state.write().unwrap() = None;
+                *ctx.time_budget.write().unwrap() = None;
                 // Hold the write lock across the check + clear so a
                 // concurrent rebind from another tab's task can't slip
                 // between reading the owner and nulling the handle.
@@ -228,7 +264,7 @@ pub async fn run(
                     *guard = None;
                     drop(guard);
                     *ctx.canvas_rect.write().await = None;
-                    info!("autoplay: page handle cleared — owning Majsoul tab closed");
+                    info!("autoplay: page handle cleared — owning official tab unavailable");
                 }
             }
 
@@ -249,16 +285,15 @@ pub async fn run(
                         autoplay.clone(),
                         http_cfg.clone(),
                         notify.clone(),
-                        official_majsoul_only,
                     ),
                 )
                 .await
                 {
                     Ok(Ok(handle)) => {
                         info!("CDP: attached to page target {id}");
-                        if official_majsoul_only {
+                        if official_pages_only {
                             let _ = notify.send(
-                                Notification::success("Majsoul capture attached")
+                                Notification::success("Official game capture attached")
                                     .body("Official game page connected. Local analysis is ready for a new game.")
                                     .id("cdp-connection"),
                             );
@@ -274,7 +309,7 @@ pub async fn run(
                 }
             }
 
-            if official_majsoul_only {
+            if official_pages_only {
                 if let Some(ctx) = &autoplay {
                     // Do not depend on a future WebSocketCreated event, and
                     // never guess which of multiple game tabs should be clicked.
@@ -290,6 +325,10 @@ pub async fn run(
                     if bound.as_ref().map(|p| p.session_id())
                         != desired.as_ref().map(|p| p.session_id())
                     {
+                        ctx.generation
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        *ctx.tenhou_state.write().unwrap() = None;
+                        *ctx.time_budget.write().unwrap() = None;
                         *bound = desired;
                         *ctx.canvas_rect.write().await = None;
                         info!(
@@ -300,7 +339,7 @@ pub async fn run(
                 }
             }
 
-            if official_majsoul_only && !current.is_empty() && subscribed.is_empty() {
+            if official_pages_only && !current.is_empty() && subscribed.is_empty() {
                 unavailable_game += 1;
                 if unavailable_game >= 3 {
                     warn!(
@@ -334,6 +373,25 @@ pub async fn run(
     }
     drop(browser);
     Err(super::connection::Disconnected.into())
+}
+
+// Dropping a page subscription must release any paused Tenhou response.
+struct FetchLease(Page);
+impl Drop for FetchLease {
+    fn drop(&mut self) {
+        let page = self.0.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    page.execute(
+                        chromiumoxide::cdp::browser_protocol::fetch::DisableParams::default(),
+                    ),
+                )
+                .await;
+            });
+        }
+    }
 }
 
 // Task cancellation must detach from a user-owned browser, even if the
@@ -395,6 +453,7 @@ impl GameReadiness {
         None
     }
 }
+#[cfg(test)]
 pub(super) fn official_majsoul_page(value: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(value) else {
         return false;
@@ -420,7 +479,6 @@ async fn attach_page(
     autoplay: Option<Arc<AutoplayContext>>,
     http_cfg: HttpCaptureConfig,
     notify: NotifyBus,
-    official_majsoul_only: bool,
 ) -> Result<JoinHandle<()>> {
     let mut on_created = page
         .event_listener::<EventWebSocketCreated>()
@@ -450,15 +508,50 @@ async fn attach_page(
         .await
         .context("subscribe responseReceived")?;
 
+    let mut on_paused = page
+        .event_listener::<chromiumoxide::cdp::browser_protocol::fetch::EventRequestPaused>()
+        .await
+        .map_err(|_| anyhow::anyhow!("Could not subscribe to script adaptation"))?;
+    let mut fetch_lease = None;
+    if bridges.platform() == crate::config::Platform::Tenhou
+        && autoplay.as_ref().is_some_and(|ctx| {
+            ctx.autoplay_enabled
+                .load(std::sync::atomic::Ordering::SeqCst)
+        })
+    {
+        use chromiumoxide::cdp::browser_protocol::fetch::{
+            EnableParams, RequestPattern, RequestStage,
+        };
+        fetch_lease = Some(FetchLease(page.clone()));
+        page.execute(EnableParams {
+            patterns: Some(vec![RequestPattern {
+                url_pattern: Some("https://tenhou.net/4/*.js".into()),
+                resource_type: Some(
+                    chromiumoxide::cdp::browser_protocol::network::ResourceType::Script,
+                ),
+                request_stage: Some(RequestStage::Response),
+            }]),
+            handle_auth_requests: None,
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("Could not prepare Tenhou adaptation"))?;
+        let _ = notify.send(Notification::info("Tenhou autoplay preparation")
+            .body("Already-open clients may lack the action adapter. If so, re-enter or refresh the game yourself when safe; Akagi never refreshes it.").id("tenhou-adapter"));
+    }
+
     // Install every listener before enabling traffic delivery.
     page.execute(NetworkEnableParams::default())
         .await
         .context("Network.enable")?;
 
     let handle = tokio::spawn(async move {
+        let _fetch_lease = fetch_lease;
         let mut readiness: HashMap<String, GameReadiness> = HashMap::new();
         loop {
             tokio::select! {
+                Some(ev) = on_paused.next() => {
+                    rewrite_tenhou_script(&page, &notify, &autoplay, &ev).await;
+                }
                 Some(ev) = on_created.next() => {
                     let key = FlowKey {
                         target: target_id.clone(),
@@ -467,49 +560,8 @@ async fn attach_page(
                     let label = format!("ws {}", crate::privacy::url(&ev.url));
                     let slug = "websocket";
                     let _ = bridges.acquire(key, slug, &label);
-                    debug!("ws created: {} (target {target_id} request {})", ev.url, ev.request_id.inner());
+                    debug!("ws created (target {target_id} request {})", ev.request_id.inner());
 
-                    // If this is the platform's WS (Majsoul), capture
-                    // the owning page so autoplay can dispatch input
-                    // into it. The handle is bound to the *tab* and lives
-                    // until the tab closes (see the poll loop); a new WS on
-                    // the same tab just refreshes it. Multi-tab user:
-                    // most-recent wins, per the plan.
-                    if let Some(ctx) = &autoplay {
-                        if !official_majsoul_only && is_autoplay_target_url(&ev.url) {
-                            let mut guard = ctx.page.write().await;
-                            let prev_target =
-                                guard.as_ref().map(|p| p.target_id().inner().clone());
-                            let same_tab = prev_target.as_deref() == Some(target_id.as_str());
-                            *guard = Some(page.clone());
-                            drop(guard);
-                            if same_tab {
-                                // Majsoul re-opens sockets (Route probes,
-                                // lobby reconnects) constantly on the same
-                                // tab; refreshing the handle is a no-op and
-                                // must not spam warnings.
-                                debug!(
-                                    "autoplay: page handle refreshed on new WS for target {target_id} ({})",
-                                    ev.url
-                                );
-                            } else {
-                                if let Some(prev) = &prev_target {
-                                    warn!(
-                                        "autoplay: page handle moving from tab {prev} to {target_id}"
-                                    );
-                                    // The cached canvas rect belonged to the
-                                    // old tab; a different tab may have
-                                    // different geometry, so drop it and let
-                                    // the manager re-query against the new page.
-                                    *ctx.canvas_rect.write().await = None;
-                                }
-                                info!(
-                                    "autoplay: page handle bound to target {target_id} via WS {}",
-                                    ev.url
-                                );
-                            }
-                        }
-                    }
                 }
                 Some(ev) = on_recv.next() => {
                     let opcode = ev.response.opcode as i64;
@@ -920,5 +972,85 @@ mod attached_browser_tests {
         drop(AbortTask(task));
         tokio::task::yield_now().await;
         assert!(handle.is_finished());
+    }
+}
+
+/// Read only the selected official client's script response. Never log its body.
+async fn rewrite_tenhou_script(
+    page: &Page,
+    notify: &NotifyBus,
+    autoplay: &Option<Arc<AutoplayContext>>,
+    event: &chromiumoxide::cdp::browser_protocol::fetch::EventRequestPaused,
+) {
+    use chromiumoxide::cdp::browser_protocol::fetch::{
+        ContinueRequestParams, FulfillRequestParams, GetResponseBodyParams, HeaderEntry,
+    };
+    let active = autoplay.as_ref().is_some_and(|ctx| {
+        ctx.autoplay_enabled
+            .load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let allowed = reqwest::Url::parse(&event.request.url)
+        .ok()
+        .is_some_and(|url| {
+            let name = url.path().strip_prefix("/4/").unwrap_or("");
+            let version = name.strip_suffix(".js").unwrap_or("");
+            crate::config::Platform::Tenhou.official_page(url.as_str())
+                && url.query().is_none()
+                && url.fragment().is_none()
+                && (version == "latest"
+                    || (!version.is_empty() && version.bytes().all(|c| c.is_ascii_digit())))
+        });
+    let mut fulfilled = false;
+    if active && allowed && event.response_status_code == Some(200) {
+        if let Ok(response) = page
+            .execute(GetResponseBodyParams::new(event.request_id.clone()))
+            .await
+        {
+            let body = if response.result.base64_encoded {
+                base64::engine::general_purpose::STANDARD
+                    .decode(response.result.body.as_bytes())
+                    .ok()
+                    .and_then(|b| String::from_utf8(b).ok())
+            } else {
+                Some(response.result.body)
+            };
+            if let Some(body) = body.filter(|b| b.len() <= 8 * 1024 * 1024) {
+                if let Ok(js) = crate::autoplay::tenhou::inject::rewrite_client(&body) {
+                    // Keep origin security/cache headers; only encoded-body metadata changes.
+                    let mut headers = event.response_headers.clone().unwrap_or_default();
+                    headers.retain(|h| {
+                        !["content-length", "content-encoding", "content-type"]
+                            .iter()
+                            .any(|name| h.name.eq_ignore_ascii_case(name))
+                    });
+                    headers.push(HeaderEntry::new(
+                        "Content-Type",
+                        "text/javascript; charset=utf-8",
+                    ));
+                    if let Ok(params) = FulfillRequestParams::builder()
+                        .request_id(event.request_id.clone())
+                        .response_code(200)
+                        .response_headers(headers)
+                        .body(base64::engine::general_purpose::STANDARD.encode(js.as_bytes()))
+                        .build()
+                    {
+                        fulfilled = page.execute(params).await.is_ok();
+                    }
+                }
+            }
+        }
+        if !fulfilled {
+            if let Some(ctx) = autoplay {
+                ctx.autoplay_enabled
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+            let _ = notify.send(Notification::warn("Tenhou autoplay unavailable")
+                .body("Client adaptation failed. Observation remains available; automatic actions are paused.").sticky().id("tenhou-adapter"));
+        }
+    }
+    if !fulfilled {
+        let _ = page
+            .execute(ContinueRequestParams::new(event.request_id.clone()))
+            .await;
     }
 }

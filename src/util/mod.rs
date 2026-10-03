@@ -20,6 +20,17 @@ pub fn resolve_dir(configured: &Path) -> PathBuf {
 }
 
 fn resolve_dir_inner(configured: &Path) -> PathBuf {
+    // System package locations are read-only application resources. Runtime
+    // data belongs to the user even when launched from /usr or /opt.
+    if !configured.is_absolute()
+        && std::env::current_exe()
+            .ok()
+            .is_some_and(|exe| exe.parent().is_some_and(|p| !directory_writable(p)))
+    {
+        if let Some(root) = dirs::data_local_dir() {
+            return root.join("akagi").join(strip_leading_dot(configured));
+        }
+    }
     if configured.is_absolute() {
         return configured.to_path_buf();
     }
@@ -85,5 +96,20 @@ mod tests {
         let s = resolved.to_string_lossy();
         assert!(!s.contains("/./"), "got: {s}");
         assert!(!s.contains("\\.\\"), "got: {s}");
+    }
+}
+
+pub fn directory_writable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return false;
+        };
+        unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        path.metadata().is_ok_and(|m| !m.permissions().readonly())
     }
 }

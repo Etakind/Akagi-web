@@ -55,11 +55,25 @@ pub fn merge_into<T: serde::Serialize>(config: &T, existing: &str) -> Result<Str
         }
     }
     if let Some(table) = doc.get_mut("autoplay").and_then(Item::as_table_like_mut) {
-        table.remove("tenhou");
         table.remove("riichi_city");
     }
     if let Some(table) = doc.get_mut("capture").and_then(Item::as_table_like_mut) {
         table.remove("unavailable_reason");
+    }
+    if let Some(table) = doc.get_mut("bot").and_then(Item::as_table_like_mut) {
+        for key in ["api", "active", "auto_sync", "dir", "migration_notice"] {
+            table.remove(key);
+        }
+    }
+    if let Some(table) = doc.get_mut("network").and_then(Item::as_table_like_mut) {
+        table.remove("github_mirror_mode");
+        table.remove("github_custom_mirror");
+        if table.is_empty() {
+            doc.remove("network");
+        }
+    }
+    if let Some(table) = doc.get_mut("general").and_then(Item::as_table_like_mut) {
+        table.remove("developer_mode");
     }
     Ok(doc.to_string())
 }

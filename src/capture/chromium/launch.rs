@@ -66,15 +66,6 @@ pub fn spawn(exe: &Path, profile: &Path, cfg: &ChromiumConfig) -> Result<Spawned
     if port_file.exists() {
         let _ = std::fs::remove_file(&port_file);
     }
-    // Wipe session-restore state so each launch opens exactly the
-    // configured `start_url`, never the tabs the user happened to have
-    // open last time. Cookies / login state under `Default/` are NOT
-    // touched — the user stays logged in to Mahjong Soul.
-    clear_session_state(profile);
-    // Suppress "Restore tabs from crashed session?" bubble when our
-    // previous run was force-killed (SIGKILL fallback marks the profile
-    // as crashed; without this the user sees the bubble on every relaunch).
-    suppress_crash_recovery_prompt(profile);
     cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     cmd.kill_on_drop(true);
@@ -191,20 +182,24 @@ pub async fn wait_for_devtools_endpoint(
     let port_file = profile.join(DEVTOOLS_FILE);
     let version_url =
         remote_debugging_port.map(|port| format!("http://127.0.0.1:{port}/json/version"));
-    let client = reqwest::Client::builder()
-        .timeout(HTTP_DISCOVERY_TIMEOUT)
-        .build()
+    let client = crate::network::client(crate::network::Purpose::LocalDiscovery)
         .context("creating chromium devtools HTTP client")?;
     let start = std::time::Instant::now();
     loop {
-        if let Ok(body) = std::fs::read_to_string(&port_file) {
-            if let Some(endpoint) = parse_devtools_port(&body) {
+        if let Some(port) = remote_debugging_port {
+            if let Ok(endpoint) = read_existing_port_file(&port_file, port) {
                 return Ok(endpoint);
             }
+        } else if let Ok(endpoint) = read_existing_auto_port_file(&port_file) {
+            return Ok(endpoint);
         }
         if let Some(version_url) = &version_url {
             if let Ok(endpoint) = fetch_devtools_endpoint(&client, version_url).await {
-                return Ok(endpoint);
+                if remote_debugging_port
+                    .is_some_and(|port| validate_existing_endpoint(&endpoint, port).is_ok())
+                {
+                    return Ok(endpoint);
+                }
             }
         }
         if start.elapsed() > PORT_WAIT_TIMEOUT {
@@ -238,10 +233,7 @@ pub fn endpoint_port(ws_url: &str) -> Option<u16> {
 /// with code 0 — while the relaunched browser keeps serving our debugging
 /// port. A few quick retries paper over the probe racing that relaunch.
 pub async fn devtools_http_alive(port: u16) -> bool {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(HTTP_DISCOVERY_TIMEOUT)
-        .build()
-    else {
+    let Ok(client) = crate::network::client(crate::network::Purpose::LocalDiscovery) else {
         return false;
     };
     let url = format!("http://127.0.0.1:{port}/json/version");
@@ -280,11 +272,7 @@ pub async fn existing_endpoint(
             Err(_) => return Err(anyhow!("CDP_LOCATOR_REJECTED: the selected directory locator is unsafe, invalid or uses a different port")),
         }
     }
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(HTTP_DISCOVERY_TIMEOUT)
-        .build()?;
+    let client = crate::network::client(crate::network::Purpose::LocalDiscovery)?;
     if let Ok(endpoint) =
         fetch_devtools_endpoint(&client, &format!("http://127.0.0.1:{port}/json/version")).await
     {
@@ -334,7 +322,10 @@ fn read_existing_port_file(path: &Path, port: u16) -> std::io::Result<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if metadata.uid() != unsafe { libc::geteuid() } || metadata.nlink() != 1 {
+        if metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.nlink() != 1
+            || metadata.mode() & 0o022 != 0
+        {
             return Err(reject());
         }
     }
@@ -344,7 +335,14 @@ fn read_existing_port_file(path: &Path, port: u16) -> std::io::Result<String> {
         return Err(reject());
     }
     let endpoint = parse_devtools_port(&body).ok_or_else(reject)?;
-    validate_existing_endpoint(&endpoint, port).map_err(|_| reject())?;
+    let expected = if port == 0 {
+        endpoint_port(&endpoint)
+            .filter(|p| *p > 0)
+            .ok_or_else(reject)?
+    } else {
+        port
+    };
+    validate_existing_endpoint(&endpoint, expected).map_err(|_| reject())?;
     Ok(endpoint)
 }
 
@@ -358,7 +356,15 @@ fn validate_existing_endpoint(endpoint: &str, port: u16) -> Result<()> {
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
-        || !url.path().starts_with("/devtools/browser/")
+        || !url
+            .path()
+            .strip_prefix("/devtools/browser/")
+            .is_some_and(|id| {
+                !id.is_empty()
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            })
     {
         return Err(anyhow!("non-local debugging endpoint rejected"));
     }
@@ -395,70 +401,6 @@ pub fn parse_devtools_port(body: &str) -> Option<String> {
     }
     let port: u16 = port_line.parse().ok()?;
     Some(format!("ws://127.0.0.1:{port}{path_line}"))
-}
-
-/// Wipe the session-restore files Chromium uses to repopulate tabs on
-/// the next launch. Best-effort: missing files are fine, errors logged
-/// at debug level. Targets the `Default/` profile only (which is what
-/// our isolated `--user-data-dir` always uses).
-fn clear_session_state(profile: &Path) {
-    let default_dir = profile.join("Default");
-    // Files
-    for name in [
-        "Current Session",
-        "Current Tabs",
-        "Last Session",
-        "Last Tabs",
-    ] {
-        let p = default_dir.join(name);
-        if p.exists() {
-            if let Err(e) = std::fs::remove_file(&p) {
-                debug!("clear session: remove_file {}: {e}", p.display());
-            }
-        }
-    }
-    // Directories (newer Chromium stores per-window session protos here).
-    for name in ["Sessions", "Tabs"] {
-        let p = default_dir.join(name);
-        if p.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&p) {
-                debug!("clear session: remove_dir_all {}: {e}", p.display());
-            }
-        }
-    }
-}
-
-/// If the previous run was force-killed (`exit_type == "Crashed"`),
-/// Chromium shows a "Restore tabs from previous session?" bubble. We
-/// already wiped the session files; flip `exit_type` back to `"Normal"`
-/// so the bubble doesn't show up either. Best-effort JSON patch.
-fn suppress_crash_recovery_prompt(profile: &Path) {
-    let prefs_path = profile.join("Default").join("Preferences");
-    let Ok(body) = std::fs::read_to_string(&prefs_path) else {
-        return; // first launch — no Preferences yet, nothing to do
-    };
-    let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&body) else {
-        debug!("Preferences JSON parse failed — leaving as-is");
-        return;
-    };
-    let Some(profile_obj) = json.get_mut("profile").and_then(|v| v.as_object_mut()) else {
-        return;
-    };
-    let needs_write = profile_obj.get("exit_type").and_then(|v| v.as_str()) != Some("Normal")
-        || profile_obj.get("exited_cleanly").and_then(|v| v.as_bool()) != Some(true);
-    if !needs_write {
-        return;
-    }
-    profile_obj.insert(
-        "exit_type".into(),
-        serde_json::Value::String("Normal".into()),
-    );
-    profile_obj.insert("exited_cleanly".into(), serde_json::Value::Bool(true));
-    if let Ok(out) = serde_json::to_string(&json) {
-        if let Err(e) = std::fs::write(&prefs_path, out) {
-            debug!("write Preferences: {e}");
-        }
-    }
 }
 
 /// Best-effort staged shutdown: try a polite term, escalate to kill if
@@ -500,45 +442,6 @@ pub async fn terminate(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn clear_session_state_removes_known_files_and_dirs() {
-        let dir = tempfile::tempdir().unwrap();
-        let default_dir = dir.path().join("Default");
-        std::fs::create_dir_all(&default_dir).unwrap();
-        for name in [
-            "Current Session",
-            "Current Tabs",
-            "Last Session",
-            "Last Tabs",
-        ] {
-            std::fs::write(default_dir.join(name), b"stale").unwrap();
-        }
-        std::fs::create_dir_all(default_dir.join("Sessions")).unwrap();
-        std::fs::write(default_dir.join("Sessions/Session_1"), b"x").unwrap();
-        std::fs::create_dir_all(default_dir.join("Tabs")).unwrap();
-
-        clear_session_state(dir.path());
-
-        for name in [
-            "Current Session",
-            "Current Tabs",
-            "Last Session",
-            "Last Tabs",
-        ] {
-            assert!(!default_dir.join(name).exists(), "still exists: {name}");
-        }
-        assert!(!default_dir.join("Sessions").exists());
-        assert!(!default_dir.join("Tabs").exists());
-    }
-
-    #[test]
-    fn clear_session_state_no_default_dir_is_ok() {
-        let dir = tempfile::tempdir().unwrap();
-        // No Default/ — should not panic, should not create anything.
-        clear_session_state(dir.path());
-        assert!(!dir.path().join("Default").exists());
-    }
 
     #[test]
     fn picks_nonzero_remote_debugging_port() {
@@ -597,35 +500,6 @@ mod tests {
     fn remote_debugging_config_rejects_malformed_user_port() {
         assert!(remote_debugging_config(&["--remote-debugging-port=abc".to_string()]).is_err());
         assert!(remote_debugging_config(&["--remote-debugging-port".to_string()]).is_err());
-    }
-
-    #[test]
-    fn suppress_crash_recovery_prompt_flips_exit_type() {
-        let dir = tempfile::tempdir().unwrap();
-        let default_dir = dir.path().join("Default");
-        std::fs::create_dir_all(&default_dir).unwrap();
-        let prefs = default_dir.join("Preferences");
-        std::fs::write(
-            &prefs,
-            r#"{"profile":{"exit_type":"Crashed","exited_cleanly":false,"name":"keep me"}}"#,
-        )
-        .unwrap();
-
-        suppress_crash_recovery_prompt(dir.path());
-
-        let body = std::fs::read_to_string(&prefs).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let profile = json.get("profile").unwrap().as_object().unwrap();
-        assert_eq!(profile.get("exit_type").unwrap(), "Normal");
-        assert_eq!(profile.get("exited_cleanly").unwrap(), true);
-        // Unrelated keys preserved.
-        assert_eq!(profile.get("name").unwrap(), "keep me");
-    }
-
-    #[test]
-    fn suppress_crash_recovery_prompt_no_prefs_is_noop() {
-        let dir = tempfile::tempdir().unwrap();
-        suppress_crash_recovery_prompt(dir.path()); // must not panic
     }
 
     #[test]
@@ -754,4 +628,8 @@ mod existing_browser_tests {
             assert!(validate_existing_endpoint(endpoint, 9222).is_err());
         }
     }
+}
+
+fn read_existing_auto_port_file(path: &Path) -> std::io::Result<String> {
+    read_existing_port_file(path, 0)
 }

@@ -89,32 +89,26 @@ impl Notification {
 
 // ---------- BotStatus ----------
 
-/// Sub-stage during the slow first-spawn path.
-///
-/// `SyncingDeps` is the long one — `uv sync` downloads every wheel listed
-/// in the bot's `pyproject.toml` into `<bot_dir>/.akagi/venv` on first use,
-/// which can take tens of seconds. `Spawning` is the short tail (process
-/// creation + waiting for the first react round-trip).
+/// Local model initialization phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LoadStage {
-    SyncingDeps,
     Spawning,
 }
 
-/// Lifecycle state of the active bot subprocess.
+/// Lifecycle state of the bundled model.
 ///
 /// Tagged with `state` so the frontend can match on a string discriminant
-/// (`{"state":"loading","bot":"mortal","stage":"syncing_deps"}`) without
+/// (`{"state":"loading","bot":"mortal","stage":"spawning"}`) without
 /// having to know Rust's untagged-enum trick.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum BotStatus {
     /// No active bot — waiting for `start_game` (or bot disabled).
     Idle,
-    /// First-time install / spawn in progress. UI should show a spinner.
+    /// Model initialization in progress. UI should show a spinner.
     Loading { bot: String, stage: LoadStage },
-    /// Subprocess up and reacting.
+    /// Bundled model ready.
     Ready { bot: String, actor_id: u8 },
     /// Spawn or react path failed; runner torn down.
     Error { bot: String, error: String },
@@ -188,35 +182,10 @@ use crate::config::AppConfig;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// One discovered bot, IPC-shaped (separate from `bot::BotEntry` so the
-/// wire contract can evolve independently of the registry internals).
-///
-/// `manifest` carries the bot's settings schema (rendered as a form on
-/// the frontend). Bots without a `manifest.toml` have it set to `None`
-/// and the UI hides the settings panel for them.
+/// Bundled local model descriptor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotInfo {
     pub name: String,
-    pub dir: String,
-    pub has_pyproject: bool,
-    /// `true` when the bot's Python environment is already installed (no
-    /// `pyproject.toml`, or its venv + sync stamp are up to date). The UI
-    /// blocks activating a bot whose env isn't ready so a game never picks
-    /// a bot that would need a slow first-spawn `uv sync`.
-    #[serde(default)]
-    pub env_ready: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manifest: Option<crate::bot::manifest::Manifest>,
-}
-
-/// Returned by the `get_bot_settings` command. `values` is the result of
-/// merging defaults from `manifest` with whatever lives in the bot's
-/// `settings.toml`. Frontend should treat `manifest.settings` as the form
-/// schema and `values` as the form's current state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BotSettings {
-    pub manifest: crate::bot::manifest::Manifest,
-    pub values: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// One-shot dump of everything the UI needs on startup. Cheap to clone
@@ -359,12 +328,12 @@ mod tests {
     fn bot_status_loading_tagged_correctly() {
         let s = BotStatus::Loading {
             bot: "mortal".into(),
-            stage: LoadStage::SyncingDeps,
+            stage: LoadStage::Spawning,
         };
         let j = serde_json::to_string(&s).unwrap();
         assert_eq!(
             j,
-            r#"{"state":"loading","bot":"mortal","stage":"syncing_deps"}"#
+            r#"{"state":"loading","bot":"mortal","stage":"spawning"}"#
         );
         let back: BotStatus = serde_json::from_str(&j).unwrap();
         assert_eq!(back, s);

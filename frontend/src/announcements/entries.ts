@@ -1,7 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { CloudCog, CreditCard, Download, SearchCheck } from 'lucide-react'
 
-import mjotlogodarkbg from '@/assets/mjot-logo-dark-bg.png'
 
 /** One feature highlight inside an announcement's expanded view. */
 export type AnnouncementFeature = {
@@ -43,31 +41,4 @@ export type AnnouncementEntry = {
  * it — the release tagging script refuses to tag a version that has no
  * committed entry here. See README.md in this directory for the workflow.
  */
-export const ANNOUNCEMENTS: AnnouncementEntry[] = [
-  {
-    id: 'v3_7_0',
-    date: '2026-08-25',
-    version: '3.7.0',
-    features: [
-      { icon: SearchCheck, key: 'review' },
-    ],
-  },
-  {
-    id: 'v3_6_0',
-    date: '2026-08-14',
-    version: '3.6.0',
-    features: [
-      { icon: Download, key: 'update_source' },
-    ],
-  },
-  {
-    id: 'v3_5_0',
-    date: '2026-08-12',
-    version: '3.5.0',
-    image: mjotlogodarkbg,
-    features: [
-      { icon: CreditCard, key: 'checkout' },
-      { icon: CloudCog, key: 'health' },
-    ],
-  },
-]
+export const ANNOUNCEMENTS: AnnouncementEntry[] = []

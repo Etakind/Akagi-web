@@ -20,10 +20,6 @@ function announcementsOf(locale: keyof typeof LOCALES): AnnouncementsBlock {
 }
 
 describe('ANNOUNCEMENTS data', () => {
-  it('is non-empty', () => {
-    expect(ANNOUNCEMENTS.length).toBeGreaterThan(0)
-  })
-
   it('has unique ids', () => {
     const ids = ANNOUNCEMENTS.map((e) => e.id)
     expect(new Set(ids).size).toBe(ids.length)

@@ -2,14 +2,16 @@
 
 use chromiumoxide::page::Page;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[derive(Default)]
 pub struct AutoplayContext {
-    /// Personal-browser attachment may operate only the official game tab.
-    pub official_majsoul_only: AtomicBool,
+    pub platform: std::sync::RwLock<crate::config::Platform>,
+    pub generation: AtomicU64,
+    pub autoplay_enabled: AtomicBool,
+    pub tenhou_state: crate::autoplay::tenhou_state::SharedTenhouState,
     pub page: Arc<RwLock<Option<Page>>>,
     pub canvas_rect: Arc<RwLock<Option<CanvasRect>>>,
     /// Server-granted time budget for the current decision window.
@@ -30,12 +32,12 @@ impl AutoplayContext {
     }
 
     pub async fn page_allowed(&self, page: &Page) -> bool {
-        if !self.official_majsoul_only.load(Ordering::Relaxed) {
-            return true;
-        }
-        // Return only a boolean. No URL, page contents or session data leave
-        // the browser. Recheck immediately before input, even with a cached rect.
-        let check = page.evaluate(include_str!("official_page.js"));
+        let platform = *self.platform.read().unwrap();
+        let expr = match platform {
+            crate::config::Platform::Majsoul => include_str!("official_page.js"),
+            crate::config::Platform::Tenhou => "(() => location.protocol === 'https:' && location.hostname === 'tenhou.net' && location.port === '' && location.username === '' && location.password === '' && location.pathname.startsWith('/4/'))()",
+        };
+        let check = page.evaluate(expr);
         matches!(tokio::time::timeout(std::time::Duration::from_secs(2), check).await,
             Ok(Ok(value)) if value.value().and_then(|v| v.as_bool()) == Some(true))
     }

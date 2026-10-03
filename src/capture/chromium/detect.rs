@@ -92,7 +92,18 @@ pub fn standard_user_data_dirs(executable: Option<&PathBuf>) -> Vec<PathBuf> {
             (Chromium, "Chromium/User Data"),
         ],
     );
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    let (base, roots) = (
+        dirs::config_dir(),
+        vec![
+            (Chrome, "google-chrome"),
+            (Edge, "microsoft-edge"),
+            (Brave, "BraveSoftware/Brave-Browser"),
+            (Chromium, "chromium"),
+            (ChromeForTesting, "google-chrome-for-testing"),
+        ],
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     let (base, roots): (Option<PathBuf>, Vec<(BrowserKind, &str)>) = (None, Vec::new());
     let Some(base) = base else {
         return Vec::new();
@@ -233,7 +244,47 @@ fn reg_query_app_paths(exe: &str) -> Option<PathBuf> {
     None
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn detect_into(found: &mut Vec<DetectedBrowser>) {
+    use BrowserKind::*;
+    // (which-name, kind) — try PATH first because distros put the binary
+    // in different places (snap, flatpak excluded).
+    let path_probes = [
+        ("google-chrome", Chrome),
+        ("google-chrome-stable", Chrome),
+        ("microsoft-edge", Edge),
+        ("brave-browser", Brave),
+        ("chromium", Chromium),
+        ("chromium-browser", Chromium),
+    ];
+    for (name, kind) in path_probes {
+        if let Ok(p) = which::which(name) {
+            // Skip flatpak shim — sandbox refuses external --user-data-dir.
+            if p.to_string_lossy().contains("/flatpak/") {
+                continue;
+            }
+            found.push(DetectedBrowser { kind, path: p });
+        }
+    }
+    // Fixed paths as backup (some installs don't expose to PATH).
+    let fixed = [
+        ("/usr/bin/google-chrome", Chrome),
+        ("/usr/bin/google-chrome-stable", Chrome),
+        ("/usr/bin/microsoft-edge", Edge),
+        ("/usr/bin/brave-browser", Brave),
+        ("/usr/bin/chromium", Chromium),
+        ("/usr/bin/chromium-browser", Chromium),
+        ("/snap/bin/chromium", Chromium),
+    ];
+    for (p, kind) in fixed {
+        let pb = PathBuf::from(p);
+        if pb.exists() {
+            found.push(DetectedBrowser { kind, path: pb });
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn detect_into(_found: &mut Vec<DetectedBrowser>) {
     // No detection on unsupported platforms.
 }

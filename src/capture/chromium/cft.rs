@@ -55,13 +55,7 @@ impl Channel {
 /// CfT platform identifier expected by the manifest (e.g. `win64`,
 /// `mac-arm64`). Returns `None` on unsupported platforms.
 pub fn cft_platform() -> Option<&'static str> {
-    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some("mac-arm64")
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Some("win64")
-    } else {
-        None
-    }
+    crate::build_targets::current().map(|t| t.cft.as_str())
 }
 
 pub fn install_root() -> Result<PathBuf> {
@@ -70,18 +64,30 @@ pub fn install_root() -> Result<PathBuf> {
 
 /// Per-version install dir: `<install_root>/<version>/`.
 pub fn install_dir_for(version: &str) -> Result<PathBuf> {
+    if cft_platform().is_none() {
+        bail!("unsupported browser download target");
+    }
+    if version.split('.').count() != 4
+        || !version
+            .split('.')
+            .all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+    {
+        bail!("invalid browser version");
+    }
     Ok(install_root()?.join(version))
 }
 
 /// Map an install dir + platform to the chrome executable inside.
 pub fn executable_path(install_dir: &Path, platform: &str) -> PathBuf {
     match platform {
-        "mac-arm64" => install_dir
-            .join("chrome-mac-arm64")
+        "mac-arm64" | "mac-x64" => install_dir
+            .join(format!("chrome-{platform}"))
             .join("Google Chrome for Testing.app")
             .join("Contents/MacOS/Google Chrome for Testing"),
         "win64" => install_dir.join("chrome-win64").join("chrome.exe"),
-        _ => install_dir.join(platform).join("chrome"),
+        _ => install_dir
+            .join(format!("chrome-{platform}"))
+            .join("chrome"),
     }
 }
 
@@ -295,14 +301,10 @@ async fn resolve_asset(
 /// frontend can show a single live toast. Idempotent: if the version
 /// is already installed, returns early.
 pub async fn install(channel: &Channel, notify: &NotifyBus) -> Result<String> {
-    let client = reqwest::Client::builder()
-        .user_agent("akagi-cft-downloader")
-        .redirect(reqwest::redirect::Policy::none())
-        // Short connect ceiling: blocked hosts black-hole rather than
-        // reset, and fallback to the mirror needs the attempt to *fail*.
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .context("build http client")?;
+    if cft_platform().is_none() {
+        bail!("unsupported browser download target");
+    }
+    let client = crate::network::client(crate::network::Purpose::BrowserDownload)?;
     let toast = "capture-cft-download";
 
     let _ = notify.send(

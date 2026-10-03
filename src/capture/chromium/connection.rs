@@ -78,8 +78,8 @@ async fn connect_with_timeout(
         Ok(Ok(connection)) => {
             tracing::info!(cdp_connected = true, "Browser handshake completed");
             if attached {
-                let _ = notify.send(Notification::info("Browser connected; waiting for Majsoul")
-                    .body("Open https://game.maj-soul.com/1/ in this browser. Capture attaches automatically.")
+                let _ = notify.send(Notification::info("Browser connected; waiting for the selected game")
+                    .body("Open the selected game’s official HTTPS page in this browser. Capture attaches automatically.")
                     .id("cdp-connection"));
             }
             return Ok(connection);

@@ -820,6 +820,7 @@ mod tests {
         cfg_ref: &'a MajsoulAutoplayConfig,
     ) -> ActionContext<'a> {
         ActionContext {
+            tenhou: None,
             action,
             snapshot,
             legal_actions: legal,

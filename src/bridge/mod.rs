@@ -5,6 +5,7 @@
 //! independent game session (e.g. one Majsoul WebSocket flow).
 
 pub mod majsoul;
+pub mod tenhou;
 
 pub use majsoul::MajsoulBridge;
 
@@ -62,6 +63,7 @@ pub trait Bridge: Send {
 
 #[derive(Clone, Default)]
 pub struct BridgeHooks {
+    pub tenhou_state: Option<crate::autoplay::tenhou_state::SharedTenhouState>,
     /// Majsoul: the server's per-decision-window time budget, taken from
     /// `OptionalOperationList` (see `autoplay::budget`).
     pub time_budget: Option<crate::autoplay::budget::SharedTimeBudget>,
@@ -84,6 +86,11 @@ pub fn for_platform(
     hooks: BridgeHooks,
 ) -> Box<dyn Bridge> {
     match platform {
+        crate::config::Platform::Tenhou => Box::new(
+            tenhou::TenhouBridge::new(flow_log, session)
+                .with_shared_state(hooks.tenhou_state)
+                .with_notify(hooks.notify),
+        ),
         crate::config::Platform::Majsoul => Box::new(
             MajsoulBridge::new(flow_log, session)
                 .with_time_budget(hooks.time_budget)

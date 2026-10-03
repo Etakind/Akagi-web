@@ -8,7 +8,7 @@ fn new_config_is_majsoul_chromium() {
     assert!(config.capture.enabled);
     assert!(config.capture.unavailable_reason.is_none());
     assert!(!config.autoplay.enabled);
-    assert!(!config.bot.api.enabled);
+    assert_eq!(config.bot.active_4p, "akagi-native");
     let encoded = toml::to_string(&config).unwrap();
     assert!(!encoded.contains("[proxy]"));
 }
@@ -32,7 +32,9 @@ key = "FAKE_MIGRATION_KEY"
     assert!(!config.capture.enabled);
     assert_eq!(config.capture.chromium.attach_port, 9222);
     assert_eq!(config.capture.chromium.user_data_dir, "/synthetic/profile");
-    assert_eq!(config.bot.api.key, "FAKE_MIGRATION_KEY");
+    assert!(!toml::to_string(&config)
+        .unwrap()
+        .contains("FAKE_MIGRATION_KEY"));
 }
 
 #[test]
@@ -50,14 +52,13 @@ fn explicit_capture_toggle_wins_over_legacy_toggle() {
 fn removed_modes_are_blocked_without_resetting_other_settings() {
     for legacy in [
         "[capture]\nmode = 'mitm'",
-        "[platform]\nkind = 'Tenhou'",
         "[platform]\nkind = 'RiichiCity'",
     ] {
         let config: AppConfig =
             toml::from_str(&format!("{legacy}\n[bot.api]\nkey = 'FAKE_KEEP_ME'\n")).unwrap();
         assert!(!config.capture.enabled);
         assert!(config.capture.unavailable_reason.is_some());
-        assert_eq!(config.bot.api.key, "FAKE_KEEP_ME");
+        assert!(!toml::to_string(&config).unwrap().contains("FAKE_KEEP_ME"));
     }
 }
 
@@ -122,4 +123,15 @@ fn pre_capture_proxy_config_does_not_silently_launch_a_browser() {
     let config: AppConfig = toml::from_str("[proxy]\nenabled = true\n").unwrap();
     assert!(!config.capture.enabled);
     assert!(config.capture.unavailable_reason.is_some());
+}
+
+#[test]
+fn tenhou_is_supported_and_external_bot_migration_disables_autoplay() {
+    let source = "[platform]\nkind = 'Tenhou'\n[capture]\nmode = 'chromium'\n[bot]\nactive_4p = 'external'\n[autoplay]\nenabled = true\n[bot.api]\nenabled = true\nkey = 'FAKE_SECRET'\n";
+    let config: AppConfig = toml::from_str(source).unwrap();
+    assert!(config.capture.enabled);
+    assert_eq!(config.platform.kind, akagi::config::Platform::Tenhou);
+    assert!(!config.autoplay.enabled);
+    assert!(config.bot.migration_notice.is_some());
+    assert!(!merge_into(&config, source).unwrap().contains("FAKE_SECRET"));
 }

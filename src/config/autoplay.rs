@@ -194,16 +194,9 @@ pub struct MajsoulAutoplayConfig {
     /// logs). Each retry re-checks that the decision window is still the
     /// one the plan was made for.
     pub click_retries: u32,
-    /// Reload the game page after this many decisions in a row where the
-    /// client accepted no input at all. `0` disables it.
-    ///
-    /// The client can end up in a state where presses on the action
-    /// buttons stop registering and stay that way for the rest of the
-    /// game — once it starts it does not recover on its own, and every
-    /// remaining decision runs to timeout. A reload reconnects into the
-    /// hand through the bridge's `GameRestore` path, so the cost is a
-    /// reconnect rather than the game. Deliberately not 1: a single lost
-    /// press is common enough and costs only that decision.
+    /// Historical field name retained for configuration compatibility.
+    /// Pause autoplay after this many failed decisions; never refresh a page.
+    /// Zero disables the failure threshold.
     pub reload_after_failures: u32,
     /// Extra delay tacked onto the dealer's first discard. Mahjong Soul
     /// plays a hand-sort animation when the dealer receives all 14 tiles

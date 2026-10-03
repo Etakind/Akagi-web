@@ -5,7 +5,7 @@
 // editable draft seeded from the stored config. The stored config can change
 // underneath them while the draft is open — most notably when a purchased API
 // key finishes delivery with the purchase dialog unmounted and the purchase
-// store persists `bot.api` directly. Blindly re-seeding the draft would wipe
+// another view saves configuration. Blindly re-seeding the draft would wipe
 // the user's unsaved edits; ignoring the change would leave a stale draft
 // whose Save silently reverts the externally-written values (e.g. a paid key).
 //
@@ -15,7 +15,7 @@
 //   value;
 // - fields the user DID edit keep their draft value, even when the stored
 //   value moved too — the in-progress edit wins the conflict;
-// - plain objects are merged recursively, so nested sections (e.g. `bot.api`)
+// - plain objects are merged recursively, so nested sections (e.g. `capture.chromium`)
 //   merge field-by-field instead of all-or-nothing.
 //
 // Values are compared structurally (via JSON), which is exact for config

@@ -1,6 +1,6 @@
 //! Fake secrets only. Exercise the actual disk + live observation sinks.
 use akagi::{
-    config::NativeApiConfig,
+    config::ChromiumConfig,
     logger::{LogTarget, Session},
     schema::*,
 };
@@ -155,9 +155,8 @@ fn fake_login_never_reaches_any_observation_sink() {
     }
     writer.record(response);
 
-    let cfg = NativeApiConfig {
-        key: SECRET.into(),
-        proxy: format!("http://{SECRET}:{SECRET}@localhost:8080"),
+    let cfg = ChromiumConfig {
+        extra_args: vec![SECRET.into()],
         ..Default::default()
     };
     assert!(!format!("{cfg:?}").contains(SECRET));

@@ -7,7 +7,6 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Toaster } from '@/components/ui/sonner'
 import { UpdateNotifier } from '@/components/UpdateNotifier'
 import { AnnouncementsDialog } from '@/components/AnnouncementsDialog'
-import { InstallBlockingOverlay } from '@/components/InstallBlockingOverlay'
 import { useTauriBridge } from '@/hooks/useTauriBridge'
 import { useSidebar } from '@/hooks/useSidebar'
 import { useUiPrefsStore } from '@/stores/uiPrefsStore'
@@ -61,7 +60,6 @@ export default function App() {
       <Toaster />
       <UpdateNotifier />
       <AnnouncementsDialog />
-      <InstallBlockingOverlay />
     </>
   )
 }

@@ -12,8 +12,8 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 // `color-mix()` so every shadcn token stays coherent.
 //
 // FOUC is prevented by an inline pre-hydration script in `index.html` that
-// reads the same localStorage envelope (plus `akagi.theme.css` for custom
-// palettes) before this module loads.
+// reads only mode/palette before this module loads. Custom CSS is regenerated
+// from validated color values after startup, never injected from cached CSS.
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 export type ThemePalette = 'default' | 'crimson' | 'slate' | 'custom'
@@ -102,8 +102,7 @@ type ThemeStore = {
   setCustomVar: (mode: 'light' | 'dark', name: CustomBaseVar, value: string) => void
   resetCustom: () => void
   /**
-   * Accepts either a URL pointing at a tweakcn / shadcn theme JSON or the
-   * raw JSON body pasted as text. Replaces the stored custom palette on
+   * Accepts a local JSON palette pasted as text. Replaces the stored custom palette on
    * success.
    */
   importCustom: (input: string) => Promise<void>
@@ -125,7 +124,7 @@ function resolveDark(mode: ThemeMode): boolean {
 // changing a base color cascades through the dependent tokens automatically.
 function deriveExpression(name: ShadcnVar, vars: CustomVarsMap): string {
   const explicit = vars[name]
-  if (explicit) return explicit
+  if (explicit && safeColor(explicit)) return explicit
   switch (name) {
     case 'background':
       return '#fafafa'
@@ -285,39 +284,11 @@ function parseTheme(raw: unknown): CustomTheme {
 //   share page : tweakcn.com/themes/<id>                 (HTML gallery view)
 //   editor     : tweakcn.com/editor/theme?theme=<slug>   (HTML editor view)
 //   registry   : tweakcn.com/r/themes/<slug-or-id>       (JSON, our target)
-function normalizeThemeUrl(input: string): string {
-  const raw = /^https?:\/\//i.test(input) ? input : `https://${input}`
-  let u: URL
-  try {
-    u = new URL(raw)
-  } catch {
-    return raw
-  }
-  if (!/(^|\.)tweakcn\.com$/i.test(u.hostname)) return raw
-  if (u.pathname === '/editor/theme' && u.searchParams.has('theme')) {
-    const name = u.searchParams.get('theme') as string
-    return `${u.protocol}//${u.host}/r/themes/${encodeURIComponent(name)}`
-  }
-  const shareMatch = u.pathname.match(/^\/themes\/([^/]+)\/?$/)
-  if (shareMatch) {
-    return `${u.protocol}//${u.host}/r/themes/${shareMatch[1]}`
-  }
-  return raw
-}
-
 async function loadTheme(input: string): Promise<CustomTheme> {
-  const trimmed = input.trim()
-  if (!trimmed) throw new Error('No input')
-  let data: unknown
-  if (trimmed.startsWith('{')) {
-    data = JSON.parse(trimmed)
-  } else {
-    const url = normalizeThemeUrl(trimmed)
-    const resp = await fetch(url, { headers: { Accept: 'application/json' } })
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-    data = await resp.json()
-  }
-  return parseTheme(data)
+  return parseTheme(JSON.parse(input))
+}
+function safeColor(value: string): boolean {
+  return /^(#[0-9a-f]{3,8}|(?:rgb|rgba|hsl|hsla|oklch|oklab|lab|lch)\([0-9.,%+\- /a-z]+\))$/i.test(value.trim())
 }
 
 export const useThemeStore = create(
@@ -337,6 +308,7 @@ export const useThemeStore = create(
         applyTheme(s.mode, palette, s.custom)
       },
       setCustomVar: (which, name, value) => {
+        if (!safeColor(value)) return
         const prev = get().custom
         const nextCustom: CustomTheme = {
           light: which === 'light' ? { ...prev.light, [name]: value } : prev.light,

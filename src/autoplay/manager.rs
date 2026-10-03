@@ -17,12 +17,14 @@ use crate::autoplay::cdp_input::{dispatch_click_shaped, evaluate_canvas_rect};
 use crate::autoplay::context::{AutoplayContext, CanvasRect};
 use crate::autoplay::majsoul::MajsoulAutoplay;
 use crate::autoplay::platform::{ActionContext, PlatformAutoplay, Step};
+use crate::autoplay::tenhou::TenhouAutoplay;
 use crate::autoplay::verify::InputTicket;
 use crate::bot::BotResponse;
 use crate::config::AppConfig;
 use crate::event_bus::{BotResponseBus, MjaiBus, NotifyBus};
 use crate::game_state::tracker::GameTracker;
 use crate::schema::MjaiEvent;
+use chromiumoxide::Page;
 use riichienv_core::action::Action;
 use riichienv_core::state::legal_actions::GameStateLegalActions;
 use riichienv_core::state_3p::legal_actions::GameState3PLegalActions;
@@ -40,9 +42,10 @@ pub struct AutoplayManager {
     tracker: Arc<Mutex<GameTracker>>,
     mjai_bus: MjaiBus,
     /// For telling the user about a decision that came out wrong — see the
-    /// riichi check in `handle_bot_response` and the dead-click reload.
+    /// riichi check in `handle_bot_response` and the dead-click pause.
     notify: NotifyBus,
     majsoul: MajsoulAutoplay,
+    tenhou: TenhouAutoplay,
     state: ManagerState,
     /// User Lua delay policy (hot-reloaded from disk; see
     /// `autoplay::delay::script`).
@@ -67,6 +70,7 @@ struct ManagerState {
     /// tsumo/dahai updates, and is available from the very first event
     /// rather than waiting for the first successful `handle_bot_response`.
     cached_our_seat: Option<u8>,
+    acted_window: Option<Instant>,
 }
 
 impl AutoplayManager {
@@ -85,6 +89,7 @@ impl AutoplayManager {
             mjai_bus,
             notify,
             majsoul: MajsoulAutoplay::new(),
+            tenhou: TenhouAutoplay::new(),
             state: ManagerState::default(),
             delay_script: crate::autoplay::delay::ScriptHost::default(),
             config_dir,
@@ -129,7 +134,14 @@ impl AutoplayManager {
         }
         let cfg = cfg_guard.autoplay.majsoul.clone();
         let delay_cfg = cfg_guard.autoplay.delay.clone();
+        let platform_kind = cfg_guard.platform.kind;
+        let generation = self
+            .ctx
+            .generation
+            .load(std::sync::atomic::Ordering::SeqCst);
         drop(cfg_guard);
+        let tenhou_state = self.ctx.tenhou_state.read().ok().and_then(|g| g.clone());
+        let planned_window = tenhou_state.as_ref().and_then(|s| s.window);
 
         // Snapshot the server time budget for the current decision window
         // (written by the Majsoul bridge; None off-Majsoul or pre-game) and
@@ -185,6 +197,7 @@ impl AutoplayManager {
         };
 
         let action_ctx = ActionContext {
+            tenhou: tenhou_state.as_ref(),
             action: &resp.action,
             snapshot: &snapshot,
             legal_actions: &legal_actions,
@@ -200,7 +213,17 @@ impl AutoplayManager {
             delay_script: self.delay_script.script(),
         };
 
-        let plan = self.majsoul.plan(&action_ctx);
+        if platform_kind == crate::config::Platform::Tenhou
+            && (planned_window.is_none()
+                || planned_window.is_some_and(|w| self.state.acted_window == Some(w.opened_at)))
+        {
+            return;
+        }
+        let platform: &dyn PlatformAutoplay = match platform_kind {
+            crate::config::Platform::Majsoul => &self.majsoul,
+            crate::config::Platform::Tenhou => &self.tenhou,
+        };
+        let plan = platform.plan(&action_ctx);
         if plan.steps.is_empty() {
             return;
         }
@@ -242,11 +265,134 @@ impl AutoplayManager {
         // `Reach.pai`), so the reach action alone identifies it.
         let declares_reach = matches!(resp.action, MjaiEvent::Reach { .. });
 
+        // An attached client loaded before Fetch instrumentation cannot safely act.
+        if platform_kind == crate::config::Platform::Tenhou {
+            let guard = self.ctx.page.read().await;
+            let Some(page) = guard.as_ref() else {
+                return;
+            };
+            let adapter = page
+                .evaluate("(() => typeof window.__akagiTenhou?.R?.c21 === 'function')()")
+                .await;
+            if !matches!(adapter, Ok(value) if value.value().and_then(|v| v.as_bool()) == Some(true))
+            {
+                drop(guard);
+                self.ctx
+                    .autoplay_enabled
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                let _ = self.notify.send(crate::schema::Notification::warn("Tenhou autoplay unavailable").body("Client adapter missing. Re-enter the official page yourself when safe, then enable autoplay again. Observation remains available.").sticky());
+                return;
+            }
+        }
         let mut window_checked = false;
+        if let Some(window) = planned_window {
+            self.state.acted_window = Some(window.opened_at);
+        }
         for step in &plan.steps {
+            let current = self.cfg.read().await;
+            if !self
+                .ctx
+                .autoplay_enabled
+                .load(std::sync::atomic::Ordering::SeqCst)
+                || !current.autoplay.enabled
+                || current.platform.kind != platform_kind
+                || self
+                    .ctx
+                    .generation
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    != generation
+            {
+                return;
+            }
+            drop(current);
             match step {
                 Step::Sleep { duration_ms } => {
                     tokio::time::sleep(Duration::from_millis(*duration_ms as u64)).await;
+                }
+                Step::AwaitReady { timeout_ms } => {
+                    let page_guard = self.ctx.page.read().await;
+                    let Some(page) = page_guard.as_ref() else {
+                        warn!("autoplay: no page handle — cannot wait for the client");
+                        return;
+                    };
+                    if !self.ctx.page_allowed(page).await || !self.plan_active(generation).await {
+                        return;
+                    }
+                    if !Self::await_turn_ready(page, *timeout_ms).await {
+                        return;
+                    }
+                }
+                Step::DomClick { selectors, label } => {
+                    if self.tenhou_window_moved(planned_window) {
+                        warn!(
+                            "autoplay: decision window closed mid-delay — dropping stale {label}"
+                        );
+                        return;
+                    }
+                    let page_guard = self.ctx.page.read().await;
+                    let Some(page) = page_guard.as_ref() else {
+                        warn!("autoplay: no page handle — cannot press {label}");
+                        return;
+                    };
+                    // The client only renders the buttons it is currently
+                    // offering, so a selector that matches nothing means the
+                    // decision resolved while we were thinking. Report it and
+                    // stop rather than pressing something else.
+                    // The buttons exist only between the end of the
+                    // client's animation for the triggering frame and
+                    // whatever resolves the window, and neither edge is
+                    // observable from here — a single look loses the race
+                    // either way. Wait for the element instead, bounded by
+                    // what is left of the turn.
+                    if !self.ctx.page_allowed(page).await || !self.plan_active(generation).await {
+                        return;
+                    }
+                    match self
+                        .press_when_offered(page, selectors, label, generation, planned_window)
+                        .await
+                    {
+                        true => {}
+                        false => return,
+                    }
+                }
+                Step::Discard { tile_index } => {
+                    // The client's discard handler applies locally whether or
+                    // not it is our turn — its own UI only reaches it while
+                    // one is — so a stale call desyncs the board, not just
+                    // wastes a frame. The riichi plan is the exception: its
+                    // own button press replaces the window (the server acks
+                    // the declaration and the bridge re-opens it), and the
+                    // tile it owes is still this plan's to throw.
+                    if discard_needs_window_guard(&resp.action)
+                        && self.tenhou_window_moved(planned_window)
+                    {
+                        warn!(
+                            "autoplay: decision window closed mid-delay — dropping stale discard"
+                        );
+                        return;
+                    }
+                    let page_guard = self.ctx.page.read().await;
+                    let Some(page) = page_guard.as_ref() else {
+                        warn!("autoplay: no page handle — cannot discard");
+                        return;
+                    };
+                    if !self.ctx.page_allowed(page).await || !self.plan_active(generation).await {
+                        return;
+                    }
+                    match crate::autoplay::cdp_input::discard_tile(page, *tile_index).await {
+                        Ok(true) => info!("autoplay: discarded tile index {tile_index}"),
+                        Ok(false) => {
+                            warn!(
+                                "autoplay: the client script was not instrumented, so its \
+                                 discard handler is unreachable; skipping"
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            warn!("autoplay: discard failed: {e:#}");
+                            return;
+                        }
+                    }
                 }
                 Step::Click { x_norm, y_norm } => {
                     let Some(rect) = rect else {
@@ -294,7 +440,7 @@ impl AutoplayManager {
                         warn!("autoplay: no page handle — aborting click sequence");
                         return;
                     };
-                    if !self.ctx.page_allowed(page).await {
+                    if !self.ctx.page_allowed(page).await || !self.plan_active(generation).await {
                         warn!(
                             official_page_rejected = true,
                             "autoplay: input target no longer allowed"
@@ -343,14 +489,10 @@ impl AutoplayManager {
                     planned_budget,
                     &resp.action,
                     require_non_discard,
+                    generation,
                 )
                 .await;
-            // Once the client stops accepting presses it tends to stay that
-            // way for the rest of the game — the failures do not come back
-            // one at a time, they arrive and then every remaining decision
-            // runs to timeout. A page reload reconnects into the hand
-            // through the bridge's GameRestore path, so the way out costs a
-            // reconnect rather than the game.
+            // Repeated unregistered input pauses actions; never reload a game.
             if registered {
                 self.state.dead_clicks = 0;
             } else {
@@ -360,14 +502,15 @@ impl AutoplayManager {
                 {
                     warn!(
                         decisions = self.state.dead_clicks,
-                        "autoplay: the client has stopped accepting presses — reloading to recover"
+                        "autoplay: the client has stopped accepting presses — pausing autoplay"
                     );
                     let _ = self.notify.send(
-                        crate::schema::Notification::warn("Reloading the game")
-                            .body("Clicks stopped registering; reconnecting to recover."),
+                        crate::schema::Notification::warn("Autoplay input unavailable").body(
+                            "Clicks stopped registering; automatic actions have been paused.",
+                        ),
                     );
                     self.state.dead_clicks = 0;
-                    self.reload_page().await;
+                    self.pause_autoplay().await;
                 }
             }
             // A riichi plan that produced an input command has not
@@ -403,6 +546,97 @@ impl AutoplayManager {
     /// one the plan was made for: if our action did land and the answer was
     /// merely slow, the server's echo closes that window and the retry is
     /// dropped rather than pressed into the next decision.
+    async fn await_turn_ready(page: &Page, timeout_ms: u32) -> bool {
+        const POLL_INTERVAL: Duration = Duration::from_millis(120);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
+        let started = Instant::now();
+        loop {
+            match crate::autoplay::cdp_input::turn_clock_running(page).await {
+                Ok(true) => {
+                    debug!(
+                        "autoplay: client ready after {}ms",
+                        started.elapsed().as_millis()
+                    );
+                    return true;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    warn!("autoplay: readiness probe failed: {e:#}");
+                    return false;
+                }
+            }
+            if Instant::now() >= deadline {
+                warn!(
+                    "autoplay: client never started its clock within {timeout_ms}ms; \
+                     skipping this decision"
+                );
+                return false;
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    }
+
+    async fn press_when_offered(
+        &self,
+        page: &Page,
+        selectors: &[String],
+        label: &str,
+        generation: u64,
+        window: Option<crate::autoplay::tenhou_state::DecisionWindow>,
+    ) -> bool {
+        const POLL_INTERVAL: Duration = Duration::from_millis(120);
+        const WAIT_BUDGET: Duration = Duration::from_millis(2_400);
+
+        let deadline = Instant::now() + WAIT_BUDGET;
+        let mut attempts = 0u32;
+        loop {
+            if !self.ctx.page_allowed(page).await
+                || !self.plan_active(generation).await
+                || self.tenhou_window_moved(window)
+            {
+                return false;
+            }
+            attempts += 1;
+            match crate::autoplay::cdp_input::click_dom(page, selectors).await {
+                Ok(true) => {
+                    info!("autoplay: pressed {label} ({selectors:?}) after {attempts} look(s)");
+                    return true;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    warn!("autoplay: pressing {label} failed: {e:#}");
+                    return false;
+                }
+            }
+            if Instant::now() >= deadline {
+                let offered = crate::autoplay::cdp_input::list_action_buttons(page).await;
+                warn!(
+                    "autoplay: {label} button ({selectors:?}) never appeared in {:?}; \
+                     client is offering slots {offered:?} (its own order: highest first)",
+                    WAIT_BUDGET
+                );
+                return false;
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    }
+
+    fn tenhou_window_moved(
+        &self,
+        planned: Option<crate::autoplay::tenhou_state::DecisionWindow>,
+    ) -> bool {
+        let Some(planned) = planned else {
+            return false;
+        };
+        let current = self
+            .ctx
+            .tenhou_state
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|s| s.window));
+        current.map(|w| w.opened_at) != Some(planned.opened_at)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn verify_and_retry(
         &self,
@@ -413,13 +647,14 @@ impl AutoplayManager {
         planned_budget: Option<crate::autoplay::budget::TimeBudget>,
         action: &MjaiEvent,
         require_non_discard: bool,
+        generation: u64,
     ) -> bool {
         let clicks: Vec<(f64, f64)> = plan
             .steps
             .iter()
             .filter_map(|s| match s {
                 Step::Click { x_norm, y_norm } => Some((*x_norm, *y_norm)),
-                Step::Sleep { .. } => None,
+                _ => None,
             })
             .collect();
         if clicks.is_empty() {
@@ -439,7 +674,7 @@ impl AutoplayManager {
             if attempt == cfg.click_retries {
                 break;
             }
-            if !self.window_still_open(planned_budget) {
+            if !self.plan_active(generation).await || !self.window_still_open(planned_budget) {
                 debug!(
                     "autoplay: no input seen for {action:?}, but the decision window has moved on — not retrying"
                 );
@@ -482,7 +717,7 @@ impl AutoplayManager {
                     warn!("autoplay: no page handle — abandoning retry for {action:?}");
                     return false;
                 };
-                if !self.ctx.page_allowed(page).await {
+                if !self.ctx.page_allowed(page).await || !self.plan_active(generation).await {
                     warn!(
                         official_page_rejected = true,
                         "autoplay: retry target no longer allowed"
@@ -549,28 +784,26 @@ impl AutoplayManager {
         current.map(|b| b.opened_at) == Some(planned.opened_at)
     }
 
-    /// Reload the game tab. The bridge reconnects into the in-progress
-    /// hand through its `GameRestore` path (`syncGame` replay), so the
-    /// cost is a reconnect rather than the game.
-    async fn reload_page(&mut self) {
-        let page_guard = self.ctx.page.read().await;
-        let Some(page) = page_guard.as_ref().cloned() else {
-            warn!("autoplay: cannot reload — no page handle");
-            return;
-        };
-        drop(page_guard);
-        if !self.ctx.page_allowed(&page).await {
-            return;
-        }
-        if let Err(e) = page.reload().await {
-            warn!("autoplay: page reload failed: {e:#}");
-        }
-        // The canvas is rebuilt on reload; drop the cached rect so the
-        // next click re-measures it.
-        self.state.canvas_rect_at = None;
-        *self.ctx.canvas_rect.write().await = None;
+    async fn plan_active(&self, generation: u64) -> bool {
+        self.ctx
+            .generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+            == generation
+            && self
+                .ctx
+                .autoplay_enabled
+                .load(std::sync::atomic::Ordering::SeqCst)
+            && self.cfg.read().await.autoplay.enabled
     }
 
+    /// Pause after input failures without navigating or refreshing the client.
+    async fn pause_autoplay(&mut self) {
+        self.cfg.write().await.autoplay.enabled = false;
+        self.ctx
+            .autoplay_enabled
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.notify.send(crate::schema::Notification::warn("Autoplay paused").body("Input stopped registering. Check the game when safe; Akagi will not refresh it.").sticky());
+    }
     fn handle_mjai_event(&mut self, ev: &MjaiEvent) {
         match ev {
             MjaiEvent::StartGame { id, .. } => {
@@ -928,4 +1161,8 @@ mod tests {
             "stale seat must be cleared"
         );
     }
+}
+
+fn discard_needs_window_guard(action: &MjaiEvent) -> bool {
+    !matches!(action, MjaiEvent::Reach { .. })
 }

@@ -19,8 +19,6 @@ import { useAnalysisStore } from '@/stores/analysisStore'
 import { useBotStore } from '@/stores/botStore'
 import { useCaptureStore } from '@/stores/captureStore'
 import { useNotifyStore } from '@/stores/notifyStore'
-import { useApiStatusStore } from '@/stores/apiStatusStore'
-import { useInstallStore } from '@/stores/installStore'
 import { useConfigStore } from '@/stores/configStore'
 import { useHistoryStore } from '@/stores/historyStore'
 import { toast, type ToastSeverity } from '@/components/ui/sonner'
@@ -96,8 +94,6 @@ export function useTauriBridge() {
     })()
 
     listen<MjaiEvent>('mjai-event', (e) => {
-      // Fresh game: clear any lingering online-API outage from the last one.
-      if (e.type === 'start_game') useApiStatusStore.getState().reset()
       useNotifyStore.getState().pushEvent(e)
       void refreshGame()
     }).then((u) => unlistens.push(u))
@@ -135,19 +131,6 @@ export function useTauriBridge() {
 
     listen<Notification>('notify', (n) => {
       useNotifyStore.getState().pushToast(n)
-      // Drive the persistent "Online API" health indicator (Statusbar) off the
-      // same channel the backend uses for degrade/recover toasts.
-      if (n.id === 'native-api-health') {
-        useApiStatusStore
-          .getState()
-          .setDegraded(n.level === 'warn' || n.level === 'error', n.body)
-      }
-      // Feed env install/sync progress to the blocking overlay (which is
-      // shown for the duration of `withInstallBlock`). Ids: `bot-install-*`
-      // (GitHub install/reinstall) and `bot-sync-*` ("Reinstall environment").
-      if (n.id && (n.id.startsWith('bot-install-') || n.id.startsWith('bot-sync-'))) {
-        useInstallStore.getState().setProgress(n)
-      }
       toast[TOAST_SEVERITY[n.level]](n.title, {
         description: n.body,
         id: n.id,

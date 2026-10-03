@@ -28,6 +28,9 @@ import {
   MAJSOUL_LOBBY_LABEL,
   type MajsoulDan,
   type MajsoulLobby,
+  TENHOU_DAN_4P,
+  TENHOU_DAN_LABEL,
+  type TenhouDan,
 } from '@/lib/ptTables'
 import { useHistoryStore } from '@/stores/historyStore'
 
@@ -39,7 +42,8 @@ export function PtRuleSelector() {
   const onTabChange = (value: string) => {
     if (value === 'majsoul') {
       setRule({ kind: 'majsoul', lobby: 'jade', dan: 'jakketsu_3' })
-
+    } else if (value === 'tenhou') {
+      setRule({ kind: 'tenhou', dan: 'dan_4' })
     } else if (value === 'custom') {
       setRule(DEFAULT_CUSTOM_RULE)
     }
@@ -56,6 +60,7 @@ export function PtRuleSelector() {
         <Tabs value={rule.kind} onValueChange={onTabChange}>
           <TabsList>
             <TabsTrigger value="majsoul">{t('history.rule.majsoul')}</TabsTrigger>
+            <TabsTrigger value="tenhou">{t('history.rule.tenhou')}</TabsTrigger>
             <TabsTrigger value="custom">{t('history.rule.custom')}</TabsTrigger>
           </TabsList>
 
@@ -101,6 +106,30 @@ export function PtRuleSelector() {
                   </Select>
                 </Field>
               </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="tenhou" className="pt-3">
+            {rule.kind === 'tenhou' && (
+              <Field label={t('history.rule.dan')}>
+                <Select
+                  value={rule.dan}
+                  onValueChange={(v) =>
+                    setRule({ kind: 'tenhou', dan: v as TenhouDan })
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TENHOU_DAN_4P.map((id) => (
+                      <SelectItem key={id} value={id}>
+                        {TENHOU_DAN_LABEL[id]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
             )}
           </TabsContent>
 
