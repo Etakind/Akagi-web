@@ -6,11 +6,12 @@ import json
 import pathlib
 import re
 import shutil
+import stat
 import tempfile
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-TARGETS = json.loads((ROOT / 'build/targets.json').read_text())
+TARGETS = json.loads((ROOT / 'build/targets.json').read_text(encoding='utf-8'))
 
 def main():
     parser = argparse.ArgumentParser()
@@ -24,7 +25,7 @@ def main():
     if target is None:
         parser.error('unsupported target')
     # Validate before creating, deleting, copying or downloading anything.
-    version = re.search(r'^version = "([0-9A-Za-z.+-]+)"', (ROOT / 'Cargo.toml').read_text(), re.M).group(1)
+    version = re.search(r'^version = "([0-9A-Za-z.+-]+)"', (ROOT / 'Cargo.toml').read_text(encoding='utf-8'), re.M).group(1)
     name = f"akagi-{version}-{target['slug']}"
     binary_name = 'akagi.exe' if target['os'] == 'windows' else 'akagi'
     release = ROOT / 'target' / target['target'] / 'release'
@@ -49,7 +50,13 @@ def main():
         with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as out:
             for file in sorted(stage.rglob('*')):
                 if file.is_file():
-                    out.write(file, file.relative_to(stage.parent))
+                    info = zipfile.ZipInfo.from_file(file, file.relative_to(stage.parent))
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    if file == stage / binary_name and target['os'] != 'windows':
+                        info.create_system = 3
+                        info.external_attr = (stat.S_IFREG | 0o755) << 16
+                    with file.open('rb') as source, out.open(info, 'w') as destination:
+                        shutil.copyfileobj(source, destination)
         assets.append(archive)
     for extension in target['formats']:
         if extension == 'zip':
@@ -73,8 +80,8 @@ def main():
     for suffix in ('.assets.json', '.sha256'):
         if (dist / (name + suffix)).is_symlink():
             parser.error('metadata destination must not be a symlink')
-    (dist / f'{name}.assets.json').write_text(json.dumps({'target': target['target'], 'assets': inventory}, indent=2) + '\n')
-    (dist / f'{name}.sha256').write_text(''.join(f"{a['sha256']}  {a['name']}\n" for a in inventory))
+    (dist / f'{name}.assets.json').write_text(json.dumps({'target': target['target'], 'assets': inventory}, indent=2) + '\n', encoding='utf-8')
+    (dist / f'{name}.sha256').write_text(''.join(f"{a['sha256']}  {a['name']}\n" for a in inventory), encoding='utf-8')
     print('PACKAGED', target['target'])
 
 if __name__ == '__main__':

@@ -19,7 +19,7 @@ class PackageTests(unittest.TestCase):
             dest = self.root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, dest)
-        (self.root / 'Cargo.toml').write_text('[package]\nname = "fixture"\nversion = "0.1.0"\n')
+        (self.root / 'Cargo.toml').write_text('[package]\nname = "fixture"\nversion = "0.1.0"\n# 配置说明：适用于雀魂与天凤。\n', encoding='utf-8')
         for name in ['LICENSE.txt', 'NOTICE', 'README.md', 'README.zh-CN.md']:
             (self.root / name).write_text('package fixture\n')
         (self.root / 'docs').mkdir()

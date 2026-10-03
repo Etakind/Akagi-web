@@ -10,7 +10,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 
 def verify_uploaded(directory, metadata, tag):
-    data = json.loads(metadata.read_text())
+    data = json.loads(metadata.read_text(encoding='utf-8'))
     assert data['draft'] is True and data['tag_name'] == tag, 'Unexpected release identity or visibility'
     assets = data['assets']
     local = {path.name: path for path in directory.iterdir()}
@@ -27,15 +27,15 @@ def verify_uploaded(directory, metadata, tag):
         assert asset['digest'] == 'sha256:' + digest.hexdigest(), 'Uploaded asset digest mismatch'
 
 def verify(directory):
-    targets = json.loads((ROOT / 'build/targets.json').read_text())
-    version = re.search(r'^version = "([0-9A-Za-z.+-]+)"', (ROOT / 'Cargo.toml').read_text(), re.M).group(1)
+    targets = json.loads((ROOT / 'build/targets.json').read_text(encoding='utf-8'))
+    version = re.search(r'^version = "([0-9A-Za-z.+-]+)"', (ROOT / 'Cargo.toml').read_text(encoding='utf-8'), re.M).group(1)
     expected = set()
     for target in targets:
         stem = f"akagi-{version}-{target['slug']}"
         manifest = directory / (stem + '.assets.json')
         checksums = directory / (stem + '.sha256')
         assert manifest.is_file() and not manifest.is_symlink(), 'Missing or unsafe inventory'
-        data = json.loads(manifest.read_text())
+        data = json.loads(manifest.read_text(encoding='utf-8'))
         assert data['target'] == target['target'], 'Inventory target mismatch'
         names = {stem + '.' + ext for ext in target['formats']}
         assert {a['name'] for a in data['assets']} == names, 'Incomplete package formats'
@@ -66,7 +66,7 @@ def verify(directory):
                     if target['os'] != 'windows':
                         assert archive.getinfo(f'{stem}/{binary}').external_attr >> 16 & 0o111, 'Portable binary not executable'
         assert checksums.is_file() and not checksums.is_symlink(), 'Missing checksums'
-        assert checksums.read_text() == ''.join(lines), 'Checksum file mismatch'
+        assert checksums.read_text(encoding='utf-8') == ''.join(lines), 'Checksum file mismatch'
     actual = {p.name for p in directory.iterdir()}
     assert actual - expected <= {name + '.minisig' for name in expected}, 'Unexpected release asset'
     assert expected <= actual, 'Release assets incomplete'

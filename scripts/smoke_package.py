@@ -14,11 +14,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target', required=True)
     args = parser.parse_args()
-    targets = json.loads((ROOT / 'build/targets.json').read_text())
+    targets = json.loads((ROOT / 'build/targets.json').read_text(encoding='utf-8'))
     target = next((item for item in targets if item['target'] == args.target), None)
     if target is None:
         parser.error('unsupported target')
-    version = re.search(r'^version = "([0-9A-Za-z.+-]+)"', (ROOT / 'Cargo.toml').read_text(), re.M).group(1)
+    version = re.search(r'^version = "([0-9A-Za-z.+-]+)"', (ROOT / 'Cargo.toml').read_text(encoding='utf-8'), re.M).group(1)
     stem = f"akagi-{version}-{target['slug']}"
     binary = 'akagi.exe' if target['os'] == 'windows' else 'akagi'
     with tempfile.TemporaryDirectory(prefix='akagi-release-smoke-') as temporary:
