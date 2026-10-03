@@ -60,6 +60,8 @@ Windows 文件隐私依赖用户目录 ACL，Unix 权限位不能提供 Windows 
 
 ## 构建与发布
 
+Rust Tauri 与前端 API 必须保持相同主版本/次版本，同步更新锁文件并执行 Tauri CLI 构建；直接 Cargo 构建不会检查这项匹配。
+
 系统依赖和命令见 [README 源码构建](../README.zh-CN.md#源码构建)。
 共同目标清单 `build/targets.json` 定义 Windows x86_64、macOS x86_64/ARM64、Linux x86_64/ARM64。
 各目标提供便携 ZIP，Linux 额外提供 DEB/RPM。Linux 使用 Ubuntu 22.04、GTK3/WebKitGTK 4.1 构建基线。

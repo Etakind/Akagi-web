@@ -75,6 +75,8 @@ data/configuration roots. Explicit configured paths remain supported.
 
 ## Building and releasing
 
+Keep the Rust Tauri crate and frontend API on the same major/minor version. Update their lockfiles together and run the Tauri CLI build; a direct Cargo build does not check this pairing.
+
 [README build instructions](../README.md#build-from-source) cover system prerequisites.
 The shared inventory `build/targets.json` declares Windows x86_64, macOS x86_64/ARM64 and
 Linux x86_64/ARM64. All produce portable ZIPs; Linux also produces DEB/RPM. Linux builds use
