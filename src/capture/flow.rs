@@ -38,6 +38,10 @@ where
         }
     }
 
+    pub fn platform(&self) -> Platform {
+        self.platform
+    }
+
     /// Get the bridge for `key`, creating it on first call. `slug` is a
     /// filename-safe label used in the per-flow log file name (caller is
     /// responsible for sanitising). `label` is the human-readable

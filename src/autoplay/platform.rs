@@ -13,16 +13,32 @@ use riichienv_core::action::Action;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     /// Click at a normalised 16:9 point on the game canvas.
-    Click { x_norm: f64, y_norm: f64 },
+    Click {
+        x_norm: f64,
+        y_norm: f64,
+    },
     /// Pause for `duration_ms` before the next step. Used for the
     /// pre-click "thinking" delay and the inter-click gap inside one
     /// action.
-    Sleep { duration_ms: u32 },
+    Sleep {
+        duration_ms: u32,
+    },
+    DomClick {
+        selectors: Vec<String>,
+        label: String,
+    },
+    AwaitReady {
+        timeout_ms: u32,
+    },
+    Discard {
+        tile_index: u32,
+    },
 }
 
 /// Everything the platform impl needs to translate one bot decision
 /// into a concrete click sequence.
 pub struct ActionContext<'a> {
+    pub tenhou: Option<&'a crate::autoplay::tenhou_state::TenhouState>,
     /// The bot's chosen action (from `BotResponseBus`).
     pub action: &'a MjaiEvent,
     /// Live game state from the riichi engine.

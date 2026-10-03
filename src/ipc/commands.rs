@@ -6,11 +6,6 @@
 //! names quickly and renames break dashboards.
 
 use crate::analysis::result::AnalysisResult;
-use crate::bot::install::{self, GithubInstallSpec, LocalZipInstallSpec};
-use crate::bot::manifest::{self, BotSource};
-use crate::bot::runtime;
-use crate::bot::sync_guard::SyncGuard;
-use crate::bot::{BotEntry, BotRegistry};
 use crate::config::AppConfig;
 use crate::game_state::mahgen_view::MahgenView;
 use crate::game_state::snapshot::GameStateSnapshot;
@@ -20,12 +15,10 @@ use crate::ipc::capture_supervisor::{
 use crate::ipc::overlay;
 use crate::ipc::state::AppState;
 use crate::schema::{
-    BotInfo, BotSettings, GameRecord, HistoryEvent, HistoryEventLog, HistoryFilter, HoraScoreInfo,
+    BotInfo, GameRecord, HistoryEvent, HistoryEventLog, HistoryFilter, HoraScoreInfo,
     InspectorEntry, LogEntry, LogSessionInfo, Notification, ReadInspectorRequest,
     ReadInspectorResponse, ReadLogRequest, ReadLogResponse, Snapshot,
 };
-use crate::util::resolve_dir;
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, State};
 
@@ -56,26 +49,24 @@ fn claim_autoplay_manager_spawn(
             .is_ok()
 }
 
-fn entry_to_info(e: &BotEntry) -> BotInfo {
-    BotInfo {
-        name: e.name.clone(),
-        dir: e.dir.to_string_lossy().into_owned(),
-        has_pyproject: e.pyproject.is_some(),
-        env_ready: runtime::is_synced(&e.dir),
-        manifest: e.manifest.clone(),
-    }
-}
-
 type CmdResult<T> = Result<T, String>;
 
 #[tauri::command]
 pub async fn get_config(state: State<'_, AppState>) -> CmdResult<AppConfig> {
-    Ok(state.config.read().await.clone())
+    let mut config = state.config.read().await.clone();
+    config.autoplay.enabled &= state
+        .autoplay_context
+        .autoplay_enabled
+        .load(std::sync::atomic::Ordering::SeqCst);
+    Ok(config)
+}
+
+fn requires_capture_restart(previous: &AppConfig, next: &AppConfig) -> bool {
+    previous.capture != next.capture || previous.platform.kind != next.platform.kind
 }
 
 /// Replace the entire config and persist it to the same file the app
-/// loaded from. Capture-related changes (mode, chromium settings, proxy
-/// settings) trigger an automatic supervisor restart so the user doesn't
+/// loaded from. Capture-related changes (browser settings or selected game) trigger an automatic supervisor restart so the user doesn't
 /// have to relaunch the app to switch capture modes. A `bot.enabled`
 /// false→true flip (typically the first-run wizard finishing) hot-starts
 /// the `BotManager` so the user doesn't have to relaunch either; once
@@ -92,7 +83,21 @@ pub async fn update_config(
 
     // Snapshot the *previous* capture-relevant fields before we overwrite,
     // so we can decide whether the supervisor needs a swap.
-    let capture_changed = state.config.read().await.capture != new_config.capture;
+    let previous = state.config.read().await;
+    let capture_changed = requires_capture_restart(&previous, &new_config);
+    drop(previous);
+    if capture_changed {
+        state.autoplay_context.invalidate_actions();
+        *state.autoplay_context.page.write().await = None;
+        *state.autoplay_context.canvas_rect.write().await = None;
+        *state.autoplay_context.tenhou_state.write().unwrap() = None;
+        *state.autoplay_context.time_budget.write().unwrap() = None;
+        *state.game_tracker.lock().await = crate::game_state::GameTracker::new();
+    }
+    state
+        .autoplay_context
+        .set_enabled(new_config.autoplay.enabled);
+    *state.history_platform.write().unwrap() = new_config.platform.kind.into();
     let capture_enabled = new_config.capture.enabled;
     let bot_now_enabled = new_config.bot.enabled;
     let autoplay_now_enabled = new_config.autoplay.enabled;
@@ -141,13 +146,10 @@ pub async fn update_config(
         let bs = state.bot_status_bus.clone();
         let nb = state.notify_bus.clone();
         let inspector = state.log_session.inspector();
-        let rt = state.runtime.clone();
-        let syncs = state.syncs_in_flight.clone();
         let started_flag = state.bot_manager_started.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(e) =
-                crate::bot::run_bot_manager(cfg_for_bot, events, resp, bs, nb, inspector, rt, syncs)
-                    .await
+                crate::bot::run_bot_manager(cfg_for_bot, events, resp, bs, nb, inspector).await
             {
                 tracing::error!("Bot manager failed: {e:#}");
                 // Setup failure: clear the flag so a follow-up
@@ -214,314 +216,16 @@ pub async fn set_overlay_enabled(
     Ok(())
 }
 
-/// Synthetic `BotInfo` entries for the built-in native bots. They have no
-/// directory, no `pyproject.toml`, and are always "ready" (weights are embedded
-/// in the binary — nothing to install).
-fn native_bot_infos() -> Vec<BotInfo> {
-    [crate::bot::native::NATIVE_4P, crate::bot::native::NATIVE_3P]
-        .into_iter()
-        .map(|name| BotInfo {
-            name: name.to_string(),
-            dir: String::new(),
-            has_pyproject: false,
-            env_ready: true,
-            manifest: None,
-        })
-        .collect()
-}
-
 #[tauri::command]
-pub async fn list_bots(state: State<'_, AppState>) -> CmdResult<Vec<BotInfo>> {
-    let dir = state.config.read().await.bot.dir.clone();
-    let resolved = resolve_dir(Path::new(&dir));
-    let registry = BotRegistry::scan(&resolved).map_err(|e| format!("scan bots: {e:#}"))?;
-    // Built-in native bots first, then discovered `mjai_bot/*` bots.
-    let mut bots = native_bot_infos();
-    bots.extend(registry.entries().iter().map(entry_to_info));
-    Ok(bots)
-}
-
-/// Read the merged settings (manifest + on-disk values) for one bot.
-/// Returns an error when the bot does not exist or has no manifest —
-/// frontend should hide the settings panel for manifest-less bots and
-/// avoid calling this command for them.
-#[tauri::command]
-pub async fn get_bot_settings(name: String, state: State<'_, AppState>) -> CmdResult<BotSettings> {
-    let dir = state.config.read().await.bot.dir.clone();
-    let resolved = resolve_dir(Path::new(&dir));
-    let registry = BotRegistry::scan(&resolved).map_err(|e| format!("scan bots: {e:#}"))?;
-    let entry = registry
-        .find(&name)
-        .ok_or_else(|| format!("bot {name:?} not found"))?;
-    let manifest = entry
-        .manifest
-        .clone()
-        .ok_or_else(|| format!("bot {name:?} has no manifest.toml"))?;
-    let values = manifest::load_values(&entry.dir, &manifest)
-        .map_err(|e| format!("load settings: {e:#}"))?;
-    Ok(BotSettings { manifest, values })
-}
-
-/// Persist user-edited settings for one bot. Validates the values against
-/// the manifest before writing — wrong type, out-of-range numeric, and
-/// unknown enum choice all surface as command errors.
-///
-/// New values take effect on the next bot spawn (i.e. the next
-/// `start_game` event). The currently-running subprocess keeps its old
-/// values; document this caveat in the UI.
-#[tauri::command]
-pub async fn update_bot_settings(
-    name: String,
-    values: BTreeMap<String, serde_json::Value>,
-    state: State<'_, AppState>,
-) -> CmdResult<()> {
-    let dir = state.config.read().await.bot.dir.clone();
-    let resolved = resolve_dir(Path::new(&dir));
-    let registry = BotRegistry::scan(&resolved).map_err(|e| format!("scan bots: {e:#}"))?;
-    let entry = registry
-        .find(&name)
-        .ok_or_else(|| format!("bot {name:?} not found"))?;
-    let manifest = entry
-        .manifest
-        .as_ref()
-        .ok_or_else(|| format!("bot {name:?} has no manifest.toml"))?;
-    manifest::save_values(&entry.dir, manifest, &values)
-        .map_err(|e| format!("save settings: {e:#}"))?;
-    let _ = state
-        .notify_bus
-        .send(Notification::success(format!("{name} settings saved")));
-    Ok(())
-}
-
-/// Update the active bot for a given mode (`"4p"` or `"3p"`) in config +
-/// persist. Doesn't restart the running `BotManager` — it reads the active
-/// bot fresh from the shared config at each `start_game`, so the next game
-/// picks up this change with no relaunch (an in-progress game keeps its bot).
-///
-/// Empty `name` clears that mode's active bot (analysis-only in that mode).
-///
-/// Refuses to activate a bot whose Python environment isn't installed yet:
-/// otherwise the bot's first in-game spawn would run `uv sync`, which can
-/// exceed the react time limit and error. Clearing (empty `name`) is always
-/// allowed.
-#[tauri::command]
-pub async fn set_active_bot(
-    mode: String,
-    name: String,
-    state: State<'_, AppState>,
-) -> CmdResult<()> {
-    // Built-in native bots are always available (no venv); skip the registry
-    // + environment checks that only apply to Python `mjai_bot/*` bots.
-    if !name.is_empty() && !crate::bot::native::is_native(&name) {
-        let dir = state.config.read().await.bot.dir.clone();
-        let resolved = resolve_dir(Path::new(&dir));
-        let registry = BotRegistry::scan(&resolved).map_err(|e| format!("scan bots: {e:#}"))?;
-        let entry = registry
-            .find(&name)
-            .ok_or_else(|| format!("bot {name:?} not found"))?;
-        if !runtime::is_synced(&entry.dir) {
-            return Err(format!(
-                "Bot {name:?}'s Python environment isn't installed yet — install or sync it before setting it active."
-            ));
-        }
-    }
-    {
-        let mut cfg = state.config.write().await;
-        match mode.as_str() {
-            "4p" => cfg.bot.active_4p = name.clone(),
-            "3p" => cfg.bot.active_3p = name.clone(),
-            other => return Err(format!("unknown mode {other:?}; expected \"4p\" or \"3p\"")),
-        }
-        persist_config(&cfg, &state.config_path).map_err(|e| e.to_string())?;
-    }
-    let label = if name.is_empty() {
-        format!("{mode} bot cleared")
-    } else {
-        format!("Active {mode} bot set to {name}")
-    };
-    let _ = state.notify_bus.send(Notification::success(label));
-    Ok(())
-}
-
-/// Install a bot by downloading the latest release zip from a GitHub
-/// repository. Refuses to overwrite an existing `mjai_bot/<name>/` —
-/// the user must remove it first via the file browser. The installer
-/// reports progress through `NotifyBus` with sticky id
-/// `bot-install-<name>`.
-#[tauri::command]
-pub async fn install_bot_from_github(
-    repo: String,
-    asset_glob: Option<String>,
-    name: Option<String>,
-    state: State<'_, AppState>,
-) -> CmdResult<BotInfo> {
-    let (dir, net) = {
-        let cfg = state.config.read().await;
-        (cfg.bot.dir.clone(), cfg.network.clone())
-    };
-    let resolved = resolve_dir(Path::new(&dir));
-    std::fs::create_dir_all(&resolved)
-        .map_err(|e| format!("create bot dir {}: {e}", resolved.display()))?;
-
-    let spec = GithubInstallSpec {
-        repo,
-        asset_glob,
-        name,
-    };
-    let entry = install::install_from_github_release(
-        spec,
-        &resolved,
-        &state.notify_bus,
-        state.runtime.as_ref(),
-        &net,
+pub async fn list_bots() -> CmdResult<Vec<BotInfo>> {
+    Ok(
+        [crate::bot::native::NATIVE_4P, crate::bot::native::NATIVE_3P]
+            .into_iter()
+            .map(|name| BotInfo { name: name.into() })
+            .collect(),
     )
-    .await
-    .map_err(|e| format!("install: {e:#}"))?;
-    Ok(entry_to_info(&entry))
 }
 
-/// Install a bot from a local `.zip` file the user picked (typically via the
-/// native file dialog). Runs the same pipeline as
-/// [`install_bot_from_github`] minus the release download. Refuses to
-/// overwrite an existing `mjai_bot/<name>/`; the source zip is never deleted.
-/// Reports progress through `NotifyBus` with sticky id `bot-install-<name>`.
-#[tauri::command]
-pub async fn install_bot_from_zip(
-    zip_path: String,
-    name: Option<String>,
-    state: State<'_, AppState>,
-) -> CmdResult<BotInfo> {
-    let p = Path::new(&zip_path);
-    if !p.is_file() {
-        return Err(format!("{zip_path} is not a file"));
-    }
-    if !p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
-        return Err(format!("{zip_path} is not a .zip file"));
-    }
-
-    let dir = state.config.read().await.bot.dir.clone();
-    let resolved = resolve_dir(Path::new(&dir));
-    std::fs::create_dir_all(&resolved)
-        .map_err(|e| format!("create bot dir {}: {e}", resolved.display()))?;
-
-    let spec = LocalZipInstallSpec {
-        zip_path: p.to_path_buf(),
-        name,
-    };
-    let entry =
-        install::install_from_zip(spec, &resolved, &state.notify_bus, state.runtime.as_ref())
-            .await
-            .map_err(|e| format!("install: {e:#}"))?;
-    Ok(entry_to_info(&entry))
-}
-
-/// Reinstall a bot from the GitHub source declared in its existing
-/// `manifest.toml`. Removes the current install first.
-#[tauri::command]
-pub async fn update_bot_from_manifest(
-    name: String,
-    state: State<'_, AppState>,
-) -> CmdResult<BotInfo> {
-    let (dir, net) = {
-        let cfg = state.config.read().await;
-        (cfg.bot.dir.clone(), cfg.network.clone())
-    };
-    let resolved = resolve_dir(Path::new(&dir));
-    let registry = BotRegistry::scan(&resolved).map_err(|e| format!("scan bots: {e:#}"))?;
-    let entry = registry
-        .find(&name)
-        .ok_or_else(|| format!("bot {name:?} not found"))?;
-    let manifest = entry
-        .manifest
-        .as_ref()
-        .ok_or_else(|| format!("bot {name:?} has no manifest.toml"))?;
-    let source = manifest
-        .source
-        .as_ref()
-        .ok_or_else(|| format!("bot {name:?} manifest has no [bot.source] block"))?;
-
-    let (repo, asset_glob) = match source {
-        BotSource::GithubRelease { repo, asset_glob } => (repo.clone(), asset_glob.clone()),
-    };
-
-    std::fs::remove_dir_all(&entry.dir)
-        .map_err(|e| format!("remove old install {}: {e}", entry.dir.display()))?;
-
-    let spec = GithubInstallSpec {
-        repo,
-        asset_glob,
-        name: Some(name.clone()),
-    };
-    let new_entry = install::install_from_github_release(
-        spec,
-        &resolved,
-        &state.notify_bus,
-        state.runtime.as_ref(),
-        &net,
-    )
-    .await
-    .map_err(|e| format!("install: {e:#}"))?;
-    Ok(entry_to_info(&new_entry))
-}
-
-/// Re-run `uv sync` for an installed bot. Frontend wires this to the
-/// "Reinstall environment" button under Configure. `force=true` wipes
-/// `.akagi/synced.stamp` and `.akagi/venv` first so a corrupted venv is
-/// rebuilt from scratch (incremental sync can otherwise mask the breakage).
-/// Reports progress + outcome through `NotifyBus` with sticky id
-/// `bot-sync-<name>`. Refuses to start a second concurrent sync for the
-/// same bot.
-#[tauri::command]
-pub async fn sync_bot_deps(name: String, force: bool, state: State<'_, AppState>) -> CmdResult<()> {
-    let dir = state.config.read().await.bot.dir.clone();
-    let resolved = resolve_dir(Path::new(&dir));
-    let registry = BotRegistry::scan(&resolved).map_err(|e| format!("scan bots: {e:#}"))?;
-    let entry = registry
-        .find(&name)
-        .ok_or_else(|| format!("bot {name:?} not found"))?
-        .clone();
-    let runtime = state.runtime.as_ref().ok_or_else(|| {
-        "Python runtime not available — install python3 and uv on PATH".to_string()
-    })?;
-
-    let _guard = SyncGuard::acquire(&state.syncs_in_flight, &name)
-        .await
-        .ok_or_else(|| format!("sync already in progress for {name}"))?;
-
-    let notify_id = format!("bot-sync-{name}");
-    let _ = state.notify_bus.send(
-        Notification::info(format!("Syncing {name}"))
-            .body("Rebuilding Python environment (uv sync)…")
-            .sticky()
-            .id(notify_id.clone()),
-    );
-
-    if force {
-        runtime::reset_sync_state(&entry.dir).await;
-    }
-
-    match runtime.ensure_synced(&entry.dir).await {
-        Ok(()) => {
-            let _ = state
-                .notify_bus
-                .send(Notification::success(format!("{name} environment ready")).id(notify_id));
-            Ok(())
-        }
-        Err(e) => {
-            let msg = format!("uv sync failed: {e:#}");
-            let _ = state.notify_bus.send(
-                Notification::error(format!("Sync failed for {name}"))
-                    .body(msg.clone())
-                    .id(notify_id),
-            );
-            Err(msg)
-        }
-    }
-}
-
-/// Start the capture backend selected by `cfg.capture.mode`. No-op
-/// (returns Err) when one is already running — call `restart_capture`
-/// instead if you want to swap.
 #[tauri::command]
 pub async fn start_capture(state: State<'_, AppState>) -> CmdResult<()> {
     let already_running = {
@@ -625,7 +329,7 @@ pub async fn stop_capture(state: State<'_, AppState>) -> CmdResult<()> {
 
 #[tauri::command]
 pub async fn get_status(state: State<'_, AppState>) -> CmdResult<Snapshot> {
-    let config = state.config.read().await.clone();
+    let config = get_config(state.clone()).await?;
     let bot_status = state.bot_status.read().await.clone();
     let capture_status = state.capture_control.lock().await.status.clone();
     let log_dir = state.log_session.dir().to_path_buf();
@@ -677,6 +381,8 @@ fn open_path(path: &Path) -> CmdResult<()> {
     let cmd = "open";
     #[cfg(target_os = "windows")]
     let cmd = "explorer";
+    #[cfg(target_os = "linux")]
+    let cmd = "xdg-open";
 
     std::process::Command::new(cmd)
         .arg(path)
@@ -695,19 +401,19 @@ fn open_path(path: &Path) -> CmdResult<()> {
 /// Goes through the `opener` crate (ShellExecuteW on Windows, `open` on
 /// macOS) rather than spawning `explorer <url>`:
 /// explorer.exe silently opens the Documents folder instead of the browser
-/// when the URL carries a query string (e.g. PayPal's `?token=...`).
+/// when the URL carries a query string.
 #[tauri::command]
 pub async fn open_external_url(url: String) -> CmdResult<()> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err(format!("refused non-http(s) url: {url}"));
+        return Err("refused non-http(s) URL".into());
     }
     // `opener::open` can block briefly (it may wait on the launcher), so keep
     // it off the async runtime.
     tauri::async_runtime::spawn_blocking(move || {
-        opener::open(&url).map_err(|e| format!("open url {url}: {e}"))
+        opener::open(&url).map_err(|_| "Could not open the external page".to_string())
     })
     .await
-    .map_err(|e| format!("open url task: {e}"))?
+    .map_err(|_| "External page task failed".to_string())?
 }
 
 /// Strict matcher for session directory names — `YYYYMMDD-HHMMSS`. Used
@@ -1194,48 +900,6 @@ pub async fn get_mahgen_view(state: State<'_, AppState>) -> CmdResult<Option<Mah
         .map(|s| MahgenView::from_snapshot(&s)))
 }
 
-/// Remove a bot's directory under `bot.dir/<name>/`. Refuses to delete
-/// the currently-active bot — user must `set_active_bot` to a different
-/// one first. Refuses target paths that escape `bot.dir` (defense in
-/// depth even though `name` came from the bot list, not raw user input).
-#[tauri::command]
-pub async fn delete_bot(name: String, state: State<'_, AppState>) -> CmdResult<()> {
-    let (active_4p, active_3p, dir) = {
-        let cfg = state.config.read().await;
-        (
-            cfg.bot.active_4p.clone(),
-            cfg.bot.active_3p.clone(),
-            cfg.bot.dir.clone(),
-        )
-    };
-    if active_4p == name || active_3p == name {
-        return Err(format!(
-            "{name:?} is an active bot (4p or 3p) — switch to a different bot first"
-        ));
-    }
-    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err(format!("invalid bot name {name:?}"));
-    }
-    let resolved_root = resolve_dir(Path::new(&dir));
-    let target = resolved_root.join(&name);
-    if !target.is_dir() {
-        return Err(format!("bot {name:?} not found at {}", target.display()));
-    }
-    let canon_root = std::fs::canonicalize(&resolved_root)
-        .map_err(|e| format!("canonicalize {}: {e}", resolved_root.display()))?;
-    let canon_target = std::fs::canonicalize(&target)
-        .map_err(|e| format!("canonicalize {}: {e}", target.display()))?;
-    if !canon_target.starts_with(&canon_root) {
-        return Err(format!("bot {name:?} resolves outside the bot directory"));
-    }
-    std::fs::remove_dir_all(&canon_target)
-        .map_err(|e| format!("remove {}: {e}", canon_target.display()))?;
-    let _ = state
-        .notify_bus
-        .send(Notification::success(format!("Deleted bot {name}")));
-    Ok(())
-}
-
 // ---------- Game history ----------
 //
 // Reads/writes are delegated to `state.history_store`. All errors bubble
@@ -1308,7 +972,7 @@ pub async fn delete_game_history_entry(id: String, state: State<'_, AppState>) -
 /// `shinkuan/Akagi` is the canonical upstream — kept here as a const
 /// instead of plumbing through config so the user can't accidentally
 /// point the auto-updater at a fork.
-const UPSTREAM_REPO: &str = "shinkuan/Akagi";
+const MAINTENANCE_REPO: &str = "Etakind/Akagi";
 
 /// One-shot "is there a newer release?" — frontend calls this on app
 /// launch (with a 6h cache) and from the Settings "Check for updates"
@@ -1322,351 +986,10 @@ pub async fn check_for_update(
     let Ok(_guard) = state.updater_lock.try_lock() else {
         return Err("another update operation is in progress".into());
     };
-    let net = state.config.read().await.network.clone();
-    let info = crate::updater::check_for_update(UPSTREAM_REPO, &net)
+    let info = crate::updater::check_for_update(MAINTENANCE_REPO)
         .await
         .map_err(|e| format!("check for update: {e:#}"))?;
-    // Stash server-side: `apply_update` acts only on what *we* fetched,
-    // never on an UpdateInfo the webview hands back.
-    *state.pending_update.write().await = info.clone();
     Ok(info)
-}
-
-/// Download the release zip found by the last `check_for_update`
-/// (mirror fallback per `[network]` config), verify digest + minisign
-/// signature, swap the binary via `self_replace::self_replace`, then
-/// relaunch. Takes no payload — the pending update is read from
-/// `AppState`, so the webview cannot substitute its own URLs or trust
-/// markers. On success the process exits inside `app.restart()` and
-/// this never returns. The typed error variant lets the frontend
-/// distinguish "fall back to release page" (`read_only_install`,
-/// `unsupported_platform`, `no_matching_asset`, `signature_missing`)
-/// from a real network / integrity error.
-#[tauri::command]
-pub async fn apply_update() -> Result<(), crate::updater::UpdateError> {
-    Err(crate::updater::UpdateError::Other {
-        message: "This local security build cannot be overwritten by upstream updates. Review and rebuild updates manually.".into(),
-    })
-}
-
-// ---------- Built-in bot cloud inference (native API) ----------
-//
-// Thin passthroughs to `crate::bot::api`. They take the server URL / key as
-// explicit args (rather than reading them from config) so the frontend can
-// verify a key before saving it, and redeem a code before any key exists.
-
-/// Redeem a prepaid code (`POST /v3/redeem`, no auth). By default mints a new
-/// key; pass `renew_key` to stack time onto a key you already hold.
-#[tauri::command]
-pub async fn native_api_redeem(
-    base_url: String,
-    proxy: Option<String>,
-    code: String,
-    email: Option<String>,
-    renew_key: Option<String>,
-) -> CmdResult<crate::bot::api::RedeemResponse> {
-    crate::bot::api::redeem(
-        &base_url,
-        proxy.as_deref().unwrap_or(""),
-        &code,
-        email.as_deref(),
-        renew_key.as_deref(),
-    )
-    .await
-    .map_err(|e| format!("{e:#}"))
-}
-
-/// Fetch a key's plan / expiry / live limits (`GET /v3/key`).
-#[tauri::command]
-pub async fn native_api_key_status(
-    base_url: String,
-    proxy: Option<String>,
-    key: String,
-) -> CmdResult<crate::bot::api::KeyStatus> {
-    crate::bot::api::ApiClient::new(&base_url, &key, proxy.as_deref().unwrap_or(""))
-        .map_err(|e| format!("{e:#}"))?
-        .key_status()
-        .await
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// List the models a key's plan may use (`GET /v3/models`).
-#[tauri::command]
-pub async fn native_api_models(
-    base_url: String,
-    proxy: Option<String>,
-    key: String,
-) -> CmdResult<Vec<crate::bot::api::ModelInfo>> {
-    crate::bot::api::ApiClient::new(&base_url, &key, proxy.as_deref().unwrap_or(""))
-        .map_err(|e| format!("{e:#}"))?
-        .models()
-        .await
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// Liveness + aggregate load (`GET /healthz`, no auth).
-#[tauri::command]
-pub async fn native_api_health(
-    base_url: String,
-    proxy: Option<String>,
-) -> CmdResult<crate::bot::api::Health> {
-    crate::bot::api::health(&base_url, proxy.as_deref().unwrap_or(""))
-        .await
-        .map_err(|e| format!("{e:#}"))
-}
-
-// ---------- Whole-game review (native API, `/v3/review*`) ----------
-//
-// Same family as the commands above: server URL / key travel as explicit
-// args from the frontend's config store. The submit is the one exception to
-// "thin passthrough" — it loads the recorded mjai log server-side (Rust) so
-// a whole game never round-trips through the webview, and reuses the native
-// bot's censor/shaping helper so `/v3/review` sees the exact same
-// perspective stream `/v3/react` does.
-
-/// Hard cap `POST /v3/review` places on a submitted stream. Checked here so
-/// an oversized log fails with a clear local message instead of a generic
-/// server `400`.
-const REVIEW_MAX_EVENTS: usize = 4096;
-
-/// Submit a recorded history game for whole-game review. `id` is the
-/// history record's ULID; `model` optionally pins the model (empty ⇒ the
-/// server default for the game's player count).
-#[tauri::command]
-pub async fn native_api_review_history_game(
-    base_url: String,
-    proxy: Option<String>,
-    key: String,
-    id: String,
-    model: Option<String>,
-    state: State<'_, AppState>,
-) -> CmdResult<crate::bot::api::ReviewSubmitted> {
-    let store = state.history_store.clone();
-    let record_id = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        Ok((store.get(&record_id)?, store.get_events(&record_id)?))
-    })
-    .await
-    .map_err(|e| format!("history review join error: {e}"))?
-    .map_err(|e| format!("{e:#}"))?;
-    let (record, events) = loaded;
-    let Some(record) = record else {
-        return Err(format!("history record {id:?} not found"));
-    };
-    // Index entry present but the games/<id>.mjai.jsonl copy is gone —
-    // distinct message so the user isn't told the record doesn't exist.
-    let Some(events) = events else {
-        return Err(format!("event log for history record {id:?} is missing"));
-    };
-    // Observer / replay recordings carry no own-seat; there is no perspective
-    // to review from (and no hand visible to build one).
-    let Some(seat) = record.our_seat else {
-        return Err("record has no player seat; cannot review an observed game".into());
-    };
-
-    let events = crate::bot::native::build_api_events(&events, seat, record.num_players);
-    if events.len() > REVIEW_MAX_EVENTS {
-        return Err(format!(
-            "game log has {} events, over the review limit of {REVIEW_MAX_EVENTS}",
-            events.len()
-        ));
-    }
-
-    // An omitted model resolves to the server's default **4p** model, which
-    // rejects a sanma stream — so a 3p game with no configured model falls
-    // back to the id `"3p"`, which the server documents as resolving to its
-    // default 3p model.
-    let configured = model.as_deref().map(str::trim).filter(|m| !m.is_empty());
-    let model = match configured {
-        Some(m) => Some(m.to_string()),
-        None if record.num_players == 3 => Some("3p".to_string()),
-        None => None,
-    };
-
-    crate::bot::api::ApiClient::new(&base_url, &key, proxy.as_deref().unwrap_or(""))
-        .map_err(|e| format!("{e:#}"))?
-        .submit_review(model.as_deref(), Some(seat), events)
-        .await
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// Poll a review job (`GET /v3/review/{review_id}`). Meta-only — a `done`
-/// job answers with its share URL, which is where the result body lives.
-#[tauri::command]
-pub async fn native_api_review_status(
-    base_url: String,
-    proxy: Option<String>,
-    key: String,
-    review_id: String,
-) -> CmdResult<crate::bot::api::ReviewJobStatus> {
-    crate::bot::api::ApiClient::new(&base_url, &key, proxy.as_deref().unwrap_or(""))
-        .map_err(|e| format!("{e:#}"))?
-        .review_status(&review_id)
-        .await
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// (Re-)issue a review's public share link (`POST /v3/review/{id}/share`).
-#[tauri::command]
-pub async fn native_api_review_share(
-    base_url: String,
-    proxy: Option<String>,
-    key: String,
-    review_id: String,
-) -> CmdResult<crate::bot::api::ShareIssued> {
-    crate::bot::api::ApiClient::new(&base_url, &key, proxy.as_deref().unwrap_or(""))
-        .map_err(|e| format!("{e:#}"))?
-        .review_share(&review_id)
-        .await
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// List this key's live share links (`GET /v3/shares`), newest first.
-#[tauri::command]
-pub async fn native_api_list_shares(
-    base_url: String,
-    proxy: Option<String>,
-    key: String,
-) -> CmdResult<Vec<crate::bot::api::ShareEntry>> {
-    crate::bot::api::ApiClient::new(&base_url, &key, proxy.as_deref().unwrap_or(""))
-        .map_err(|e| format!("{e:#}"))?
-        .shares()
-        .await
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// Revoke a share link (`DELETE /v3/shared/{share_id}`). The review stays
-/// stored; `native_api_review_share` can re-issue a fresh link later.
-#[tauri::command]
-pub async fn native_api_revoke_share(
-    base_url: String,
-    proxy: Option<String>,
-    key: String,
-    share_id: String,
-) -> CmdResult<()> {
-    crate::bot::api::ApiClient::new(&base_url, &key, proxy.as_deref().unwrap_or(""))
-        .map_err(|e| format!("{e:#}"))?
-        .revoke_share(&share_id)
-        .await
-        .map_err(|e| format!("{e:#}"))
-}
-
-// ---------- Self-serve key purchase (PayPal, `/paypal/*`) ----------
-//
-// Thin passthroughs to `crate::bot::purchase`. The purchase state machine
-// (create → open approve_url → poll → redeem/store key) lives in the
-// frontend's purchase store; these commands are stateless like the rest of
-// the native-API family and all run without auth — the buyer is acquiring
-// a key, so they don't hold one yet.
-
-/// Start a one-time purchase (`POST /paypal/create-order`, no auth). Not
-/// idempotent — each call opens a fresh PayPal order.
-///
-/// `redeem: true` has the server turn the prepaid code into an API key
-/// itself, so the poll and the buyer's email both carry the key. Pass `false`
-/// only to renew an existing key, which needs the raw code for
-/// `/v3/redeem`'s `renew_key`.
-#[tauri::command]
-pub async fn native_api_create_order(
-    base_url: String,
-    proxy: Option<String>,
-    product: String,
-    redeem: bool,
-) -> CmdResult<crate::bot::purchase::CreatedOrder> {
-    crate::bot::purchase::create_order(&base_url, proxy.as_deref().unwrap_or(""), &product, redeem)
-        .await
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// Poll a one-time purchase (`POST /paypal/order-result`, no auth).
-/// Idempotent; returns `pending` until paid, then `ready` with the API key
-/// (`redeem: true` order) or the redeem code (`redeem: false`).
-#[tauri::command]
-pub async fn native_api_order_result(
-    base_url: String,
-    proxy: Option<String>,
-    order_id: String,
-    claim: String,
-) -> CmdResult<crate::bot::purchase::OrderResult> {
-    crate::bot::purchase::order_result(&base_url, proxy.as_deref().unwrap_or(""), &order_id, &claim)
-        .await
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// Start a subscription (`POST /paypal/create-subscription`, no auth). Not
-/// idempotent — each call opens a fresh PayPal subscription.
-#[tauri::command]
-pub async fn native_api_create_subscription(
-    base_url: String,
-    proxy: Option<String>,
-    product: String,
-) -> CmdResult<crate::bot::purchase::CreatedSubscription> {
-    crate::bot::purchase::create_subscription(&base_url, proxy.as_deref().unwrap_or(""), &product)
-        .await
-        .map_err(|e| format!("{e:#}"))
-}
-
-/// Poll a subscription (`POST /paypal/subscription-result`, no auth). On
-/// `ready` the response carries the API key directly (no redeem step).
-#[tauri::command]
-pub async fn native_api_subscription_result(
-    base_url: String,
-    proxy: Option<String>,
-    subscription_id: String,
-    claim: String,
-) -> CmdResult<crate::bot::purchase::SubscriptionResult> {
-    crate::bot::purchase::subscription_result(
-        &base_url,
-        proxy.as_deref().unwrap_or(""),
-        &subscription_id,
-        &claim,
-    )
-    .await
-    .map_err(|e| format!("{e:#}"))
-}
-
-/// Start a Creem checkout (`POST /creem/create-checkout`, no auth). One
-/// endpoint for both one-time and subscription products. Not idempotent —
-/// each call opens a fresh checkout.
-///
-/// `redeem` mirrors `native_api_create_order`: one-time products only,
-/// `true` has the poll return the API key directly instead of a redeem code.
-#[tauri::command]
-pub async fn native_api_create_checkout(
-    base_url: String,
-    proxy: Option<String>,
-    product: String,
-    redeem: bool,
-) -> CmdResult<crate::bot::purchase::CreatedCheckout> {
-    crate::bot::purchase::create_checkout(
-        &base_url,
-        proxy.as_deref().unwrap_or(""),
-        &product,
-        redeem,
-    )
-    .await
-    .map_err(|e| format!("{e:#}"))
-}
-
-/// Poll a Creem checkout (`POST /creem/result`, no auth). Idempotent; same
-/// payload shape as the PayPal order poll — on `ready` a one-time purchase
-/// carries the code or key per its `redeem` flag, a subscription carries the
-/// key with `days: 0`.
-#[tauri::command]
-pub async fn native_api_checkout_result(
-    base_url: String,
-    proxy: Option<String>,
-    checkout_id: String,
-    claim: String,
-) -> CmdResult<crate::bot::purchase::OrderResult> {
-    crate::bot::purchase::checkout_result(
-        &base_url,
-        proxy.as_deref().unwrap_or(""),
-        &checkout_id,
-        &claim,
-    )
-    .await
-    .map_err(|e| format!("{e:#}"))
 }
 
 fn persist_config(config: &AppConfig, path: &Path) -> std::io::Result<()> {
@@ -1707,14 +1030,6 @@ macro_rules! ipc_handlers {
             $crate::ipc::commands::update_config,
             $crate::ipc::commands::set_overlay_enabled,
             $crate::ipc::commands::list_bots,
-            $crate::ipc::commands::set_active_bot,
-            $crate::ipc::commands::get_bot_settings,
-            $crate::ipc::commands::update_bot_settings,
-            $crate::ipc::commands::install_bot_from_github,
-            $crate::ipc::commands::install_bot_from_zip,
-            $crate::ipc::commands::update_bot_from_manifest,
-            $crate::ipc::commands::sync_bot_deps,
-            $crate::ipc::commands::delete_bot,
             $crate::ipc::commands::start_capture,
             $crate::ipc::commands::stop_capture,
             $crate::ipc::commands::restart_capture,
@@ -1741,22 +1056,6 @@ macro_rules! ipc_handlers {
             $crate::ipc::commands::get_game_history_events,
             $crate::ipc::commands::delete_game_history_entry,
             $crate::ipc::commands::check_for_update,
-            $crate::ipc::commands::apply_update,
-            $crate::ipc::commands::native_api_redeem,
-            $crate::ipc::commands::native_api_key_status,
-            $crate::ipc::commands::native_api_models,
-            $crate::ipc::commands::native_api_health,
-            $crate::ipc::commands::native_api_review_history_game,
-            $crate::ipc::commands::native_api_review_status,
-            $crate::ipc::commands::native_api_review_share,
-            $crate::ipc::commands::native_api_list_shares,
-            $crate::ipc::commands::native_api_revoke_share,
-            $crate::ipc::commands::native_api_create_order,
-            $crate::ipc::commands::native_api_order_result,
-            $crate::ipc::commands::native_api_create_subscription,
-            $crate::ipc::commands::native_api_subscription_result,
-            $crate::ipc::commands::native_api_create_checkout,
-            $crate::ipc::commands::native_api_checkout_result,
         ]
     };
 }
@@ -1787,20 +1086,33 @@ mod tests {
     }
 
     #[test]
+    fn autoplay_toggle_preserves_capture_but_browser_and_game_changes_restart() {
+        let original = AppConfig::default();
+        let mut next = original.clone();
+        next.autoplay.enabled = !original.autoplay.enabled;
+        assert!(!requires_capture_restart(&original, &next));
+        next.capture.chromium.attach_port = 9333;
+        assert!(requires_capture_restart(&original, &next));
+        next = original.clone();
+        next.platform.kind = crate::config::Platform::Tenhou;
+        assert!(requires_capture_restart(&original, &next));
+    }
+
+    #[test]
     fn persist_config_round_trips() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("nested").join("config.toml");
         let mut cfg = AppConfig::default();
-        cfg.bot.active_4p = "mortal".into();
-        cfg.bot.active_3p = "mortal_3p".into();
+        cfg.bot.active_4p = "akagi-native".into();
+        cfg.bot.active_3p = "akagi-native3p".into();
         cfg.capture.chromium.attach_port = 9999;
 
         persist_config(&cfg, &path).unwrap();
 
         let body = std::fs::read_to_string(&path).unwrap();
         let back: AppConfig = toml::from_str(&body).unwrap();
-        assert_eq!(back.bot.active_4p, "mortal");
-        assert_eq!(back.bot.active_3p, "mortal_3p");
+        assert_eq!(back.bot.active_4p, "akagi-native");
+        assert_eq!(back.bot.active_3p, "akagi-native3p");
         assert_eq!(back.capture.chromium.attach_port, 9999);
     }
 
@@ -1827,7 +1139,7 @@ level = 3
         std::fs::write(&path, existing).unwrap();
 
         let mut cfg: AppConfig = toml::from_str(existing).unwrap();
-        cfg.bot.active_4p = "mortal_3p_test".into();
+        cfg.bot.active_4p = "akagi-native".into();
         persist_config(&cfg, &path).unwrap();
 
         let body = std::fs::read_to_string(&path).unwrap();
@@ -1845,7 +1157,7 @@ level = 3
         );
 
         let back: AppConfig = toml::from_str(&body).unwrap();
-        assert_eq!(back.bot.active_4p, "mortal_3p_test");
+        assert_eq!(back.bot.active_4p, "akagi-native");
 
         // ...and saving again changes nothing.
         persist_config(&cfg, &path).unwrap();

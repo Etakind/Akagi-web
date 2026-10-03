@@ -2,12 +2,8 @@
 // played, final standings (rank / score / Δ), and the per-game stats.
 // Mirrors the GameRecord shape directly — no re-aggregation needed.
 
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { ExternalLink, Loader2, SearchCheck, Share2 } from 'lucide-react'
 
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -23,10 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { useGameReviewStatus } from '@/components/review/gameReviewStatus'
-import { openExternal } from '@/lib/external'
-import { matchGameId, paifuUrl, roomLabelKey } from '@/lib/matchInfo'
-import { useReviewStore } from '@/stores/reviewStore'
+import { matchGameId, roomLabelKey } from '@/lib/matchInfo'
 import type { GameRecord } from '@/types'
 
 const STARTING_4P = 25_000
@@ -35,20 +28,15 @@ const STARTING_3P = 35_000
 export function GameDetailDialog({
   record,
   onOpenChange,
-  onReview,
 }: {
   record: GameRecord | null
   onOpenChange: (open: boolean) => void
-  /** Open the review submit flow for this game (the caller closes this
-   *  dialog first — stacked modals would bury the confirm step). */
-  onReview?: (record: GameRecord) => void
 }) {
   const { t } = useTranslation()
   const open = record !== null
   const start = record?.num_players === 3 ? STARTING_3P : STARTING_4P
   const room = roomLabelKey(record?.match_info)
   const gameId = matchGameId(record?.match_info)
-  const replayUrl = paifuUrl(record?.match_info, record?.our_seat)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -100,22 +88,11 @@ export function GameDetailDialog({
               <Section title={t('history.detail.game_id')}>
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-xs break-all">{gameId}</span>
-                  {replayUrl && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 px-2 shrink-0"
-                      onClick={() => openExternal(replayUrl)}
-                    >
-                      <ExternalLink className="h-3 w-3 mr-1" />
-                      {t('history.detail.open_paifu')}
-                    </Button>
-                  )}
+
                 </div>
               </Section>
             )}
 
-            <ReviewSection record={record} onReview={onReview} />
 
             <Section title={t('history.detail.final')}>
               <Table>
@@ -195,95 +172,6 @@ export function GameDetailDialog({
         )}
       </DialogContent>
     </Dialog>
-  )
-}
-
-/** Review status + action for this game (Beta). Renders nothing when the
- *  feature can't apply (no API key configured, observer game). */
-function ReviewSection({
-  record,
-  onReview,
-}: {
-  record: GameRecord
-  onReview?: (record: GameRecord) => void
-}) {
-  const { t } = useTranslation()
-  const status = useGameReviewStatus(record)
-  const resolveShareUrl = useReviewStore((s) => s.resolveShareUrl)
-  const reshare = useReviewStore((s) => s.reshare)
-  const [busy, setBusy] = useState(false)
-
-  if (status.kind === 'hidden') return null
-
-  const openShare = async () => {
-    if (status.kind !== 'reviewed') return
-    setBusy(true)
-    const url = await resolveShareUrl(status.share)
-    setBusy(false)
-    if (url) openExternal(url)
-  }
-
-  const reissue = async () => {
-    setBusy(true)
-    const url = await reshare(record.id)
-    setBusy(false)
-    if (url) openExternal(url)
-  }
-
-  return (
-    <Section title={t('review.title')}>
-      <div className="flex items-center gap-2">
-        {status.kind === 'none' ? (
-          onReview && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onReview(record)}
-            >
-              <SearchCheck className="h-3.5 w-3.5" />
-              {t('review.review_this_game')}
-            </Button>
-          )
-        ) : status.kind === 'reviewing' ? (
-          <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            {t('review.job_title')}
-          </span>
-        ) : status.kind === 'revoked' ? (
-          <>
-            <Badge variant="outline">{t('review.status_link_revoked')}</Badge>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              onClick={() => void reissue()}
-            >
-              <Share2 className="h-3.5 w-3.5" />
-              {t('review.reshare')}
-            </Button>
-          </>
-        ) : (
-          // reviewed / reviewed_loading
-          <>
-            <Badge
-              variant="secondary"
-              className="text-emerald-500"
-            >
-              {t('review.status_reviewed')}
-            </Badge>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy || status.kind === 'reviewed_loading'}
-              onClick={() => void openShare()}
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-              {t('review.open_review')}
-            </Button>
-          </>
-        )}
-      </div>
-    </Section>
   )
 }
 

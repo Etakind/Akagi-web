@@ -49,7 +49,7 @@ export type ShowMeta = {
 
 export type BotStatus =
   | { state: 'idle' }
-  | { state: 'loading'; bot: string; stage: 'syncing_deps' | 'spawning' }
+  | { state: 'loading'; bot: string; stage: 'spawning' }
   | { state: 'ready'; bot: string; actor_id: number }
   | { state: 'error'; bot: string; error: string }
   | { state: 'stopped'; bot: string }
@@ -99,7 +99,7 @@ export type DetectedBrowser = {
 /// share names but the schema enum carries extra archive-only variants).
 /// Mirrors `src/config/platform.rs::Platform` (`#[derive(Serialize)]` →
 /// PascalCase JSON: `"Majsoul"`, `"Tenhou"`).
-export type PlatformKind = 'Majsoul'
+export type PlatformKind = 'Majsoul' | 'Tenhou'
 
 export type MajsoulAutoplayConfig = {
   pre_click_delay_min_ms: number
@@ -153,42 +153,12 @@ export type AutoplayConfig = {
   delay: DelayModelConfig
 }
 
-/** Optional cloud-inference settings for the built-in native bot.
- *  Mirrors `crate::config::NativeApiConfig`. */
-export type NativeApiConfig = {
-  enabled: boolean
-  base_url: string
-  key: string
-  model_4p: string
-  model_3p: string
-  /** Whether `proxy` is applied. Off ⇒ direct even if `proxy` holds a value. */
-  proxy_enabled: boolean
-  /** Proxy for all inference-server traffic: http://, https://, socks5:// or
-   *  socks5h:// URL. Applied only when `proxy_enabled`; empty = direct. */
-  proxy: string
-  /** Per-decision timeout for POST /v3/react, in milliseconds. Clamped to
-   *  500–10000ms on the backend before use. Default 3000. */
-  react_timeout_ms: number
-}
-
 /** The always-on-top suggestion overlay. Mirrors `crate::config::OverlayConfig`. */
 export type OverlayConfig = {
   enabled: boolean
   top_n: number
   opacity: number
   always_on_top: boolean
-}
-
-/** How GitHub-hosted downloads are routed. Mirrors
- *  `crate::config::GithubMirrorMode` (serde snake_case). */
-export type GithubMirrorMode = 'auto' | 'direct' | 'mirror'
-
-/** `[network]` section. Mirrors `crate::config::NetworkConfig`. */
-export type NetworkConfig = {
-  github_mirror_mode: GithubMirrorMode
-  /** gh-proxy-style accelerator prefix (e.g. `https://gh-proxy.com`);
-   *  tried before the built-in mirror list. Empty = unset. */
-  github_custom_mirror: string
 }
 
 /** Bounds enforced by `crate::config::overlay` — mirrored so the UI can't
@@ -199,205 +169,21 @@ export const OVERLAY_OPACITY_MIN = 0.3
 export const OVERLAY_OPACITY_MAX = 1.0
 
 export type AppConfig = {
-  general: { first_run_completed: boolean; developer_mode: boolean }
+  general: { first_run_completed: boolean }
   logging: { dir: string; level: string; all_level: string }
   platform: { kind: PlatformKind }
   bot: {
     enabled: boolean
     active_4p: string
     active_3p: string
-    auto_sync: boolean
-    dir: string
-    api: NativeApiConfig
+    migration_notice?: string | null
   }
   capture: CaptureConfig
   autoplay: AutoplayConfig
   overlay: OverlayConfig
-  network: NetworkConfig
 }
 
-// ---------- Built-in bot cloud inference (native API) ----------
-// Mirror the response shapes from `crate::bot::api`.
-
-/** `GET /v3/key` — a key's plan, expiry and live limits. */
-export type KeyStatus = {
-  plan: string
-  expires_at: string
-  usage_today: number
-  rpd: number
-  rpm: number
-  topk: number
-  /** Whole-game reviews submitted today (own meter, resets at UTC midnight). */
-  reviews_today: number
-  /** Review jobs the plan allows per day. 0 ⇒ no review access. */
-  reviews_per_day: number
-}
-
-/** One model a key's plan may use (`GET /v3/models`). */
-export type ModelInfo = { id: string; game: string; desc: string }
-
-/** `POST /v3/redeem` result. `key` is present only when a new key is minted. */
-export type RedeemResponse = {
-  key?: string | null
-  key_last4: string
-  plan: string
-  expires_at: string
-  extended: boolean
-}
-
-/**
- * `GET /healthz` — liveness + aggregate load. Nothing about the model
- * registry is exposed here (models come from the authenticated `/v3/models`);
- * `status` is `"degraded"` when any model worker is down.
- */
-export type ApiHealth = {
-  status: string
-  /** Total pending + in-flight inference rows. */
-  queue_depth: number
-  workers_alive: boolean
-}
-
-// ---------- Whole-game review (native API) ----------
-// Mirror the response shapes from `crate::bot::api`.
-
-/** `POST /v3/review` — the queued background job. */
-export type ReviewSubmitted = {
-  review_id: string
-  status: string
-}
-
-/** `GET /v3/review/{id}` — job progress. Meta-only: a `done` job carries the
- *  share URL, and the result body is only ever served through that URL. */
-export type ReviewJobStatus = {
-  status: 'queued' | 'running' | 'failed' | 'done' | string
-  progress?: number | null
-  error?: string | null
-  /** Null after a revoke — re-issue via `native_api_review_share`. */
-  share_id?: string | null
-  url?: string | null
-}
-
-/** `POST /v3/review/{id}/share` — the review's public link. */
-export type ShareIssued = {
-  share_id: string
-  url: string
-  created_at: string
-  anonymized: boolean
-}
-
-/** Aggregate result numbers carried by the share listing. */
-export type ShareSummary = {
-  n_decisions: number
-  n_match: number
-  match_rate: number
-  avg_actual_prob: number
-}
-
-/** One live share link from `GET /v3/shares` (newest first). */
-export type ShareEntry = {
-  share_id: string
-  /** The review job this share serves — joins a listing row back to a submit. */
-  review_id: string
-  /** The review's submit time (RFC 3339). */
-  created_at: string
-  anonymized: boolean
-  model?: string | null
-  player_id?: number | null
-  summary?: ShareSummary | null
-}
-
-// ---------- Self-serve key purchase (PayPal) ----------
-// Mirror the response shapes from `crate::bot::purchase`.
-
-/** `POST /paypal/create-order` — a pending one-time purchase. */
-export type CreatedOrder = {
-  order_id: string
-  approve_url: string
-  claim_secret: string
-}
-
-/** `POST /paypal/create-subscription` — a pending subscription. */
-export type CreatedSubscription = {
-  subscription_id: string
-  approve_url: string
-  claim_secret: string
-}
-
-/**
- * `POST /creem/create-checkout` — a pending Creem checkout. One create
- * endpoint serves both one-time and subscription products; the poll
- * (`POST /creem/result`) reuses the `OrderResult` shape for both kinds
- * (a subscription resolves to `key` with `days: 0`).
- */
-export type CreatedCheckout = {
-  checkout_id: string
-  checkout_url: string
-  claim_secret: string
-}
-
-/**
- * One poll of `POST /paypal/order-result`. On `status: ready` exactly one of
- * `key` / `code` is set: `key` when the order was created with `redeem: true`
- * (the server already spent the code), `code` otherwise. Branch on whichever
- * is present — never re-redeem a code that came back alongside a key.
- */
-export type OrderResult = {
-  status: string
-  code?: string | null
-  key?: string | null
-  plan?: string | null
-  days?: number | null
-}
-
-/** One poll of `POST /paypal/subscription-result`. `key` only on `ready`. */
-export type SubscriptionResult = {
-  status: string
-  key?: string | null
-  plan?: string | null
-  next_billing?: string | null
-}
-
-export type FieldKind = 'string' | 'bool' | 'int' | 'float' | 'enum'
-
-export type FieldSpec = {
-  type: FieldKind
-  label: string
-  default: unknown
-  help?: string
-  secret?: boolean
-  min?: number
-  max?: number
-  step?: number
-  choices?: string[]
-}
-
-export type Manifest = {
-  manifest_version: number
-  bot: {
-    name: string
-    display?: string
-    description?: string
-    version?: string
-    /** Game modes this bot can play. Backend defaults to `["4p"]` when absent. */
-    supported_modes: string[]
-  }
-  source?: { type: 'github_release'; repo: string; asset_glob?: string }
-  settings: Record<string, FieldSpec>
-}
-
-export type BotInfo = {
-  name: string
-  dir: string
-  has_pyproject: boolean
-  /** Bot's Python environment is installed and ready (no slow first-spawn sync). */
-  env_ready: boolean
-  manifest?: Manifest
-}
-
-export type BotSettings = {
-  manifest: Manifest
-  values: Record<string, unknown>
-}
+export type BotInfo = { name: string }
 
 export type Snapshot = {
   config: AppConfig

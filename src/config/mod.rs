@@ -4,19 +4,17 @@ mod capture;
 mod general;
 mod logging;
 mod merge;
-mod network;
 mod overlay;
 mod platform;
 
 pub use autoplay::{
     AutoplayConfig, DelayDistribution, DelayMode, DelayModelConfig, MajsoulAutoplayConfig,
 };
-pub use bot::{BotConfig, NativeApiConfig};
+pub use bot::BotConfig;
 pub use capture::{CaptureConfig, CaptureMode, ChromiumConfig, HttpCaptureConfig};
 pub use general::GeneralConfig;
 pub use logging::LoggingConfig;
 pub use merge::merge_into;
-pub use network::{GithubMirrorMode, NetworkConfig};
 pub use overlay::{OverlayConfig, TOP_N_MAX, TOP_N_MIN};
 pub use platform::{Platform, PlatformConfig};
 
@@ -32,7 +30,6 @@ pub struct AppConfig {
     pub capture: CaptureConfig,
     pub autoplay: AutoplayConfig,
     pub overlay: OverlayConfig,
-    pub network: NetworkConfig,
 }
 
 // 仅在读取边界识别废弃字段，运行配置不携带代理或其他游戏实现。
@@ -50,7 +47,30 @@ impl<'de> Deserialize<'de> for AppConfig {
         let unsupported_game = object
             .get("platform")
             .and_then(|p| p.get("kind"))
-            .is_some_and(|v| v.as_str() != Some("Majsoul"));
+            .is_some_and(|v| !matches!(v.as_str(), Some("Majsoul" | "Tenhou")));
+        let selected_tenhou = object
+            .get("platform")
+            .and_then(|p| p.get("kind"))
+            .and_then(|v| v.as_str())
+            == Some("Tenhou");
+        let missing_start_url = object
+            .get("capture")
+            .and_then(|p| p.get("chromium"))
+            .and_then(|p| p.get("start_url"))
+            .is_none();
+        let migrated_bot = object.get("bot").is_some_and(|b| {
+            [
+                ("active_4p", crate::bot::native::NATIVE_4P),
+                ("active_3p", crate::bot::native::NATIVE_3P),
+                ("active", crate::bot::native::NATIVE_4P),
+            ]
+            .iter()
+            .any(|(key, expected)| {
+                b.get(key)
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|name| !name.is_empty() && name != *expected)
+            })
+        });
         let capture = object
             .entry("capture")
             .or_insert_with(|| serde_json::json!({}));
@@ -70,7 +90,9 @@ impl<'de> Deserialize<'de> for AppConfig {
             );
         }
         capture.insert("mode".into(), serde_json::json!("chromium"));
-        object.insert("platform".into(), serde_json::json!({"kind":"Majsoul"}));
+        if unsupported_game {
+            object.insert("platform".into(), serde_json::json!({"kind":"Majsoul"}));
+        }
         #[derive(Default, Deserialize)]
         #[serde(default)]
         struct CurrentConfig {
@@ -81,7 +103,6 @@ impl<'de> Deserialize<'de> for AppConfig {
             pub capture: CaptureConfig,
             pub autoplay: AutoplayConfig,
             pub overlay: OverlayConfig,
-            pub network: NetworkConfig,
         }
         let c: CurrentConfig = serde_json::from_value(raw)
             .map_err(|_| serde::de::Error::custom("invalid configuration; details omitted"))?;
@@ -93,11 +114,19 @@ impl<'de> Deserialize<'de> for AppConfig {
             capture: c.capture,
             autoplay: c.autoplay,
             overlay: c.overlay,
-            network: c.network,
         };
+        if selected_tenhou && missing_start_url {
+            config.capture.chromium.start_url = Platform::Tenhou.default_url().into();
+        }
+        config.bot.active_4p = crate::bot::native::NATIVE_4P.into();
+        config.bot.active_3p = crate::bot::native::NATIVE_3P.into();
+        if migrated_bot {
+            config.autoplay.enabled = false;
+            config.bot.migration_notice = Some("External bot selection replaced by bundled local models; autoplay disabled. Review settings before enabling it.".into());
+        }
         if unsupported_game || unsupported_mode {
             config.capture.enabled = false;
-            config.capture.unavailable_reason = Some("此版本仅支持雀魂网页端 Chromium 采集；旧游戏或 MITM 配置已停用，请在设置中确认浏览器后重新启用采集。".into());
+            config.capture.unavailable_reason = Some("此版本仅支持 Majsoul / Tenhou 官方网页端 Chromium 采集；旧游戏或 MITM 配置已停用，请在设置中确认浏览器后重新启用采集。".into());
         }
         Ok(config)
     }
@@ -145,6 +174,16 @@ fn resolve_config_path_inner(
         return ResolvedPath::Existing(cwd_candidate);
     }
 
+    if let Ok(exe) = std::env::current_exe() {
+        if exe
+            .parent()
+            .is_some_and(|p| !crate::util::directory_writable(p))
+        {
+            if let Some(root) = user_cfg_root {
+                return ResolvedPath::Missing(root.join("config.toml"));
+            }
+        }
+    }
     let target = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|d| d.join("configs").join("config.toml")))
@@ -232,8 +271,6 @@ pub fn load_config(cli_path: Option<&Path>) -> (AppConfig, PathBuf) {
             AppConfig::default()
         }
     };
-    // Migrate legacy `[bot] active = "..."` into `active_4p` once.
-    cfg.bot.migrate_legacy_active();
     // Pre-existing configs (created before the first-run wizard landed)
     // shouldn't be hijacked into the wizard. Detect by presence of any
     // non-default field that the user must have written deliberately.
@@ -301,53 +338,6 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// The nested `[bot.api]` table must survive a TOML round-trip inside the
-    /// full `AppConfig` — a table field serialized among scalar `[bot]` keys is
-    /// an easy way to get "table before value" ordering wrong. Pure string
-    /// round-trip, no network: every value is a placeholder (loopback URL,
-    /// fake key, made-up model ids).
-    #[test]
-    fn bot_api_section_round_trips_through_toml() {
-        let mut cfg = AppConfig::default();
-        cfg.bot.api.enabled = true;
-        cfg.bot.api.base_url = "http://127.0.0.1:8080".into();
-        cfg.bot.api.key = "test-key-not-real".into();
-        cfg.bot.api.model_4p = "4p-model".into();
-        cfg.bot.api.model_3p = "3p-model".into();
-
-        let body = toml::to_string_pretty(&cfg).unwrap();
-        assert!(
-            body.contains("[bot.api]"),
-            "expected a [bot.api] table in:\n{body}"
-        );
-
-        let back: AppConfig = toml::from_str(&body).unwrap();
-        assert!(back.bot.api.enabled);
-        assert_eq!(back.bot.api.base_url, "http://127.0.0.1:8080");
-        assert_eq!(back.bot.api.key, "test-key-not-real");
-        assert_eq!(back.bot.api.model_4p, "4p-model");
-        assert_eq!(back.bot.api.model_3p, "3p-model");
-        assert!(back.bot.api.is_active());
-        assert_eq!(back.bot.api.model_for(3), "3p-model");
-        assert_eq!(back.bot.api.model_for(4), "4p-model");
-    }
-
-    /// A legacy config file without any `[bot.api]` section still parses, with
-    /// the API path defaulting to off (fully offline local model). The default
-    /// server URL is pre-filled but that alone must not activate the API.
-    #[test]
-    fn missing_bot_api_section_defaults_to_disabled() {
-        let legacy = "[bot]\nenabled = true\nactive_4p = \"akagi-native\"\n";
-        let cfg: AppConfig = toml::from_str(legacy).unwrap();
-        assert!(!cfg.bot.api.enabled);
-        assert!(
-            !cfg.bot.api.is_active(),
-            "default URL alone must not activate"
-        );
-        assert_eq!(cfg.bot.api.base_url, NativeApiConfig::default().base_url);
-        assert!(!cfg.bot.api.base_url.is_empty(), "URL should be pre-filled");
     }
 
     #[test]

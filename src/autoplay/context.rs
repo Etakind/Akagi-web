@@ -2,14 +2,18 @@
 
 use chromiumoxide::page::Page;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[derive(Default)]
 pub struct AutoplayContext {
-    /// Personal-browser attachment may operate only the official game tab.
-    pub official_majsoul_only: AtomicBool,
+    pub platform: std::sync::RwLock<crate::config::Platform>,
+    pub generation: AtomicU64,
+    pub autoplay_enabled: AtomicBool,
+    pub enabled_changes: tokio::sync::watch::Sender<bool>,
+    action_cutoff: std::sync::RwLock<Option<std::time::Instant>>,
+    pub tenhou_state: crate::autoplay::tenhou_state::SharedTenhouState,
     pub page: Arc<RwLock<Option<Page>>>,
     pub canvas_rect: Arc<RwLock<Option<CanvasRect>>>,
     /// Server-granted time budget for the current decision window.
@@ -29,13 +33,50 @@ impl AutoplayContext {
         Self::default()
     }
 
-    pub async fn page_allowed(&self, page: &Page) -> bool {
-        if !self.official_majsoul_only.load(Ordering::Relaxed) {
-            return true;
+    /// Cancel queued/in-flight actions without resetting observation state.
+    pub fn invalidate_actions(&self) {
+        *self.action_cutoff.write().unwrap() = Some(std::time::Instant::now());
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        // Serialize pause/user-toggle publications so the UI cannot observe
+        // an older switch value after a concurrent update.
+        let mut cutoff = self.action_cutoff.write().unwrap();
+        if self
+            .autoplay_enabled
+            .load(std::sync::atomic::Ordering::SeqCst)
+            != enabled
+        {
+            *cutoff = Some(std::time::Instant::now());
+            self.generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.autoplay_enabled
+                .store(enabled, std::sync::atomic::Ordering::SeqCst);
+            self.enabled_changes.send_replace(enabled);
         }
-        // Return only a boolean. No URL, page contents or session data leave
-        // the browser. Recheck immediately before input, even with a cached rect.
-        let check = page.evaluate(include_str!("official_page.js"));
+    }
+
+    pub fn accepts_decision(&self, started: Option<std::time::Instant>) -> bool {
+        self.autoplay_enabled
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && started.is_some_and(|started| {
+                self.action_cutoff
+                    .read()
+                    .unwrap()
+                    .is_none_or(|cutoff| started >= cutoff)
+            })
+    }
+
+    pub async fn page_allowed(&self, page: &Page) -> bool {
+        let platform = *self.platform.read().unwrap();
+        let game = match platform {
+            crate::config::Platform::Majsoul => "\"majsoul\"",
+            crate::config::Platform::Tenhou => "\"tenhou\"",
+        };
+        let expr = include_str!("official_page.js").replace("__AKAGI_GAME__", game);
+        let check = page.evaluate(expr);
         matches!(tokio::time::timeout(std::time::Duration::from_secs(2), check).await,
             Ok(Ok(value)) if value.value().and_then(|v| v.as_bool()) == Some(true))
     }
@@ -72,6 +113,33 @@ impl CanvasRect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toggle_cancels_old_decisions_without_clearing_observation() {
+        let ctx = AutoplayContext::new();
+        *ctx.canvas_rect.blocking_write() = Some(CanvasRect {
+            x: 1.,
+            y: 2.,
+            width: 1600.,
+            height: 900.,
+        });
+        let before_enable = std::time::Instant::now();
+        ctx.set_enabled(true);
+        let generation = ctx.generation.load(std::sync::atomic::Ordering::SeqCst);
+        let first = std::time::Instant::now();
+        assert!(!ctx.accepts_decision(Some(before_enable)));
+        assert!(ctx.accepts_decision(Some(first)));
+        ctx.set_enabled(false);
+        assert!(!ctx.accepts_decision(Some(first)));
+        ctx.set_enabled(true);
+        assert!(ctx.generation.load(std::sync::atomic::Ordering::SeqCst) > generation);
+        assert!(!ctx.accepts_decision(Some(first)));
+        assert!(!ctx.accepts_decision(None)); // history/restored replies never drive input
+        assert!(ctx.accepts_decision(Some(std::time::Instant::now())));
+        assert!(ctx.canvas_rect.blocking_read().is_some());
+        ctx.invalidate_actions(); // page/game change also invalidates queued replies
+        assert!(!ctx.accepts_decision(Some(first)));
+    }
 
     #[test]
     fn pixel_translation_centre() {

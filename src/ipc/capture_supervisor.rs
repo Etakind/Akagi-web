@@ -103,6 +103,12 @@ pub async fn spawn_capture_supervisor(state: AppState) -> Result<()> {
     }
     let _ = state.capture_status_bus.send(running_status);
 
+    state
+        .autoplay_context
+        .set_enabled(state.config.read().await.autoplay.enabled);
+    *state.autoplay_context.platform.write().unwrap() = platform;
+    state.autoplay_context.invalidate_actions();
+    *state.autoplay_context.tenhou_state.write().unwrap() = None;
     let ctx = CaptureCtx {
         session: state.log_session.clone(),
         platform,

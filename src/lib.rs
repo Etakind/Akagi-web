@@ -1,9 +1,8 @@
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-compile_error!("此维护版应用仅支持 macOS 和 Windows；Linux 仅用于通用工具检查。");
 pub mod analysis;
 pub mod autoplay;
 pub mod bot;
 pub mod bridge;
+pub mod build_targets;
 pub mod capture;
 pub mod cli;
 pub mod config;
@@ -14,6 +13,8 @@ pub mod history;
 pub mod inspector;
 pub mod ipc;
 pub mod logger;
+pub mod network;
+pub mod platform;
 pub mod privacy;
 pub mod schema;
 pub mod updater;
@@ -26,6 +27,7 @@ use tauri::Manager;
 use tracing::{error, info, warn};
 
 pub fn run() {
+    platform::setup();
     let args = cli::Cli::parse();
     let (cfg, config_path) = config::load_config(args.config.as_deref());
 
@@ -109,6 +111,7 @@ pub fn run() {
 
     let bot_enabled = cfg.bot.enabled;
     let capture_enabled = cfg.capture.enabled;
+    let migration_notice = cfg.bot.migration_notice.clone();
     let capture_unavailable = cfg.capture.unavailable_reason.clone();
     let autoplay_enabled = cfg.autoplay.enabled;
     let overlay_cfg = cfg.overlay.clone();
@@ -143,25 +146,7 @@ pub fn run() {
         )
         .invoke_handler(crate::ipc_handlers!())
         .setup({
-            // AppState constructed *inside* setup() so the python+uv
-            // runtime can be located using `resource_dir` — bundled
-            // binaries live under `<resource_dir>/runtime/...` and that
-            // path is only resolvable once the AppHandle exists.
             move |app| {
-                let resource_dir = app.path().resource_dir().ok();
-                let runtime = bot::PythonRuntime::locate(resource_dir.as_deref()).ok();
-                match &runtime {
-                    Some(rt) => info!(
-                        "bot runtime: python={} uv={} mode={:?}",
-                        rt.python().display(),
-                        rt.uv().display(),
-                        rt.mode()
-                    ),
-                    None => warn!(
-                        "no python3+uv runtime found (neither bundled nor on PATH); bot install/sync will be unavailable"
-                    ),
-                }
-
                 let history_platform =
                     history::recorder::shared_platform(schema::Platform::from(cfg.platform.kind));
 
@@ -181,10 +166,16 @@ pub fn run() {
                     analysis_cache,
                     history_store.clone(),
                     history_platform.clone(),
-                    runtime.clone(),
                 );
 
                 ipc::install(app.handle(), state.clone())?;
+                if let Some(notice) = &migration_notice {
+                    let _ = notify_bus.send(
+                        schema::Notification::warn("Local model migration")
+                            .body(notice.clone())
+                            .sticky(),
+                    );
+                }
 
                 // Reopen the suggestion overlay if it was left enabled. Safe
                 // before any game data exists — it renders its empty state and
@@ -249,8 +240,6 @@ pub fn run() {
                     let bs = bot_status_bus.clone();
                     let nb = notify_bus.clone();
                     let inspector = state.log_session.inspector();
-                    let rt = runtime.clone();
-                    let syncs = state.syncs_in_flight.clone();
                     state
                         .bot_manager_started
                         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -262,8 +251,6 @@ pub fn run() {
                             bs,
                             nb,
                             inspector,
-                            rt,
-                            syncs,
                         )
                         .await
                         {
@@ -335,7 +322,9 @@ pub fn run() {
                 }
 
                 if let Some(reason) = &capture_unavailable {
-                    let _ = state.notify_bus.send(schema::Notification::warn(reason.clone()));
+                    let _ = state
+                        .notify_bus
+                        .send(schema::Notification::warn(reason.clone()));
                 }
                 if capture_enabled {
                     let state_for_capture = state.clone();

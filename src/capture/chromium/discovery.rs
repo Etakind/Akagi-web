@@ -13,20 +13,10 @@ pub(super) struct Snapshot {
     pub pages: Vec<Page>,
 }
 
-pub(super) async fn snapshot(browser: &Browser, official_only: bool) -> Result<Snapshot> {
-    if !official_only {
-        let pages = tokio::time::timeout(DISCOVERY_TIMEOUT, browser.pages())
-            .await
-            .map_err(|_| anyhow!("CDP page enumeration timed out"))?
-            .map_err(|_| anyhow!("CDP page enumeration failed"))?;
-        return Ok(Snapshot {
-            current: pages
-                .iter()
-                .map(|p| p.target_id().inner().clone())
-                .collect(),
-            pages,
-        });
-    }
+pub(super) async fn snapshot(
+    browser: &Browser,
+    platform: crate::config::Platform,
+) -> Result<Snapshot> {
     let targets = tokio::time::timeout(
         DISCOVERY_TIMEOUT,
         browser.execute(GetTargetsParams::default()),
@@ -38,7 +28,7 @@ pub(super) async fn snapshot(browser: &Browser, official_only: bool) -> Result<S
         .result
         .target_infos
         .into_iter()
-        .filter(|t| t.r#type == "page" && super::cdp::official_majsoul_page(&t.url))
+        .filter(|t| t.r#type == "page" && platform.official_page(&t.url))
         .map(|t| t.target_id)
         .collect();
     // A transient unavailable Page handle must not discard an active routing
@@ -118,7 +108,9 @@ mod tests {
         let pump = tokio::spawn(async move { while handler.next().await.is_some() {} });
         let found = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                let s = snapshot(&browser, true).await.unwrap();
+                let s = snapshot(&browser, crate::config::Platform::Majsoul)
+                    .await
+                    .unwrap();
                 assert_eq!(s.current, HashSet::from(["game".to_string()]));
                 if !s.pages.is_empty() {
                     break s;
@@ -135,7 +127,14 @@ mod tests {
                 .is_err()
         );
         // Rediscovery still completes even though the page-URL query is stuck.
-        assert_eq!(snapshot(&browser, true).await.unwrap().pages.len(), 1);
+        assert_eq!(
+            snapshot(&browser, crate::config::Platform::Majsoul)
+                .await
+                .unwrap()
+                .pages
+                .len(),
+            1
+        );
         pump.abort();
         drop(browser);
         server.await.unwrap();

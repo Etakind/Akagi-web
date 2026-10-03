@@ -15,13 +15,12 @@ import { selectHasNotifiableUpdate, useUpdaterStore } from '@/stores/updaterStor
 /// Modal dialog for the in-app update flow. Opened by the sidebar
 /// red-dot click, the "View details" toast action, or the Settings
 /// "Update available" button. Footer actions match the four user
-/// choices (Update now / Skip / Later / Open release page).
+/// choices (Skip / Later / Open release page).
 export function UpdateDialog() {
   const { t } = useTranslation()
   const open = useUpdaterStore((s) => s.dialogOpen)
   const closeDialog = useUpdaterStore((s) => s.closeDialog)
   const pending = useUpdaterStore((s) => s.pendingUpdate)
-  const applying = useUpdaterStore((s) => s.applying)
   const skip = useUpdaterStore((s) => s.skip)
   const hasNotifiable = useUpdaterStore(selectHasNotifiableUpdate)
 
@@ -53,7 +52,6 @@ export function UpdateDialog() {
             variant="outline"
             size="sm"
             onClick={() => openExternal(pending.html_url)}
-            disabled={applying}
           >
             {t('updates.dialog.open_release')}
           </Button>
@@ -61,11 +59,10 @@ export function UpdateDialog() {
             variant="ghost"
             size="sm"
             onClick={() => skip(pending.latest_tag)}
-            disabled={applying}
           >
             {t('updates.dialog.skip')}
           </Button>
-          <Button variant="secondary" size="sm" onClick={closeDialog} disabled={applying}>
+          <Button variant="secondary" size="sm" onClick={closeDialog}>
             {t('updates.dialog.later')}
           </Button>
 

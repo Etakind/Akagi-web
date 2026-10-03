@@ -50,13 +50,8 @@ prost-reflect = { version = "0.16", features = ["serde"] }
 base64 = "0.22"
 riichienv-core = "0.4.8"
 native_bot = { path = "native_bot" }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "http2", "charset", "socks"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "http2", "charset"] }
 zip = { version = "8", default-features = false, features = ["deflate"] }
-# Gzip for `POST /v3/review` bodies: a whole-game mjai log is hundreds of KB
-# raw, and the review endpoint prefers (and auto-detects) gzipped uploads.
-flate2 = "1"
-globset = "0.4"
-tempfile = "3"
 futures-util = "0.3"
 dirs = "6"
 chromiumoxide = "0.9.1"
@@ -67,18 +62,13 @@ ulid = { version = "1", features = ["serde"] }
 rand = "0.9"
 http = "1"
 form_urlencoded = "1.2.2"
-time = "0.3"
-self-replace = "1"
+percent-encoding = "2"
 semver = "1"
-sha1 = "0.11.0"
-sha2 = "0.11"
-thiserror = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
 opener = { version = "0.8.5", default-features = false }
 rand_distr = "0.5"
 mlua = { version = "0.12.0", features = ["lua54", "vendored", "send", "error-send"] }
-minisign-verify = "0.2.5"
 rustls = { version = "0.23.45", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 h2 = "0.4.16"
 
@@ -94,7 +84,14 @@ sysinfo = { version = "0.39.5", default-features = false, features = ["system"] 
 
 [dev-dependencies]
 tempfile = "3"
-# 模拟 CDP、机器人 HTTP 等集成测试需要本机 TCP socket。
+# 模拟 CDP 集成测试需要本机 TCP socket。
 tokio = { version = "1", features = ["net"] }
-# The certificate-report test stands up a real TLS origin, so the proxy's
-# upstream verifier has a genuine certificate to observe and record.
+
+# gemm's AArch64 FP16 helpers require inlining into feature-gated kernels.
+# Optimize these dependencies in debug/test builds without raising the CPU baseline.
+# Upstream: https://github.com/sarah-quinones/gemm/issues/31
+[profile.dev.package.gemm-common]
+opt-level = 3
+
+[profile.dev.package.gemm-f16]
+opt-level = 3

@@ -16,21 +16,9 @@ export type UpdateInfo = {
   asset_digest_sha256: string | null
   /** `.minisig` companion asset URL; null for unsigned (≤v3.5.0) releases. */
   sig_url: string | null
-  /** Where the release metadata came from ('direct' GitHub or a 'mirror'). */
-  meta_source: 'direct' | 'mirror'
+  /** Where the release metadata came from (direct GitHub only). */
+  meta_source: 'direct'
 }
-
-/// Mirrors `crate::updater::error::UpdateError`. The `kind` tag is what
-/// frontend code switches on to decide between a generic "Update failed"
-/// toast and a fallback that opens the release page.
-export type UpdateError =
-  | { kind: 'unsupported_platform' }
-  | { kind: 'read_only_install'; path: string }
-  | { kind: 'digest_mismatch' }
-  | { kind: 'signature_missing' }
-  | { kind: 'signature_invalid' }
-  | { kind: 'no_matching_asset' }
-  | { kind: 'other'; message: string }
 
 const CHECK_CACHE_MS = 6 * 60 * 60 * 1000
 
@@ -48,9 +36,6 @@ type Ephemeral = {
   /// always re-fetch on launch (subject to the 6h cache) so a release
   /// that was deleted / unpublished doesn't keep nagging.
   pendingUpdate: UpdateInfo | null
-  /// `true` while `apply_update` is in flight. Used to disable the
-  /// "Update now" button and show a spinner.
-  applying: boolean
   /// `true` after the auto-check toast has fired this session. Stops
   /// the toast from re-firing when `<UpdateNotifier />` re-mounts on
   /// a route change.
@@ -64,8 +49,7 @@ type Ephemeral = {
 }
 
 type Actions = {
-  checkNow: (force?: boolean) => Promise<void>
-  applyUpdate: () => Promise<UpdateError | null>
+  checkNow: (force?: boolean) => Promise<boolean>
   skip: (version: string) => void
   clearSkipped: () => void
   setAutoCheckEnabled: (enabled: boolean) => void
@@ -78,7 +62,6 @@ export type UpdaterStore = Persisted & Ephemeral & Actions
 
 const initialEphemeral: Ephemeral = {
   pendingUpdate: null,
-  applying: false,
   toastShownThisSession: false,
   dialogOpen: false,
   checking: false,
@@ -93,47 +76,21 @@ export const useUpdaterStore = create<UpdaterStore>()(
       ...initialEphemeral,
 
       checkNow: async (force = false) => {
-        if (get().checking) return
+        if (get().checking) return false
         if (!force) {
           const last = get().lastChecked ?? 0
-          if (Date.now() - last < CHECK_CACHE_MS) return
+          if (Date.now() - last < CHECK_CACHE_MS) return false
         }
         set({ checking: true })
         try {
           const info = await invoke<UpdateInfo | null>('check_for_update')
           set({ pendingUpdate: info, lastChecked: Date.now() })
-        } catch (e) {
-          // Network / parse failures: just log; the toast layer will
-          // see `pendingUpdate === null` and stay quiet. Settings card
-          // shows the error via its own try/catch wrapper.
-          console.warn('check_for_update failed:', e)
+          return true
+        } catch {
+          // A private repository may be inaccessible anonymously. Never report this as current.
+          return false
         } finally {
           set({ checking: false })
-        }
-      },
-
-      applyUpdate: async () => {
-        const info = get().pendingUpdate
-        if (!info || get().applying) return null
-        set({ applying: true })
-        try {
-          // No payload: the backend applies the update it found during
-          // check_for_update (stashed server-side), so the webview can't
-          // substitute URLs or trust markers.
-          await invoke<void>('apply_update')
-          // Unreachable on success — the backend calls
-          // `AppHandle::restart` after a successful swap, which exits
-          // the current process.
-          return null
-        } catch (e) {
-          set({ applying: false })
-          // Tauri serialises the `Result<_, UpdateError>` Err variant as
-          // a JS object — but very old failure paths (e.g. command not
-          // registered) might come back as a string. Normalise.
-          if (typeof e === 'object' && e !== null && 'kind' in e) {
-            return e as UpdateError
-          }
-          return { kind: 'other', message: String(e) }
         }
       },
 

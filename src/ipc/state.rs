@@ -17,7 +17,6 @@
 
 use crate::analysis::runner::AnalysisCache;
 use crate::autoplay::AutoplayContext;
-use crate::bot::PythonRuntime;
 use crate::config::AppConfig;
 use crate::event_bus::{
     AnalysisBus, BotResponseBus, BotStatusBus, CaptureStatusBus, HistoryBus, MjaiBus, NotifyBus,
@@ -28,7 +27,6 @@ use crate::history::recorder::SharedPlatform;
 use crate::history::HistoryStore;
 use crate::logger::Session;
 use crate::schema::{BotStatus, CaptureStatus};
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -83,15 +81,6 @@ pub struct AppState {
     /// without a relaunch.
     pub history_platform: SharedPlatform,
 
-    /// Bundled-or-system Python + uv. `None` on dev boxes lacking both —
-    /// install/sync commands surface a friendly error instead of panicking.
-    /// The bot manager still starts: the built-in native bot needs no Python,
-    /// and only a `mjai_bot/*` subprocess bot fails to spawn without a runtime.
-    pub runtime: Option<PythonRuntime>,
-    /// Names of bots whose `uv sync` is currently in flight. Both the
-    /// `sync_bot_deps` command and `BotManager::spawn_runner` acquire-or-bail
-    /// so two parallel syncs against the same venv can't trample each other.
-    pub syncs_in_flight: Arc<Mutex<HashSet<String>>>,
     /// Set to `true` once a `BotManager` has been spawned for this process.
     /// Used by `update_config` to start the manager on a runtime
     /// false→true flip of `bot.enabled` (e.g. when the first-run wizard
@@ -108,16 +97,8 @@ pub struct AppState {
     /// process. Used by `update_config` to start the manager on a
     /// runtime false→true flip of `autoplay.enabled` without re-spawning.
     pub autoplay_manager_started: Arc<AtomicBool>,
-    /// Serialises in-app update operations. `check_for_update` and
-    /// `apply_update` both `try_lock()` it so the user mashing buttons
-    /// can't race two HTTP fetches or — worse — two binary swaps.
+    /// Serializes release metadata checks. Installation is manual.
     pub updater_lock: Arc<Mutex<()>>,
-    /// Result of the last successful `check_for_update`, and the ONLY
-    /// input `apply_update` acts on. The webview never round-trips an
-    /// `UpdateInfo` back to us — fields like `asset_url` and
-    /// `meta_source` are security policy inputs, and a compromised
-    /// frontend must not get to assert them.
-    pub pending_update: Arc<RwLock<Option<crate::updater::UpdateInfo>>>,
 }
 
 impl AppState {
@@ -138,7 +119,6 @@ impl AppState {
         analysis_cache: AnalysisCache,
         history_store: Arc<HistoryStore>,
         history_platform: SharedPlatform,
-        runtime: Option<PythonRuntime>,
     ) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
@@ -158,13 +138,10 @@ impl AppState {
             analysis_cache,
             history_store,
             history_platform,
-            runtime,
-            syncs_in_flight: Arc::new(Mutex::new(HashSet::new())),
             bot_manager_started: Arc::new(AtomicBool::new(false)),
             autoplay_context: Arc::new(AutoplayContext::new()),
             autoplay_manager_started: Arc::new(AtomicBool::new(false)),
             updater_lock: Arc::new(Mutex::new(())),
-            pending_update: Arc::new(RwLock::new(None)),
         }
     }
 }

@@ -44,15 +44,9 @@ buffer, so the History tab still contains only complete games.
 - **`recorder.rs`** — `drive_loop(store, history_bus, platform, mjai_rx)`. The
   long-running task spawned in `lib.rs::run`.
 
-## Adding a new platform
+## Runtime platform
 
-When a non-Majsoul bridge lands (Tenhou, RiichiCity, ...):
-
-1. Add the variant to `crate::schema::Platform`.
-2. Pass that variant when spawning a *per-bridge* recorder. The current code
-   spawns one global recorder tagged `Platform::Majsoul` because that's the
-   only bridge in v3 — for multiple bridges, mux by source via per-bridge
-   `tokio::sync::broadcast` channels or a wrapped event type.
+Only Majsoul and Tenhou run. The recorder receives the selected platform through its shared platform slot; match identity comes from StartGame. Other old enum labels remain read compatibility only. Platform switching must invalidate old capture and action context without rewriting stored files.
 
 ## Adding a new GameStats field
 
@@ -70,7 +64,7 @@ When a non-Majsoul bridge lands (Tenhou, RiichiCity, ...):
 / rank-lobby ids and the platform's own game (paifu) id — e.g. Majsoul
 `mode_id` + `game_uuid`, Tenhou `<GO type>` bitfield + log id. Bridges attach
 it to `StartGame.game_meta` (a `#[serde(skip)]` field, so mjai logs and the
-inference API never see it) and the aggregator copies it into the record.
+local inference stream never sees it) and the aggregator copies it into the record.
 
 Rules of the road:
 

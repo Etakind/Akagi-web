@@ -1,66 +1,17 @@
-//! Lifecycle + decision-point batching for the active bot.
-//!
-//! `BotManager` owns one `Box<dyn BotRunner>`, subscribes to the
-//! post-tracker bus, accumulates events between decision points, and
-//! broadcasts every `BotResponse` (including `MjaiEvent::None`) onto a
-//! `BotResponseBus` for downstream consumers (HUD, storage, external WS).
-//!
-//! A decision point is an event where the riichi engine says our seat
-//! owes the game an answer. The event's shape narrows the candidates —
-//! only some kinds of event can open a decision for us — and the engine's
-//! `can_act`, computed by the tracker at the instant it applied that same
-//! event, settles it.
-//!
-//! Asking the engine matters because a bot cannot tell us. It is fed every
-//! event and answers every event, so an mjai `none` reads identically for
-//! "I weighed this call and decline it" and "this was never mine to
-//! answer" — and a consumer that acts on replies (autoplay) has to know
-//! which. Not asking also spends a full inference round-trip, and on the
-//! cloud path a paid API call, on events with no decision in them.
-//!
-//! ## Status & notification emission
-//!
-//! Every lifecycle transition is published to two side-channel buses for
-//! the IPC layer:
-//!
-//! - `BotStatusBus` — typed state machine
-//!   (`Idle/Loading/Ready/Error/Stopped`). The frontend renders a spinner
-//!   on `Loading{SyncingDeps}` so the user knows the slow first-run
-//!   `uv sync` is in progress, not a hang.
-//! - `NotifyBus` — toast-style notifications. Loading and error events
-//!   reuse the same `id` (`"bot-loading-<name>"`) so the sticky
-//!   "preparing" toast is replaced rather than duplicated when the spawn
-//!   resolves.
-
-use crate::bot::manifest;
-use crate::bot::registry::BotRegistry;
-use crate::bot::runner::{BotRunner, SubprocessBot};
-use crate::bot::runtime::PythonRuntime;
-use crate::bot::sync_guard::SyncGuard;
+//! Local model lifecycle and decision batching.
+use crate::bot::runner::BotRunner;
 use crate::config::AppConfig;
 use crate::event_bus::{BotResponseBus, BotStatusBus, NotifyBus, TrackedEvent};
 use crate::inspector::InspectorWriter;
-use crate::schema::{BotReaction, BotStatus, InspectorEntry, LoadStage, MjaiEvent, Notification};
+use crate::schema::{BotReaction, BotStatus, InspectorEntry, MjaiEvent, Notification};
 use anyhow::{bail, Context, Result};
 use chrono::Local;
-use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, info, warn};
 
 pub struct BotManager {
-    /// Python runtime for `mjai_bot/*` subprocess bots. `None` when no
-    /// python3+uv runtime was found — the built-in native bot still works;
-    /// only Python subprocess bots require it (enforced per-spawn).
-    runtime: Option<PythonRuntime>,
-    /// Resolved root for `mjai_bot/`. Re-scanned on every `spawn_runner`
-    /// so freshly installed bots (e.g. via the Setup wizard or the
-    /// Install-from-GitHub button) are picked up without restarting
-    /// Akagi — the manager's view of "what bots exist" must not be a
-    /// snapshot taken at supervisor start.
-    bot_dir: PathBuf,
     /// Shared, live application config. The active-bot selection
     /// (`bot.active_4p` / `bot.active_3p`) is read *fresh* at every
     /// `start_game` rather than snapshotted at construction, so a runtime
@@ -98,27 +49,18 @@ pub struct BotManager {
     /// the Logs → Inspector tab can replay "trigger event → bot action"
     /// pairings without grepping multiple files.
     inspector: InspectorWriter,
-    /// Shared with the IPC layer so a user-triggered Reinstall environment
-    /// and an in-flight game-start sync can't run `uv sync` against the same
-    /// venv simultaneously.
-    syncs_in_flight: Arc<Mutex<HashSet<String>>>,
 }
 
 impl BotManager {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        runtime: Option<PythonRuntime>,
-        bot_dir: PathBuf,
         config: Arc<RwLock<AppConfig>>,
         out_tx: BotResponseBus,
         status_tx: BotStatusBus,
         notify_tx: NotifyBus,
         inspector: InspectorWriter,
-        syncs_in_flight: Arc<Mutex<HashSet<String>>>,
     ) -> Self {
         Self {
-            runtime,
-            bot_dir,
             config,
             active_name: String::new(),
             game_num_players: 4,
@@ -130,7 +72,6 @@ impl BotManager {
             status_tx,
             notify_tx,
             inspector,
-            syncs_in_flight,
         }
     }
 
@@ -370,6 +311,7 @@ impl BotManager {
         }
         // MjaiEvent::None still goes on the bus — downstream consumers
         // decide whether to render. Centralizes the "skip" decision.
+        resp.decision_started = Some(started);
         let _ = self.out_tx.send(resp);
 
         if matches!(event, MjaiEvent::EndGame { .. }) {
@@ -390,250 +332,36 @@ impl BotManager {
     /// returning so the UI never sees a stuck `Loading` state.
     async fn spawn_runner(&mut self) -> Result<()> {
         let bot_name = self.active_name.clone();
-        let actor_id = self
-            .actor_id
-            .context("spawn_runner called without actor_id")?;
-
-        // Built-in native bots (pure Rust, no Python) bypass the registry /
-        // venv path entirely: no `bot.py`, no `uv sync`, weights are embedded.
-        // The runner holds the shared config and re-reads `bot.api` at every
-        // decision, so cloud inference can be toggled, re-keyed, or pointed at a
-        // different model mid-game — not just between games.
-        if crate::bot::native::is_native(&bot_name) {
-            let api_backed = self.config.read().await.bot.api.is_active();
-            match crate::bot::native::build(
-                actor_id,
-                self.game_num_players,
-                self.config.clone(),
-                self.notify_tx.clone(),
-            )
-            .await
-            {
-                Ok(runner) => {
-                    info!(
-                        bot = %bot_name,
-                        actor_id,
-                        num_players = self.game_num_players,
-                        api_backed,
-                        "native bot runner constructed"
-                    );
-                    self.emit_status(BotStatus::Ready {
-                        bot: bot_name.clone(),
-                        actor_id,
-                    });
-                    self.runner = Some(runner);
-                    return Ok(());
-                }
-                Err(e) => {
-                    let msg = format!("native bot init failed: {e:#}");
-                    self.fail_load(&bot_name, &msg, "Built-in bot failed to load");
-                    bail!(msg);
-                }
-            }
+        let actor_id = self.actor_id.context("missing local actor")?;
+        if !crate::bot::native::is_native(&bot_name) {
+            bail!("external bots are not supported");
         }
-
-        // Rescan on each spawn so bots installed after the supervisor
-        // started (Setup wizard, Install-from-GitHub) are visible. A
-        // snapshot taken at supervisor-start time misses them and the
-        // user sees "bot not found" until they relaunch Akagi.
-        let registry = match BotRegistry::scan(&self.bot_dir) {
-            Ok(r) => r,
-            Err(e) => {
-                let msg = format!("scan {}: {e:#}", self.bot_dir.display());
-                self.fail_load(&bot_name, &msg, "Bot directory unreadable");
-                bail!(msg);
-            }
-        };
-        let entry = match registry.find(&bot_name) {
-            Some(e) => e.clone(),
-            None => {
-                let msg = format!(
-                    "bot {:?} not found in registry at {}",
-                    bot_name,
-                    registry.root().display()
-                );
-                self.fail_load(&bot_name, &msg, "Bot not found");
-                bail!(msg);
-            }
-        };
-        if entry.pyproject.is_none() {
-            let msg = format!(
-                "bot {} has no pyproject.toml — required for uv sync",
-                entry.name
-            );
-            self.fail_load(&bot_name, &msg, "Bot misconfigured");
-            bail!(msg);
-        }
-
-        // Game-start must never run a slow `uv sync` inline: it would stall
-        // the live game while the bot misses its turns (the historical
-        // game-start-timeout bug, otherwise prevented by `set_active_bot`
-        // refusing to activate a bot whose env isn't pre-installed). A
-        // moved/renamed Akagi folder can silently invalidate an *already
-        // active* bot's venv in a way only a full re-sync can repair —
-        // Windows bakes the base-python path into the `Scripts/python.exe`
-        // trampoline, so it can't be repointed in place the way `ensure_synced`
-        // repoints the Unix symlink. Detect that here and fall back to
-        // analysis-only with a reinstall prompt instead of blocking the game;
-        // the user repairs it out-of-band (Bots page → Install environment)
-        // and the next game spawns cleanly. Returning Ok (not bail) leaves the
-        // runner unset so this game simply runs analysis-only.
-        if crate::bot::runtime::needs_out_of_band_resync(&entry.dir) {
-            let msg = format!(
-                "{bot_name}'s Python environment needs reinstalling — the Akagi \
-                 folder was moved or renamed. Open the Bots page and click \
-                 Install environment."
-            );
-            warn!(bot = %bot_name, "{msg}");
-            self.emit_status(BotStatus::Error {
-                bot: bot_name.clone(),
-                error: msg.clone(),
-            });
-            self.emit_notify(Notification::error("Bot environment needs reinstalling").body(msg));
-            self.runner = None;
-            self.pending.clear();
-            return Ok(());
-        }
-
-        // From here on we spawn a Python subprocess bot, which requires the
-        // runtime. A missing runtime fails just this spawn (analysis-only for
-        // this bot); the built-in native bot was already handled above and
-        // never reaches here.
-        let runtime = match self.runtime.clone() {
-            Some(rt) => rt,
-            None => {
-                let msg = format!(
-                    "bot {bot_name} needs a python3+uv runtime, but none was found. \
-                     Use the built-in bot, or install a Python runtime."
-                );
-                self.fail_load(&bot_name, &msg, "No Python runtime");
-                bail!(msg);
-            }
-        };
-
-        let load_id = format!("bot-loading-{bot_name}");
-
-        // Phase 1: dep sync. ensure_synced is a no-op when stamp matches,
-        // so the SyncingDeps state is brief on warm boots.
-        self.emit_status(BotStatus::Loading {
-            bot: bot_name.clone(),
-            stage: LoadStage::SyncingDeps,
-        });
-        self.emit_notify(
-            Notification::info("Preparing bot")
-                .body("Installing Python dependencies — first launch may take a while.")
-                .sticky()
-                .id(load_id.clone()),
-        );
-
-        // Acquire the per-bot sync lock so a Reinstall-environment IPC
-        // call (or any other in-flight sync) doesn't race us against the
-        // same venv.
-        let sync_guard = match SyncGuard::acquire(&self.syncs_in_flight, &bot_name).await {
-            Some(g) => g,
-            None => {
-                let msg = format!("sync already in progress for {bot_name}");
-                self.emit_status(BotStatus::Error {
-                    bot: bot_name.clone(),
-                    error: msg.clone(),
-                });
-                self.emit_notify(
-                    Notification::error("Bot dependency install failed")
-                        .body(msg.clone())
-                        .id(load_id.clone()),
-                );
-                bail!(msg);
-            }
-        };
-
-        let sync_result = runtime.ensure_synced(&entry.dir).await;
-        drop(sync_guard);
-        if let Err(e) = sync_result {
-            let msg = format!("uv sync failed: {e:#}");
-            self.emit_status(BotStatus::Error {
-                bot: bot_name.clone(),
-                error: msg.clone(),
-            });
-            self.emit_notify(
-                Notification::error("Bot dependency install failed")
-                    .body(msg)
-                    .id(load_id),
-            );
-            return Err(e).context("ensure_synced");
-        }
-
-        // Phase 2: subprocess spawn.
-        self.emit_status(BotStatus::Loading {
-            bot: bot_name.clone(),
-            stage: LoadStage::Spawning,
-        });
-
-        let mut cmd = runtime.command_for(&entry.dir, &["bot.py"]);
-        cmd.arg(actor_id.to_string());
-
-        // If the bot ships a manifest, resolve user values + manifest
-        // defaults and hand the path to the resolved JSON over to the
-        // child via AKAGI_BOT_CONFIG. Bots without a manifest get no env
-        // var — same behaviour as v3 before settings existed.
-        if let Some(m) = entry.manifest.as_ref() {
-            match manifest::load_values(&entry.dir, m)
-                .and_then(|values| manifest::write_resolved(&entry.dir, &values))
-            {
-                Ok(path) => {
-                    cmd.env("AKAGI_BOT_CONFIG", &path);
-                }
-                Err(e) => {
-                    let msg = format!("resolve bot settings: {e:#}");
-                    self.emit_status(BotStatus::Error {
-                        bot: bot_name.clone(),
-                        error: msg.clone(),
-                    });
-                    self.emit_notify(
-                        Notification::error("Bot settings resolution failed")
-                            .body(msg)
-                            .id(load_id),
-                    );
-                    return Err(e).context("resolve bot settings");
-                }
-            }
-        }
-        let bot = match SubprocessBot::spawn_with_command(
-            cmd,
-            runtime.clone(),
-            &entry.dir,
+        match crate::bot::native::build(
             actor_id,
+            self.game_num_players,
+            self.config.clone(),
             self.notify_tx.clone(),
         )
         .await
         {
-            Ok(b) => b,
-            Err(e) => {
-                let msg = format!("subprocess spawn failed: {e:#}");
-                self.emit_status(BotStatus::Error {
-                    bot: bot_name.clone(),
-                    error: msg.clone(),
+            Ok(runner) => {
+                self.runner = Some(runner);
+                self.emit_status(BotStatus::Ready {
+                    bot: bot_name,
+                    actor_id,
                 });
-                self.emit_notify(
-                    Notification::error("Bot subprocess failed to start")
-                        .body(msg)
-                        .id(load_id),
-                );
-                return Err(e);
+                Ok(())
             }
-        };
-
-        info!(bot = %bot_name, actor_id, "bot runner spawned");
-        self.emit_status(BotStatus::Ready {
-            bot: bot_name.clone(),
-            actor_id,
-        });
-        // Reuse the loading id so the sticky toast is replaced, not
-        // duplicated. Frontend treats same-id as a swap.
-        self.emit_notify(Notification::success(format!("{bot_name} ready")).id(load_id));
-        self.runner = Some(Box::new(bot));
-        Ok(())
+            Err(error) => {
+                self.fail_load(
+                    &bot_name,
+                    "Bundled model initialization failed",
+                    "Local inference unavailable",
+                );
+                Err(error)
+            }
+        }
     }
-
     fn fail_load(&self, bot: &str, error: &str, title: &str) {
         self.emit_status(BotStatus::Error {
             bot: bot.into(),
@@ -727,7 +455,6 @@ mod tests {
     use crate::bot::types::BotResponse;
     use crate::event_bus::{bot_response_bus, bot_status_bus, notify_bus};
     use async_trait::async_trait;
-    use std::path::PathBuf;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -770,6 +497,7 @@ mod tests {
             let mut q = self.next.lock().await;
             if q.is_empty() {
                 Ok(BotResponse {
+                    decision_started: None,
                     action: MjaiEvent::None,
                     meta: None,
                 })
@@ -780,24 +508,6 @@ mod tests {
         async fn reset(&mut self) -> Result<()> {
             Ok(())
         }
-    }
-
-    fn dummy_runtime() -> PythonRuntime {
-        PythonRuntime::from_paths(
-            PathBuf::from("/dev/null/python"),
-            PathBuf::from("/dev/null/uv"),
-            crate::bot::runtime::RuntimeMode::System,
-        )
-    }
-
-    /// Path that `BotRegistry::scan` resolves to an empty registry —
-    /// `scan` treats a non-existent root as "no bots".
-    fn empty_bot_dir() -> PathBuf {
-        PathBuf::from("/nonexistent/akagi-test-bot-dir")
-    }
-
-    fn fresh_syncs() -> Arc<Mutex<HashSet<String>>> {
-        Arc::new(Mutex::new(HashSet::new()))
     }
 
     /// Shared config handle pre-seeded with a 4p active bot (and no 3p bot),
@@ -840,16 +550,7 @@ mod tests {
         let resp_rx = bus.subscribe();
         let status_rx = status.subscribe();
         let notify_rx = notify.subscribe();
-        let mut mgr = BotManager::new(
-            Some(dummy_runtime()),
-            empty_bot_dir(),
-            cfg_with("mock"),
-            bus,
-            status,
-            notify,
-            dummy_inspector(),
-            fresh_syncs(),
-        );
+        let mut mgr = BotManager::new(cfg_with("mock"), bus, status, notify, dummy_inspector());
         // Pre-seat the actor and inject the mock so we don't go through
         // the registry / runtime path (covered by runner.rs tests).
         // `start_game` normally sets `active_name` alongside the runner, so
@@ -1202,6 +903,7 @@ mod tests {
     #[tokio::test]
     async fn bot_response_broadcast_to_subscribers() {
         let scripted = BotResponse {
+            decision_started: None,
             action: dahai(2),
             meta: None,
         };
@@ -1209,7 +911,11 @@ mod tests {
         mgr.handle(dahai(0)).await.unwrap(); // others' dahai → flush
 
         let received = rx.try_recv().expect("bot response should be broadcast");
-        assert_eq!(received, scripted);
+        assert!(received.decision_started.is_some());
+        assert_eq!(
+            serde_json::to_value(&received).unwrap(),
+            serde_json::to_value(&scripted).unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1234,16 +940,7 @@ mod tests {
         let notify = notify_bus();
         let mut status_rx = status.subscribe();
         let mut notify_rx = notify.subscribe();
-        let mut mgr = BotManager::new(
-            Some(dummy_runtime()),
-            empty_bot_dir(),
-            cfg_with("mock"),
-            bus,
-            status,
-            notify,
-            dummy_inspector(),
-            fresh_syncs(),
-        );
+        let mut mgr = BotManager::new(cfg_with("mock"), bus, status, notify, dummy_inspector());
         mgr.actor_id = Some(2);
         mgr.active_name = "mock".into();
         mgr.runner = Some(Box::new(MockBotRunner::failing("kaboom")));
@@ -1267,269 +964,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_bot_in_registry_emits_error_status() {
-        // Empty registry + handle(StartGame{id}) → spawn_runner errors,
-        // emits BotStatus::Error and a notification.
-        let bus = bot_response_bus();
-        let status = bot_status_bus();
-        let notify = notify_bus();
-        let mut status_rx = status.subscribe();
-        let mut notify_rx = notify.subscribe();
-        let mut mgr = BotManager::new(
-            Some(dummy_runtime()),
-            empty_bot_dir(),
-            cfg_with("ghost"),
-            bus,
-            status,
-            notify,
-            dummy_inspector(),
-            fresh_syncs(),
-        );
-
-        let err = mgr
-            .handle(MjaiEvent::StartGame {
-                names: vec!["a".into(), "b".into(), "c".into(), "d".into()],
-                kyoku_first: None,
-                aka_flag: None,
-                id: Some(0),
-                num_players: 4,
-                game_meta: None,
-            })
-            .await
-            .unwrap_err();
-        assert!(format!("{err:#}").contains("not found in registry"));
-
-        let s = status_rx.try_recv().unwrap();
-        assert!(
-            matches!(s, BotStatus::Error { ref bot, .. } if bot == "ghost"),
-            "expected Error{{bot=ghost}}, got {s:?}"
-        );
-        let n = notify_rx.try_recv().unwrap();
-        assert_eq!(n.level, crate::schema::NotifyLevel::Error);
-        assert!(n.title.contains("Bot not found"));
-    }
-
-    /// Regression (issue #157): switching the active bot after the manager
-    /// is constructed must take effect on the next `start_game`. Pre-fix the
-    /// manager snapshotted `active_4p`/`active_3p` at construction, so a
-    /// runtime model switch via the Bots page was silently ignored until
-    /// Akagi was relaunched.
-    ///
-    /// We can't run the full spawn (no real Python runtime in tests), so we
-    /// lean on `spawn_runner`'s registry lookup: with an empty registry the
-    /// spawn errors "bot not found", and the emitted `BotStatus::Error`
-    /// carries the bot name the manager *tried* to spawn. Seeing the
-    /// post-switch name there proves the manager re-read config at
-    /// `start_game` rather than using the construction-time snapshot.
-    #[tokio::test]
-    async fn active_bot_switch_takes_effect_on_next_start_game() {
-        let bus = bot_response_bus();
-        let status = bot_status_bus();
-        let notify = notify_bus();
-        let mut status_rx = status.subscribe();
-
-        let config = cfg_with("old-bot");
-        let mut mgr = BotManager::new(
-            Some(dummy_runtime()),
-            empty_bot_dir(),
-            config.clone(),
-            bus,
-            status,
-            notify,
-            dummy_inspector(),
-            fresh_syncs(),
-        );
-
-        // Switch the active bot AFTER construction, exactly as `set_active_bot`
-        // does to the shared config while the manager task is already running.
-        config.write().await.bot.active_4p = "new-bot".to_string();
-
-        let err = mgr
-            .handle(MjaiEvent::StartGame {
-                names: vec!["a".into(), "b".into(), "c".into(), "d".into()],
-                kyoku_first: None,
-                aka_flag: None,
-                id: Some(0),
-                num_players: 4,
-                game_meta: None,
-            })
-            .await
-            .unwrap_err();
-        // The spawn must have been attempted for the *new* bot, not the
-        // snapshot taken at construction.
-        let msg = format!("{err:#}");
-        assert!(msg.contains("new-bot"), "error should name new-bot: {msg}");
-        assert!(!msg.contains("old-bot"), "must not use stale bot: {msg}");
-
-        let s = status_rx.try_recv().unwrap();
-        assert!(
-            matches!(s, BotStatus::Error { ref bot, .. } if bot == "new-bot"),
-            "expected Error{{bot=new-bot}}, got {s:?}"
-        );
-    }
-
-    #[tokio::test]
     async fn events_before_start_game_are_dropped() {
         // Manager freshly constructed → no actor_id, no runner.
         let bus = bot_response_bus();
         let status = bot_status_bus();
         let notify = notify_bus();
-        let mut mgr = BotManager::new(
-            Some(dummy_runtime()),
-            empty_bot_dir(),
-            cfg_with("mock"),
-            bus,
-            status,
-            notify,
-            dummy_inspector(),
-            fresh_syncs(),
-        );
+        let mut mgr = BotManager::new(cfg_with("mock"), bus, status, notify, dummy_inspector());
         // Should not panic / error even with no runner.
         mgr.handle(dahai(0)).await.unwrap();
         assert!(mgr.pending.is_empty());
-    }
-
-    /// Regression: a bot directory that gets populated *after* the
-    /// `BotManager` is constructed must still be discoverable by the
-    /// next `start_game`. Pre-fix the manager held a registry snapshot
-    /// taken at supervisor-start time, so the Setup wizard's installs
-    /// only became visible after a full Akagi relaunch — and game-start
-    /// errored with "bot not found in registry".
-    ///
-    /// We can't run the full spawn flow (no real Python runtime in
-    /// tests), so we lean on the second check inside `spawn_runner`:
-    /// once the registry finds the entry, it errors with "no
-    /// pyproject.toml" instead of "not found in registry". Hitting that
-    /// second error proves the rescan happened.
-    #[tokio::test]
-    async fn registry_is_rescanned_on_each_start_game() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let bot_dir = tmp.path().to_path_buf();
-
-        let bus = bot_response_bus();
-        let status = bot_status_bus();
-        let notify = notify_bus();
-        let mut mgr = BotManager::new(
-            Some(dummy_runtime()),
-            bot_dir.clone(),
-            cfg_with("latebot"),
-            bus,
-            status,
-            notify,
-            dummy_inspector(),
-            fresh_syncs(),
-        );
-
-        // Drop a bot under bot_dir AFTER the manager exists. With the
-        // old snapshot-at-construction behaviour, this would never be
-        // visible to spawn_runner.
-        let new_bot = bot_dir.join("latebot");
-        std::fs::create_dir_all(&new_bot).unwrap();
-        std::fs::write(new_bot.join("bot.py"), b"").unwrap();
-
-        let err = mgr
-            .handle(MjaiEvent::StartGame {
-                names: vec!["a".into(), "b".into(), "c".into(), "d".into()],
-                kyoku_first: None,
-                aka_flag: None,
-                id: Some(0),
-                num_players: 4,
-                game_meta: None,
-            })
-            .await
-            .unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("no pyproject.toml"),
-            "expected the rescan to find latebot and fail at the pyproject \
-             check; got: {msg}"
-        );
-        assert!(
-            !msg.contains("not found in registry"),
-            "registry rescan failed to pick up post-construction install: {msg}"
-        );
-    }
-
-    /// Regression: an ACTIVE bot whose venv was invalidated by a folder move
-    /// (the interpreter file survived but its base `home` is gone — the
-    /// Windows shape, where `Scripts/python.exe` is a real trampoline copy)
-    /// must NOT trigger an inline `uv sync` at game-start. That would stall
-    /// the live game while the bot misses its turns — the historical
-    /// game-start-timeout bug. `spawn_runner` detects the un-repointable venv
-    /// up front and runs analysis-only with a reinstall prompt, never calling
-    /// `ensure_synced`.
-    #[tokio::test]
-    async fn moved_venv_skips_inline_sync_and_runs_analysis_only() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let bot_dir = tmp.path().to_path_buf();
-        let bot = bot_dir.join("mybot");
-        std::fs::create_dir_all(&bot).unwrap();
-        std::fs::write(bot.join("bot.py"), b"").unwrap();
-        std::fs::write(bot.join("pyproject.toml"), b"[project]\nname='x'\n").unwrap();
-        // Moved-venv state: interpreter file present, but pyvenv.cfg `home`
-        // points at a directory that no longer exists. The interpreter must
-        // sit at the platform's venv layout (`Scripts\python.exe` on
-        // Windows, `bin/python` on Unix) or the alive-check never fires.
-        let venv = bot.join(".akagi").join("venv");
-        let interp = crate::bot::runtime::venv_python(&venv);
-        std::fs::create_dir_all(interp.parent().unwrap()).unwrap();
-        std::fs::write(&interp, b"").unwrap();
-        std::fs::write(
-            venv.join("pyvenv.cfg"),
-            b"home = /vanished/old/runtime/bin\n",
-        )
-        .unwrap();
-
-        let bus = bot_response_bus();
-        let status = bot_status_bus();
-        let notify = notify_bus();
-        let mut status_rx = status.subscribe();
-        let mut notify_rx = notify.subscribe();
-        let mut mgr = BotManager::new(
-            Some(dummy_runtime()),
-            bot_dir,
-            cfg_with("mybot"),
-            bus,
-            status,
-            notify,
-            dummy_inspector(),
-            fresh_syncs(),
-        );
-
-        mgr.handle(MjaiEvent::StartGame {
-            names: vec!["a".into(), "b".into(), "c".into(), "d".into()],
-            kyoku_first: None,
-            aka_flag: None,
-            id: Some(0),
-            num_players: 4,
-            game_meta: None,
-        })
-        .await
-        .expect("handle returns Ok (analysis-only), not an error");
-
-        assert!(mgr.runner.is_none(), "must not spawn a bot needing re-sync");
-
-        // The guard fired BEFORE ensure_synced: an Error status naming the
-        // bot with the reinstall message — NOT a 'uv sync failed' message,
-        // which is what we'd see if the inline sync had been attempted.
-        let s = status_rx.try_recv().expect("status emitted");
-        match s {
-            BotStatus::Error { bot, error } => {
-                assert_eq!(bot, "mybot");
-                assert!(
-                    error.contains("reinstalling"),
-                    "expected reinstall prompt, got: {error}"
-                );
-                assert!(
-                    !error.contains("uv sync"),
-                    "must not have attempted an inline sync: {error}"
-                );
-            }
-            other => panic!("expected Error, got {other:?}"),
-        }
-        let n = notify_rx.try_recv().expect("notification emitted");
-        assert_eq!(n.level, crate::schema::NotifyLevel::Error);
-        assert!(n.title.contains("reinstalling"), "got title: {}", n.title);
     }
 
     /// Regression: the built-in native bot must spawn even when no python3+uv
@@ -1543,14 +986,11 @@ mod tests {
         let notify = notify_bus();
         let mut status_rx = status.subscribe();
         let mut mgr = BotManager::new(
-            None, // no python runtime available
-            empty_bot_dir(),
             cfg_with(crate::bot::native::NATIVE_4P),
             bus,
             status,
             notify,
             dummy_inspector(),
-            fresh_syncs(),
         );
 
         mgr.handle(MjaiEvent::StartGame {
@@ -1585,16 +1025,7 @@ mod tests {
         let bot_bus = bot_response_bus();
         let status = bot_status_bus();
         let notify = notify_bus();
-        let mut mgr = BotManager::new(
-            Some(dummy_runtime()),
-            empty_bot_dir(),
-            cfg_with("mock"),
-            bot_bus,
-            status,
-            notify,
-            dummy_inspector(),
-            fresh_syncs(),
-        );
+        let mut mgr = BotManager::new(cfg_with("mock"), bot_bus, status, notify, dummy_inspector());
         mgr.actor_id = Some(2);
         let (mock, _calls) = MockBotRunner::new(vec![]);
         mgr.runner = Some(Box::new(mock));
@@ -1612,6 +1043,7 @@ mod tests {
 
     fn reach_none(actor: u8) -> BotResponse {
         BotResponse {
+            decision_started: None,
             action: MjaiEvent::Reach { actor, pai: None },
             meta: None,
         }
@@ -1619,6 +1051,7 @@ mod tests {
 
     fn dahai_reply(actor: u8, pai: &str) -> BotResponse {
         BotResponse {
+            decision_started: None,
             action: MjaiEvent::Dahai {
                 actor,
                 pai: pai.into(),
@@ -1737,6 +1170,7 @@ mod tests {
     #[tokio::test]
     async fn autoplay_prefilled_reach_pai_skips_followup() {
         let prefilled = BotResponse {
+            decision_started: None,
             action: MjaiEvent::Reach {
                 actor: 2,
                 pai: Some("3p".into()),

@@ -1,3 +1,0 @@
-Bundled python-build-standalone + uv land here under
-python/<triple>/ and uv/<triple>/. Run `scripts/fetch-runtime.sh`
-once per dev machine; CI re-fetches before `tauri build`.

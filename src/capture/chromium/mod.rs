@@ -69,22 +69,30 @@ impl CaptureBackend for ChromiumBackend {
         if self.cfg.attach_port != 0 {
             let profile = (!self.cfg.user_data_dir.is_empty())
                 .then(|| std::path::Path::new(&self.cfg.user_data_dir));
+            let configured_executable =
+                (!self.cfg.executable.is_empty()).then(|| PathBuf::from(&self.cfg.executable));
             let attached = async {
                 let mut retries = 0u8;
                 loop {
                     // Re-read the locator on every attempt; a browser restart
                     // can change its endpoint while retaining the same port.
-                    let endpoint = launch::existing_endpoint(self.cfg.attach_port, profile).await?;
+                    let endpoint = launch::existing_endpoint(
+                        self.cfg.attach_port,
+                        profile,
+                        configured_executable.as_ref(),
+                    )
+                    .await?;
                     let bridges = Arc::new(FlowBridges::<cdp::FlowKey>::new(
                         ctx.session.clone(),
                         ctx.platform,
                         crate::bridge::BridgeHooks {
+                            tenhou_state: ctx.autoplay.as_ref().map(|a| a.tenhou_state.clone()),
                             notify: Some(ctx.notify_bus.clone()),
                             time_budget: ctx.autoplay.as_ref().map(|a| a.time_budget.clone()),
                             input_watch: ctx.autoplay.as_ref().map(|a| a.input_watch.clone()),
                         },
                     ));
-                    info!("attaching existing local browser; official Majsoul pages only");
+                    info!("attaching existing local browser; selected official game pages only");
                     let result = cdp::run(
                         &endpoint,
                         bridges,
@@ -94,6 +102,7 @@ impl CaptureBackend for ChromiumBackend {
                         ctx.http.clone(),
                         ctx.notify_bus.clone(),
                         true,
+                        None,
                     )
                     .await;
                     let Err(error) = result else {
@@ -128,6 +137,13 @@ impl CaptureBackend for ChromiumBackend {
             .resolve_executable()
             .context("resolving chromium executable")?;
         let profile_dir = profile::resolve_profile_dir(&self.cfg.user_data_dir)?;
+        let selected = std::fs::canonicalize(&profile_dir).unwrap_or(profile_dir.clone());
+        if detect::standard_user_data_dirs(None).iter().any(|root| {
+            let root = std::fs::canonicalize(root).unwrap_or(root.clone());
+            selected.starts_with(&root) || root.starts_with(&selected)
+        }) {
+            anyhow::bail!("Independent mode requires an isolated Akagi profile, not a regular browser data directory");
+        }
         crate::util::private_fs::directory(&profile_dir)
             .with_context(|| format!("creating chromium profile dir {}", profile_dir.display()))?;
         // A browser we previously launched may still be running with this
@@ -155,15 +171,25 @@ impl CaptureBackend for ChromiumBackend {
             profile_dir.display()
         );
 
+        let start_url = if self.cfg.start_url.is_empty() {
+            ctx.platform.default_url().to_string()
+        } else {
+            self.cfg.start_url.clone()
+        };
+        if !ctx.platform.official_page(&start_url) {
+            anyhow::bail!("The start URL must be the selected game's official HTTPS page");
+        }
+        let mut launch_cfg = self.cfg.clone();
+        launch_cfg.start_url = "about:blank".into();
         let launched =
-            launch::spawn(&exe, &profile_dir, &self.cfg).context("launching chromium")?;
+            launch::spawn(&exe, &profile_dir, &launch_cfg).context("launching chromium")?;
         let mut child = launched.child;
 
         let cdp_endpoint =
             launch::wait_for_devtools_endpoint(&profile_dir, launched.remote_debugging_port)
                 .await
                 .context("reading chromium CDP endpoint (chromium failed to start?)")?;
-        info!("chromium CDP endpoint: {cdp_endpoint}");
+        info!("chromium debugging locator discovered");
 
         let mut hooks = ctx
             .autoplay
@@ -171,6 +197,7 @@ impl CaptureBackend for ChromiumBackend {
             .map(|a| crate::bridge::BridgeHooks {
                 time_budget: Some(a.time_budget.clone()),
                 input_watch: Some(a.input_watch.clone()),
+                tenhou_state: Some(a.tenhou_state.clone()),
                 notify: None,
             })
             .unwrap_or_default();
@@ -189,7 +216,8 @@ impl CaptureBackend for ChromiumBackend {
             ctx.autoplay.clone(),
             ctx.http.clone(),
             ctx.notify_bus.clone(),
-            true,
+            false,
+            Some(start_url),
         );
         let mut cdp_fut = Box::pin(cdp_run);
         let shutdown_fut = shutdown.wait();

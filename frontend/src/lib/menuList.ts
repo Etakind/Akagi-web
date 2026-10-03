@@ -4,7 +4,6 @@ import {
   History as HistoryIcon,
   LayoutDashboard,
   ScrollText,
-  SearchCheck,
   Settings as SettingsIcon,
   type LucideIcon,
 } from 'lucide-react'
@@ -41,7 +40,6 @@ export function getMenuList(t: Translate): MenuGroup[] {
         { href: '/game', label: t('nav.game'), icon: Gamepad2 },
         { href: '/bots', label: t('nav.bots'), icon: Bot },
         { href: '/history', label: t('nav.history'), icon: HistoryIcon },
-        { href: '/review', label: t('nav.review'), icon: SearchCheck },
         { href: '/logs', label: t('nav.logs'), icon: ScrollText },
         { href: '/settings', label: t('nav.settings'), icon: SettingsIcon },
       ],

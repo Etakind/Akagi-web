@@ -24,7 +24,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { HAS_TAURI, invoke } from '@/lib/tauri'
-import { openExternal } from '@/lib/external'
+import { AKAGI_GITHUB_URL, openExternal } from '@/lib/external'
 import { useSidebar } from '@/hooks/useSidebar'
 import { useAnnouncementStore } from '@/stores/announcementStore'
 import { useCaptureStore } from '@/stores/captureStore'
@@ -47,7 +47,7 @@ import {
   type ThemePalette,
 } from '@/stores/themeStore'
 import {
-  platformInfo,
+  platformInfo, PLATFORMS,
 } from '@/lib/platforms'
 import {
   OVERLAY_OPACITY_MAX,
@@ -60,8 +60,6 @@ import type {
   DelayMode,
   DelayModelConfig,
   DetectedBrowser,
-  GithubMirrorMode,
-  NetworkConfig,
   OverlayConfig,
 } from '@/types'
 
@@ -111,7 +109,7 @@ export function Settings() {
     setErr(null)
     try {
       await invoke('update_config', { newConfig: draft })
-      setStored(draft)
+      setStored(await invoke<AppConfig>('get_config'))
     } catch (e) {
       setErr(String(e))
     } finally {
@@ -124,7 +122,7 @@ export function Settings() {
     setErr(null)
     try {
       await invoke('update_config', { newConfig: draft })
-      setStored(draft)
+      setStored(await invoke<AppConfig>('get_config'))
       blocker.proceed?.()
     } catch (e) {
       setErr(String(e))
@@ -187,18 +185,7 @@ export function Settings() {
               </SelectContent>
             </Select>
           </Field>
-          <div className="grid gap-1.5">
-            <Toggle
-              label={t('settings.developer_mode')}
-              value={draft.general.developer_mode}
-              onChange={(v) =>
-                setDraft({ ...draft, general: { ...draft.general, developer_mode: v } })
-              }
-            />
-            <span className="text-xs text-muted-foreground">
-              {t('settings.developer_mode_hint')}
-            </span>
-          </div>
+
         </CardContent>
       </Card>
 
@@ -246,40 +233,21 @@ export function Settings() {
             value={draft.bot.enabled}
             onChange={(v) => setDraft({ ...draft, bot: { ...draft.bot, enabled: v } })}
           />
-          <Toggle
-            label={t('settings.auto_sync')}
-            value={draft.bot.auto_sync}
-            onChange={(v) => setDraft({ ...draft, bot: { ...draft.bot, auto_sync: v } })}
-          />
-          <Field label={t('settings.active_bot_4p')}>
-            <Input
-              value={draft.bot.active_4p}
-              onChange={(e) => setDraft({ ...draft, bot: { ...draft.bot, active_4p: e.target.value } })}
-              placeholder="mortal"
-            />
-          </Field>
-          <Field label={t('settings.active_bot_3p')}>
-            <Input
-              value={draft.bot.active_3p}
-              onChange={(e) => setDraft({ ...draft, bot: { ...draft.bot, active_3p: e.target.value } })}
-              placeholder={t('common.none_paren')}
-            />
-          </Field>
-          <Field label={t('settings.bot_directory')}>
-            <Input
-              value={draft.bot.dir}
-              onChange={(e) => setDraft({ ...draft, bot: { ...draft.bot, dir: e.target.value } })}
-            />
-          </Field>
+          <p>{t('bots.local_only')}</p>
         </CardContent>
       </Card>
+
+      <Card><CardHeader><CardTitle>{t('settings.platform_card_title')}</CardTitle></CardHeader><CardContent>
+        <Select value={draft.platform.kind} onValueChange={(kind: 'Majsoul' | 'Tenhou') => setDraft({ ...draft, platform: { kind }, autoplay: { ...draft.autoplay, enabled: false }, capture: { ...draft.capture, chromium: { ...draft.capture.chromium, start_url: platformInfo(kind).defaultStartUrl } } })}>
+          <SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{PLATFORMS.map(p => <SelectItem key={p.kind} value={p.kind}>{t(p.labelKey)}</SelectItem>)}</SelectContent>
+        </Select>
+      </CardContent></Card>
 
       <AutoplayCard
         draft={draft}
         setDraft={setDraft}
       />
 
-      <NetworkCard draft={draft} setDraft={setDraft} />
 
       <UpdatesCard />
 
@@ -319,68 +287,6 @@ export function Settings() {
  *  GitHub is blocked. Used by the in-app updater and the bot installer;
  *  Chrome-for-Testing downloads fall back to a mirror automatically and
  *  need no setting here. */
-function NetworkCard({
-  draft,
-  setDraft,
-}: {
-  draft: AppConfig
-  setDraft: (c: AppConfig) => void
-}) {
-  const { t } = useTranslation()
-  const n = draft.network
-  const patch = (p: Partial<NetworkConfig>) =>
-    setDraft({ ...draft, network: { ...n, ...p } })
-  const custom = n.github_custom_mirror.trim()
-  const customInvalid = custom !== '' && !/^https?:\/\/\S+$/.test(custom)
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t('settings.network_title')}</CardTitle>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        <Field
-          label={t('settings.github_mirror_label')}
-          hint={t('settings.github_mirror_hint')}
-        >
-          <Select
-            value={n.github_mirror_mode}
-            onValueChange={(v) => patch({ github_mirror_mode: v as GithubMirrorMode })}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="auto">{t('settings.github_mirror_auto')}</SelectItem>
-              <SelectItem value="direct">{t('settings.github_mirror_direct')}</SelectItem>
-              <SelectItem value="mirror">{t('settings.github_mirror_mirror')}</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
-        <Field
-          label={t('settings.custom_mirror_label')}
-          hint={t('settings.custom_mirror_hint')}
-        >
-          <Input
-            value={n.github_custom_mirror}
-            onChange={(e) => patch({ github_custom_mirror: e.target.value })}
-            placeholder="https://gh-proxy.com"
-            className="font-mono"
-            disabled={n.github_mirror_mode === 'direct'}
-          />
-          {customInvalid && (
-            <span className="text-xs text-red-400">
-              {t('settings.custom_mirror_invalid')}
-            </span>
-          )}
-        </Field>
-      </CardContent>
-    </Card>
-  )
-}
-
-/** The always-on-top suggestion overlay. Applied on save, like every other
- *  card here — `update_config` opens, closes, or retunes the window. */
 function OverlayCard({
   draft,
   setDraft,
@@ -574,7 +480,7 @@ function CustomEditor() {
             setImportError(null)
             setImportSuccess(false)
           }}
-          placeholder="https://tweakcn.com/themes/<id>"
+          placeholder='{"light":{"primary":"#008855"}}'
           rows={2}
           className="w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring resize-y"
           spellCheck={false}
@@ -1016,7 +922,7 @@ function CaptureCard({
     executable: '',
     attach_port: 0,
     user_data_dir: '',
-    start_url: platformInfo().defaultStartUrl,
+    start_url: platformInfo(draft.platform.kind).defaultStartUrl,
     cft_channel: 'stable',
     force_cft: false,
     extra_args: [],
@@ -1092,7 +998,7 @@ function CaptureCard({
                 value={chromium.attach_port ?? 0}
                 onChange={(e) => setChromium({ attach_port: Math.max(0, Math.min(65535, Math.trunc(Number(e.target.value) || 0))) })} />
             </Field>
-            <Field label={t('settings.user_data_dir')} hint={t('settings.user_data_dir_hint')}>
+            <Field label={t('settings.user_data_dir')} hint={t(chromium.attach_port ? 'settings.user_data_dir_attach_hint' : 'settings.user_data_dir_hint')}>
               <Input
                 value={chromium.user_data_dir}
                 onChange={(e) => setChromium({ user_data_dir: e.target.value })}
@@ -1102,14 +1008,14 @@ function CaptureCard({
             <Field
               label={t('settings.start_url')}
               hint={t('settings.start_url_hint', {
-                platform: t(platformInfo().labelKey),
-                url: platformInfo().defaultStartUrl,
+                platform: t(platformInfo(draft.platform.kind).labelKey),
+                url: platformInfo(draft.platform.kind).defaultStartUrl,
               })}
             >
               <Input
                 value={chromium.start_url}
                 onChange={(e) => setChromium({ start_url: e.target.value })}
-                placeholder={platformInfo().defaultStartUrl}
+                placeholder={platformInfo(draft.platform.kind).defaultStartUrl}
               />
             </Field>
             <Toggle
@@ -1293,7 +1199,10 @@ function UpdatesCard() {
 
   const handleCheck = async () => {
     const before = useUpdaterStore.getState().pendingUpdate?.latest_tag ?? null
-    await checkNow(true)
+    if (!await checkNow(true)) {
+      toast.info(t('updates.settings.unavailable'))
+      return
+    }
     const after = useUpdaterStore.getState().pendingUpdate
     if (!after) {
       toast.success(t('updates.settings.up_to_date'))
@@ -1387,17 +1296,15 @@ function UpdatesCard() {
             )}
           </div>
         </Field>
-        {pending && (
           <div className="flex items-center justify-end">
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => openExternal(pending.html_url)}
+              onClick={() => openExternal(`${AKAGI_GITHUB_URL}/releases`)}
             >
               {t('updates.dialog.open_release')}
             </Button>
           </div>
-        )}
       </CardContent>
     </Card>
   )

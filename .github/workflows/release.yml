@@ -1,201 +1,74 @@
 name: Release
-
 on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: 'Publish a GitHub release with the artifacts'
+        description: Publish the manually reviewed maintenance build
         type: boolean
         default: false
-
+      tag:
+        description: Existing release tag (required only for publishing)
+        type: string
+        default: ''
 permissions:
-  contents: write
-
-env:
-  PYTHON_VERSION: '3.12.13'
-  PBS_RELEASE: '20260414'
-  UV_VERSION: '0.11.8'
-
+  contents: read
 jobs:
   build:
-    name: ${{ matrix.target }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14
-            target: aarch64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      # macos-14 ships a Homebrew `cargo` shim at /opt/homebrew/bin/cargo
-      # that forwards to `rustup-init`, and Homebrew's bin precedes
-      # ~/.cargo/bin in PATH — so plain `cargo <subcmd>` (including
-      # `cargo tauri build`) resolves to rustup-init and fails with
-      # "unexpected argument 'tauri'". Prepend the dtolnay-installed cargo
-      # to GITHUB_PATH so every later step sees the real binary first.
-      - name: Prefer ~/.cargo/bin over Homebrew rustup-init (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ matrix.target }}
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      # build.rs runs prost-build to compile liqi.proto and needs protoc
-      # on PATH. arduino/setup-protoc handles all three OSes.
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      # tauri-cli build is slow (~3 min). Pull the prebuilt binary via
-      # taiki-e/install-action instead — sidesteps GitHub Actions' cache
-      # scope rules (tag pushes can only read caches from the tag ref or
-      # the default branch, which here is v2 and never runs this workflow,
-      # so a cargo-install cache never hits). We previously used
-      # cargo-bins/cargo-binstall directly, but on macos-14 runners with
-      # Homebrew rustup pre-installed the `cargo` proxy resolves to
-      # rustup-init and `cargo binstall` fails; taiki-e/install-action
-      # invokes the binstall binary with an absolute path and avoids that.
-      - name: Install tauri-cli
-        uses: taiki-e/install-action@v2
-        with:
-          tool: tauri-cli@2.11.1
-
-      # Cache fetched python + uv tarballs by version triple. The runtime
-      # is shipped inside every zip, so the fetch is unconditional.
-      - name: Cache bundled runtime
-        uses: actions/cache@v4
-        with:
-          path: |
-            runtime/python/${{ matrix.target }}
-            runtime/uv/${{ matrix.target }}
-          key: runtime-${{ matrix.target }}-py${{ env.PYTHON_VERSION }}-pbs${{ env.PBS_RELEASE }}-uv${{ env.UV_VERSION }}
-
-      - name: Fetch python+uv
-        shell: bash
-        env:
-          PYTHON_VERSION: ${{ env.PYTHON_VERSION }}
-          PBS_RELEASE: ${{ env.PBS_RELEASE }}
-          UV_VERSION: ${{ env.UV_VERSION }}
-        run: bash scripts/fetch-runtime.sh "${{ matrix.target }}"
-
-      # `--no-bundle` skips the (now empty) installer phase. We keep
-      # `cargo tauri build` (vs. plain `cargo build`) so the
-      # `beforeBuildCommand` in tauri.conf.json — `npm ci && npm run
-      # build` — still runs and the frontend is rebuilt fresh.
-      - name: Build
-        shell: bash
-        env:
-          NO_STRIP: '1'
-        run: cargo tauri build --no-bundle --target ${{ matrix.target }}
-
-      - name: Package zip
-        shell: bash
-        run: bash scripts/package-zip.sh "${{ matrix.target }}"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: akagi-${{ matrix.target }}
-          path: dist/*.zip
-          if-no-files-found: error
-          retention-days: 14
-
-  # Sign every zip with the project minisign key. The in-app updater
-  # requires these signatures whenever the download went through an
-  # accelerator mirror (see src/github/signing.rs), and the trusted
-  # comment (= asset filename) stops a mirror from answering with a
-  # validly-signed *older* release. Missing secret is a warning, not a
-  # failure, so releases stay publishable during key setup — but they
-  # ship unsigned and mirror-based updates will refuse them.
-  #
-  # A separate job (not a step of `release`) so a plain
-  # workflow_dispatch — which skips `release` — still exercises the
-  # signing path end-to-end without publishing anything.
-  sign:
-    name: Sign artifacts
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      ref: ${{ github.sha }}
+      repository: ${{ github.repository }}
+  assets:
     needs: build
-    if: ${{ needs.build.result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      # Needed for minisign.pub, which the fresh signatures are verified
-      # against before anything ships.
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-      - name: Sign and verify (minisign)
-        env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${MINISIGN_SECRET_KEY:-}" ]]; then
-            # Manual builds remain useful before a personal signing key is set.
-            echo "::warning::MINISIGN_SECRET_KEY secret is not set — assets will be UNSIGNED"
-            exit 0
-          fi
-          cargo install rsign2 --locked
-          keyfile="$(mktemp)"
-          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$keyfile"
-          for f in artifacts/*.zip; do
-            name="$(basename "$f")"
-            rsign sign -W -s "$keyfile" -x "$f.minisig" -t "$name" "$f"
-          done
-          rm -f "$keyfile"
-          # Verify against the tracked public key — catches a mismatched
-          # or rotated secret before anything ships.
-          for f in artifacts/*.zip; do
-            rsign verify -p minisign.pub -x "$f.minisig" "$f"
-          done
-      - name: Upload signatures
-        uses: actions/upload-artifact@v4
-        with:
-          name: signatures
-          path: artifacts/*.minisig
-          # Empty when the secret is missing (unsigned publish is allowed).
-          if-no-files-found: warn
-          retention-days: 14
-
-  release:
-    name: Publish GitHub release
-    needs: sign
-    # Publishing requires an explicit manual choice; the default only builds.
-    if: ${{ needs.sign.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.publish_release }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      # Pulls the platform zips and the `signatures` artifact into one
-      # flat directory.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          pattern: akagi-*
+          path: release-assets
           merge-multiple: true
-      - run: ls -la artifacts
-      - uses: softprops/action-gh-release@v2
+      - name: Optional signature with the existing matching identity
+        env:
+          SIGNING_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        shell: bash
+        run: |
+          if [[ -z "$SIGNING_KEY" ]]; then
+            echo 'No signing key configured; artifacts remain unsigned.'
+            exit 0
+          fi
+          sudo apt-get update && sudo apt-get install -y minisign
+          umask 077
+          key_file=$(mktemp)
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$key_file"
+          probe_file=$(mktemp)
+          trap 'rm -f "$key_file" "$probe_file" "$probe_file.minisig"' EXIT
+          printf '%s\n' 'Akagi maintenance signing identity check' > "$probe_file"
+          minisign -S -s "$key_file" -m "$probe_file"
+          minisign -V -p minisign.pub -m "$probe_file"
+          for asset in release-assets/*; do
+            minisign -S -s "$key_file" -m "$asset" -t "$(basename "$asset")"
+            minisign -V -p minisign.pub -m "$asset"
+          done
+      - uses: actions/upload-artifact@v4
         with:
-          files: artifacts/**/*
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          # make_latest: false
+          name: maintenance-release-assets
+          path: release-assets/*
+      - name: Publish only the explicitly selected existing tag
+        if: inputs.publish_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          [[ -n "$RELEASE_TAG" ]] || { echo 'An existing tag is required'; exit 1; }
+          git check-ref-format "refs/tags/$RELEASE_TAG"
+          tag_sha=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")
+          [[ "$tag_sha" == "$GITHUB_SHA" ]] || { echo 'Tag must point to this build commit'; exit 1; }
+          gh release create "$RELEASE_TAG" release-assets/* --verify-tag --title "Akagi maintenance $RELEASE_TAG" --generate-notes

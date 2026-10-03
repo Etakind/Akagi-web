@@ -43,9 +43,10 @@ gen/
 # Packaging output (scripts/package-zip.sh)
 dist/
 
-# Bundled python + uv binaries fetched by scripts/fetch-runtime.sh.
-runtime/*
-!runtime/.gitkeep
+# Legacy local runtimes and external bots: unused, never package/commit.
+/runtime/
+/mjai_bot/
+/history/
 
 # util
 mjai_bot/mortal*

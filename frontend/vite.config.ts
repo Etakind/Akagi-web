@@ -4,11 +4,13 @@ import path from 'node:path'
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { mahgenCsp } from './scripts/mahgen-csp.mjs'
 
 const HOST = process.env.TAURI_DEV_HOST
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [mahgenCsp(), react(), tailwindcss()],
+  optimizeDeps: { exclude: ['mahgen'] },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

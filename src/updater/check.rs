@@ -1,25 +1,12 @@
-//! Pure version-check logic. No IO except the release-metadata fetch
-//! (a thin wrapper around `reqwest`, with mirror fallback); everything
-//! else is deterministic and unit-testable.
+//! Personal release metadata only; no download or installation path.
 
-use crate::config::NetworkConfig;
-use crate::github::mirror::Source;
-use crate::github::{
-    build_client, fetch_latest_release_mirrored, find_sig_asset, Asset, ReleaseJson,
-};
+use crate::github::Source;
+use crate::github::{find_sig_asset, Asset, ReleaseJson};
 use anyhow::{Context, Result};
 use semver::Version;
 use serde::Serialize;
 
-/// Per-app version metadata sent to the frontend. The shape mirrors what
-/// the `<UpdateDialog />` needs to render: human-readable strings plus
-/// the bytes we need to actually start a download (`asset_url`, plus the
-/// optional `asset_digest_sha256` for integrity verification).
-///
-/// Serialize-only by design: the frontend never hands this back.
-/// `apply_update` reads the copy stashed in `AppState::pending_update`,
-/// because `asset_url` / `sig_url` / `meta_source` are security policy
-/// inputs and a compromised webview must not get to assert them.
+/// Read-only personal release metadata for display and manual acquisition.
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateInfo {
     /// Version we're running right now (`env!("CARGO_PKG_VERSION")`).
@@ -31,14 +18,11 @@ pub struct UpdateInfo {
     /// Markdown release notes from `release.body`. Empty string if the
     /// release omits a body.
     pub body: String,
-    /// Canonical upstream releases page. Deliberately NOT taken from the
-    /// release metadata: this URL is the "update manually instead" escape
-    /// hatch shown when signature verification refuses a mirror-tainted
-    /// download, so a mirror must not get to choose where it points.
+    /// Canonical personal release page, not chosen by response metadata.
     pub html_url: String,
     /// Filename of the matched asset for this platform.
     pub asset_name: String,
-    /// `browser_download_url` — used by the apply step to actually fetch.
+    /// Asset metadata for display; never fetched by the application updater.
     pub asset_url: String,
     /// Asset size in bytes. May be 0 if GitHub omits it (rare in practice).
     pub asset_size: u64,
@@ -49,9 +33,7 @@ pub struct UpdateInfo {
     /// asset, when the release ships one. CI signs every release newer
     /// than v3.5.0; `None` marks an older, unsigned release.
     pub sig_url: Option<String>,
-    /// Where the release *metadata* came from. Mirror-sourced metadata
-    /// (including its digest field) is untrusted, so `apply_update`
-    /// insists on a valid signature in that case.
+    /// Direct personal repository metadata only.
     pub meta_source: Source,
 }
 
@@ -64,11 +46,10 @@ pub fn triple_for_current_platform() -> Option<&'static str> {
 }
 
 fn triple_for(os: &str, arch: &str) -> Option<&'static str> {
-    match (os, arch) {
-        ("macos", "aarch64") => Some("macos-arm64"),
-        ("windows", "x86_64") => Some("windows-x64"),
-        _ => None,
-    }
+    crate::build_targets::all()
+        .iter()
+        .find(|t| t.os == os && t.arch == arch)
+        .map(|t| t.slug.as_str())
 }
 
 /// Canonical asset filename our `scripts/package-zip.sh` produces for a
@@ -120,13 +101,21 @@ pub fn parse_sha256_digest(raw: &str) -> Option<String> {
 /// via mirrors per `net`), find an asset that matches our platform, and
 /// compare versions. Returns `Ok(None)` (not an error) for the common
 /// "we're already up to date" path and for unsupported platforms.
-pub async fn check_for_update(repo: &str, net: &NetworkConfig) -> Result<Option<UpdateInfo>> {
+pub async fn check_for_update(repo: &str) -> Result<Option<UpdateInfo>> {
     let Some(triple) = triple_for_current_platform() else {
         return Ok(None);
     };
 
-    let client = build_client()?;
-    let (release, source) = fetch_latest_release_mirrored(&client, repo, net).await?;
+    if repo != "Etakind/Akagi" {
+        anyhow::bail!("Only maintenance-fork updates are supported");
+    }
+    let client = crate::network::client(crate::network::Purpose::ReleaseMetadata)?;
+    let release: ReleaseJson = client.get("https://api.github.com/repos/Etakind/Akagi/releases/latest")
+        .header("Accept", "application/vnd.github+json").send().await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|_| anyhow::anyhow!("Maintenance releases unavailable. Open https://github.com/Etakind/Akagi/releases in your browser."))?
+        .json().await.context("invalid release metadata")?;
+    let source = Source::Direct;
     build_update_info(env!("CARGO_PKG_VERSION"), triple, repo, &release, source)
 }
 
@@ -185,19 +174,14 @@ mod tests {
 
     #[test]
     fn triple_for_known_triples() {
-        assert_eq!(triple_for("linux", "x86_64"), None);
+        assert_eq!(triple_for("linux", "x86_64"), Some("linux-x64"));
         assert_eq!(triple_for("macos", "aarch64"), Some("macos-arm64"));
         assert_eq!(triple_for("windows", "x86_64"), Some("windows-x64"));
     }
 
     #[test]
     fn triple_for_unsupported_returns_none() {
-        for (os, arch) in [
-            ("linux", "aarch64"),
-            ("macos", "x86_64"),
-            ("windows", "aarch64"),
-            ("freebsd", "x86_64"),
-        ] {
+        for (os, arch) in [("windows", "aarch64"), ("freebsd", "x86_64")] {
             assert!(triple_for(os, arch).is_none(), "{os}/{arch}");
         }
     }
@@ -376,7 +360,7 @@ mod tests {
             "macos-arm64",
             "owner/repo",
             &release,
-            Source::Mirror,
+            Source::Direct,
         )
         .unwrap()
         .expect("should detect newer version");
@@ -384,7 +368,7 @@ mod tests {
             info.sig_url.as_deref(),
             Some("https://example.com/akagi-3.0.12-macos-arm64.zip.minisig")
         );
-        assert_eq!(info.meta_source, Source::Mirror);
+        assert_eq!(info.meta_source, Source::Direct);
     }
 
     #[test]
