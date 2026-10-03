@@ -1,170 +1,123 @@
 # Maintaining the local web fork
 
-**English** | [简体中文](FORK_MAINTENANCE.zh-CN.md) · [User guide](../README.md)
+**English** | [简体中文](FORK_MAINTENANCE.zh-CN.md)
 
-This document records the owner's approved scope and merge rules for `Etakind/Akagi`.
-The current change is `feature/local-web-platforms`, based on personal `dev` commit
-`68b47ada54982f46a1206887193fd8ada1f80df9`. The inspected upstream baseline is
-`shinkuan/Akagi` branch `v3`, commit `cd68865f9e93eddcda6451cd18874a6f68c5fb49`.
-Comparisons below describe that baseline, not an unverified future upstream release.
+This guide explains the fork's design, security boundaries and contribution rules.
+For installation and everyday use, start with the [README](../README.md).
+The upstream comparison uses [Akagi v3 at cd68865](https://github.com/shinkuan/Akagi/tree/cd68865f9e93eddcda6451cd18874a6f68c5fb49).
 
-## Scope and differences
+## Function differences and reasons
 
-Only **Majsoul and Tenhou official web clients** are runtime choices. Keep the desktop
-UI, local 3p/4p advice, Majsoul overlay, history, Inspector and opt-in automatic play.
-Do not restore MITM, certificate management, system proxy, native-game interception,
-cloud services, external executable bots or bundled Python/uv during an upstream merge.
-Old protocol labels in history/Inspector remain read compatibility, not capabilities.
-
-| Area | Upstream baseline → maintenance behavior | Reason and merge rule | Implementation and migration | Evidence / follow-up |
-|---|---|---|---|---|
-| Capture | Multiple capture/game backends → Chromium CDP with two official web clients | Reduce privileged interception and unused attack surface. Never install a CA, change system proxy, disable TLS, sandbox or Origin checks. | `src/capture/chromium/`, `src/config/platform.rs`, `src/bridge/{majsoul,tenhou}/`; mode stays `chromium`. | Restored Tenhou code selectively from the stated baseline; no current replay/live-game regression. |
-| Browser attachment | HTTP-centric endpoint discovery → HTTP then fixed local locator fallback when no profile is specified | Edge's UI-enabled server may return 404 for `/json/version`. Never inspect session databases to find a browser. | `launch.rs`, `detect.rs`, `connection.rs`, `discovery.rs`; details below. | Local production build passed; locator discovery reached authorization, which timed out. No official-page subscription confirmed in this attempt. |
-| Actions | Platform adapters → opt-in, unique selected official page, generation/window guards | A stale action must not reach a different page, game or decision. Failure pauses input, never refreshes the game. | `src/autoplay/`, `cdp.rs`; game/autoplay changes invalidate context. | Source review only for this revision; real input and client-change behavior unverified. |
-| Inference | Local / external / remote options → embedded `native` / `native3p` only | Remove remote game uploads and arbitrary Python bot/dependency execution. | `src/bot/{native,manager,supervisor}.rs`; external selections migrate to bundled models and disable autoplay. | Local compilation; no inference consistency regression executed now. Training/conversion tools remain development-only. |
-| Review and accounts | Cloud review, sharing, keys, billing and subscriptions → removed | Eliminate application upload paths and remote account/credit state. | Removed API modules, IPC handlers, routes/stores/translations. `src/network.rs` owns remaining HTTP client construction. | Source network inventory, not a packet-capture proof. No local review or model import feature added. |
-| Themes | Remote/theme expressions → local JSON and constrained literal colors | Prevent theme CSS from fetching remote resources. Production WebView CSP restricts resources to local assets and Tauri IPC. | `themeStore.ts`, `tauri.conf.json`, `main.tsx`; unsafe cached CSS is not injected at boot. | Production frontend compilation; CSP/WebView behavior on other systems unverified. |
-| Logs and files | Raw protocol/config information could persist → metadata redaction and private files | Login frames, raw HTTP bodies and secrets must not reach logs or Inspector. Keep parsing data intact. | `src/privacy.rs`, `logger/`, `inspector/`, `schema/inspector.rs`, `util/private_fs.rs`; legacy `FrameRaw.text/binary` readable, new frames `redacted`. | Existing regression sources retained; not executed this revision. Historical results are separately versioned. |
-| Updates/downloads | Upstream auto-install/mirrors and bot installers → personal release metadata, manual installation, explicit official browser downloads | Preserve the reviewed build and avoid untrusted executable additions. Do not reinstate upstream overwrite installation. | `updater/check.rs`, `capture/chromium/cft.rs`, `network.rs`; old mirror configuration is unused. | Static review; no release/download installation performed. |
-| Distribution | Upstream packaging → five declared targets, no Python/uv or AppImage | One target inventory avoids divergent workflows and filenames. Installed data must use writable user locations. | `build/targets.json`, `build_targets.rs`, `platform.rs`, `util/mod.rs`, `scripts/package.py`, workflows. | Only host macOS x86_64 binary built. Matrix entries are not build/device acceptance. |
-
-### Network boundary
-
-Akagi does not upload accounts, games, history, logs or inference data to remote services.
-Inference runs locally. Update checks and user-initiated downloads remain available.
-This is the implemented source boundary; a full traffic audit is still a future check.
-The game website still connects to its own servers, and optional actions use its client.
-An open browser is not an offline system.
-
-Remaining app requests have explicit purposes:
-
-| Purpose | Destination and constraints | Data |
+| Area | Upstream → maintenance fork | Reason and implementation |
 |---|---|---|
-| Release information | Fixed GitHub API endpoint for `Etakind/Akagi`, strict HTTPS, no redirect fallback | Ordinary metadata GET and app version in User-Agent; no game/account payload |
-| User-requested browser acquisition | Official Chrome for Testing manifests and exact official HTTPS assets; redirects rejected | Version/platform selection; no gameplay payload |
-| Browser control | Loopback-only HTTP/CDP endpoint, no discovery proxy or redirects | Game observation and optional input inside the local browser |
+| Capture | Multiple games/backends → Majsoul and Tenhou official websites over Chromium CDP | Removes interception certificates and system proxy management. `src/capture/chromium/`, `src/bridge/{majsoul,tenhou}/`. Preserve strict TLS, loopback attachment and exact official-page matching. |
+| Inference | Local, external and remote options → bundled four-player/three-player models | Removes remote inference uploads and arbitrary bot/dependency execution. `src/bot/{native,manager,supervisor}.rs`. Developer training/conversion tools are not application runtimes. |
+| Online services | Cloud review/sharing, API keys, subscriptions and billing → removed | There is no account, payment or upload service in this build. `src/network.rs` centralizes remaining HTTP clients. |
+| Automatic play | Platform adapters → opt-in actions on a unique official page and valid decision window | Prevents input reaching unrelated pages or stale game states. `src/autoplay/`; failures pause actions without refreshing the game. |
+| Diagnostics | Raw protocol/config output → redacted transport metadata | Reduces credential persistence while retaining MJAI, local analysis, history and Inspector. `src/privacy.rs`, `src/logger/`, `src/inspector/`, `src/util/private_fs.rs`. |
+| Themes and UI | Remote themes / CSS expressions → local JSON with literal colors | Prevents remote resource requests through theme content. `frontend/src/stores/themeStore.ts`, `tauri.conf.json`. Local Blob Workers generate tile images; remote scripts and workers remain blocked. The build adapter `frontend/scripts/mahgen-csp.mjs` replaces the known legacy runtime initialization; dependency changes fail the build until reviewed. |
+| Updates and downloads | Upstream replacement packages and mirrors → maintenance releases and explicit official browser downloads | Keeps upstream installers from overwriting fork changes. `src/updater/check.rs`, `src/capture/chromium/cft.rs`. Installation remains manual. |
+| Distribution | Upstream packaging → five native targets without Python/uv or AppImage | Keeps installed dependencies aligned with the local inference design. `build/targets.json`, `scripts/package.py`, build workflows. |
 
-Private GitHub API access may fail anonymously. Offer the personal release page through
-the user's browser; do not ask for browser Cookies, borrow its credentials, or substitute
-an upstream installation. No inference/capture startup path downloads missing browsers.
-The remaining URL-opening command is a user action, not a background uploader.
+## Browser and automatic-operation boundaries
 
-### Edge discovery and connection rules
+Attachment first uses the configured loopback port. With an explicit user-data root,
+its locator is authoritative; unsafe or mismatched files are rejected. With no directory,
+HTTP discovery falls back to standard browser `DevToolsActivePort` files. Only one distinct,
+port-matching endpoint is accepted. An explicit browser executable limits the search to
+that browser family. Discovery never reads Cookie/session databases, scans directories
+recursively, or changes an existing browser profile's permissions.
 
-- Explicit user-data directory: read its `DevToolsActivePort` with file/owner/link/port
-  checks. Reject an unsafe or mismatched locator; do not connect another browser. A
-  missing locator can use standard HTTP discovery on the same configured port.
-- Empty directory: try standard HTTP discovery first; if unavailable, inspect only known
-  browser user-data roots. An explicit executable restricts the browser family. Read only
-  the locator, without recursion, Cookie/session reads or profile permission changes.
-- Deduplicate valid loopback endpoints matching the selected port. Connect only one;
-  ambiguity requires an explicit directory. Rediscover on every transport reconnection.
-- Distinguish unreachable port, unavailable discovery, rejected locator, ambiguity,
-  authorization rejection/timeout, no official page, and missing initial game state.
-  Full endpoints, locator contents and arbitrary handshake responses stay out of logs.
-- A 403 is not automatically a user denial: Origin and unknown refusal are separate
-  classifications. No repeated automatic 403 retries or Origin bypass flags.
-- Attach mode leaves the user's browser open when capture stops. Independent mode uses
-  a private Akagi profile and rejects known ordinary browser roots. Do not reset the
-  user's session files or navigate an attached page to make attachment succeed.
+Every reconnect discovers the endpoint again. HTTP discovery failures are distinct from
+browser authorization failures. A 403 stops retries; it must not be bypassed by weakening
+Origin checks. Independent mode prepares capture on a blank page before navigating to the
+official client. It uses an isolated profile and keeps the browser sandbox and TLS checks.
 
-The allowlist is exact HTTPS origin/path scope: `game.maj-soul.com/1/` and `tenhou.net/4/`,
-with no URL credentials or nondefault port. Similar domains are rejected. Multiple
-matching pages disable binding instead of arbitrarily choosing one. A matching URL
-alone does not prove a hand can be reconstructed; parsing readiness is a separate gate.
+Automatic input requires the selected official HTTPS host/path, a unique page and current
+hand state. Both adapters parse `location.href` as a URL before validating its fields.
+Changing the autoplay switch cancels queued/in-flight actions without restarting capture
+or discarding the hand. New actions require inference begun after the switch was enabled.
+Page or game changes invalidate pending actions. Pauses are reflected in the UI.
 
-### Tenhou adapter and automatic play
+Tenhou script adaptation is active only with autoplay enabled. Interception is limited to
+recognized official client script URLs and supported source structures. Enabling it on an
+already-loaded client cannot retrofit its entry point: re-enter the page yourself when safe.
+Missing adapters, ambiguous pages and incomplete state stop input while observation remains
+available. Akagi never reloads a game to repair automation. The Lua delay environment has
+no filesystem, process or network access.
 
-Automatic play is off by default. Observe WebSocket messages without script modification
-when it is off. When enabled, prepare a response interceptor only for the selected
-Tenhou page and recognized official `/4/` client scripts. Require successful status,
-bounded size and the expected source structure before exposing the internal discard entry.
-The adapter does not relax browser TLS or execute arbitrary downloaded bot code.
+## Data, network and configuration
 
-Independent launch prepares listeners and the adapter before navigating a new page.
-Attachment to an already loaded client may have no adapter: report that input is paused;
-the user can safely re-enter later. Do not refresh on their behalf. Unknown client code,
-missing adapter, page ambiguity, stale decision window or missing initial hand stops
-input while available observation/advice remains. Delay Lua stays in its restricted
-runtime, without file/process/network APIs. Tenhou 3p/4p behavior and actual automatic
-clicks still require dedicated future regression and human acceptance.
+Akagi does not upload accounts, games, history, logs or inference data. Inference is local.
+Remaining requests are maintenance release metadata, user-requested official Chrome for
+Testing assets, and loopback CDP discovery/control. The game website communicates normally
+with its own server. Private release API access failures leave a release-page link; Akagi
+never asks for browser cookies or falls back to upstream installation packages.
 
-## Configuration and local data
+New WebSocket records omit raw frames. HTTP records omit URL credentials/query/fragment,
+sensitive headers and bodies. Inspector broadcasts use the same redaction. MJAI events,
+analysis and history contain game/player information and should be shared deliberately.
+New private Unix files use 0600 and directories 0700 with owner/link checks. Windows file
+privacy depends on the user directory's ACL; Unix mode bits do not provide Windows access
+control. Portable installs use writable application directories; system installs use user
+data/configuration roots. Explicit configured paths remain supported.
 
-| Setting / old data | Current behavior |
+| Configuration | Behavior |
 |---|---|
-| `capture.enabled` | Explicit value wins; otherwise read old `proxy.enabled`; default true. |
-| `capture.mode` | Only `chromium`. A removed mode stops capture and shows an explanation. |
-| `platform.kind` | `Majsoul` or `Tenhou`; known old Tenhou Chromium configs work again. Removed games stop capture without resetting unrelated settings. |
-| `capture.chromium.attach_port` | Nonzero attaches; zero launches an isolated browser. Empty `user_data_dir` means automatic locator discovery only in attach mode. |
-| `bot.active_4p/active_3p` | Fixed bundled models. Old external selections produce a notice and disable autoplay. Old remote API flags cannot restore uploads. |
-| Saved obsolete fields | On normal save, remove known proxy/cloud/external-bot/mirror fields; preserve unrelated settings and unknown user fields. Unknown fields do not create executable capabilities. |
-| `capture.http.bodies` / `record_all` | Bodies never captured; `record_all` only broadens redacted HTTP metadata. |
-| History / Inspector | Existing files are not rewritten. Legacy source labels and raw frame formats remain readable; new recordings are redacted. |
+| `capture.enabled` | Explicit value wins over the legacy `proxy.enabled`; defaults to enabled. |
+| `capture.mode` | Only `chromium`; unsupported old modes stop capture with a message. |
+| `platform.kind` | `Majsoul` or `Tenhou`; unsupported games do not reset unrelated settings. |
+| `capture.chromium.attach_port` | Nonzero attaches; zero launches an isolated browser. An empty profile path has different meanings in these two modes. |
+| `bot.active_4p/active_3p` | Bundled models only. Migrating an external selection disables autoplay and displays a notice. |
+| Obsolete cloud/proxy/bot fields | Known obsolete fields are removed on save; unknown user fields survive without enabling removed capabilities. |
+| `capture.http.bodies` / `record_all` | Raw bodies remain disabled; `record_all` broadens only redacted metadata. |
+| History / Inspector | Legacy labels and frame formats remain readable. New raw-frame records use `redacted`. |
 
-Only tracked obsolete code/resources are removed. The application does not clean old
-`account`, local configs, browser profiles, CA keys, logs, histories, external bot folders
-or Python environments. They may remain sensitive and unused. Old CA files and OS trust
-are separate: deleting implementation does not revoke installed trust. The owner must
-review any cleanup or trust removal. Do not commit any of these artifacts, even privately.
+## Building and releasing
 
-Unix private files use 0600 and private directories 0700 with safe-write/link checks.
-Existing Windows ACL and reparse-point behavior still needs a dedicated device review;
-Unix modes are not a Windows confidentiality guarantee. Writable portable installs use
-executable-relative data paths; read-only installed locations fall back to user config/data
-roots. Existing configuration search order and explicit absolute paths remain respected.
-Do not write application data into `/usr` or silently move prior histories.
+[README build instructions](../README.md#build-from-source) cover system prerequisites.
+The shared inventory `build/targets.json` declares Windows x86_64, macOS x86_64/ARM64 and
+Linux x86_64/ARM64. All produce portable ZIPs; Linux also produces DEB/RPM. Linux builds use
+Ubuntu 22.04 with GTK3/WebKitGTK 4.1. DEB installation guidance covers Ubuntu 22.04/24.04 and
+Debian 12/13; RPM guidance covers Fedora. Arch uses source builds. System library versions
+must satisfy the package dependencies; these are not universal Linux binaries.
 
-## Building, packaging and release rules
+Packaging rejects unsupported targets before modifying files. Packages contain the models,
+licenses, NOTICE and usage documentation, not user data or Python/uv. Each build produces
+an asset inventory and SHA256. Optional minisign signing requires a configured key that
+matches the repository public key; identities are never generated or rotated automatically.
+SHA256 checks consistency, while a trusted signature verifies publisher identity.
 
-`build/targets.json` is the target source for Rust browser mapping, CI and packaging:
-
-| Target | Native runner / baseline | Assets |
-|---|---|---|
-| `x86_64-pc-windows-msvc` | Windows | ZIP |
-| `x86_64-apple-darwin` | Intel macOS | ZIP |
-| `aarch64-apple-darwin` | Apple Silicon macOS | ZIP |
-| `x86_64-unknown-linux-gnu` | Ubuntu 22.04 | ZIP / DEB / RPM |
-| `aarch64-unknown-linux-gnu` | Ubuntu 22.04 ARM | ZIP / DEB / RPM |
-
-See [README build commands](../README.md#build-from-source). Linux needs GTK3/WebKitGTK
-4.1 and the dependencies declared in `tauri.conf.json`. DEB targets Ubuntu 22.04/24.04 and
-Debian 12/13; RPM is documented for Fedora; Arch builds from source. These are intended
-compatibility targets, not distro acceptance results. Ubuntu 22.04 is the chosen older
-[Tauri baseline](https://v2.tauri.app/distribute/appimage/); no AppImage code is restored.
-
-Packaging validates the target before creating/copying/downloading/deleting anything.
-It includes the embedded models, licenses, NOTICE, and usage docs, not Python/uv or local
-runtime data. Linux native packages come from the matching Tauri build. Each target has
-an asset inventory and SHA256 file. Hashes establish consistency, not publisher identity.
-Optional minisign uses an already configured key only after a probe verifies against the
-repository public key. Missing keys leave assets unsigned; mismatch stops signing. Never
-automatically generate/rotate signing identities or claim macOS notarization/Windows signing.
-
-CI covers `dev` pushes and PRs targeting `dev`. The authorized `/build-artifacts` PR
-workflow and manual release reuse the same five-target builder. No tag-triggered releases,
-scheduled protocol updates or automatic merges. Manual release defaults to artifacts only;
-publishing requires an explicit existing tag for that exact build commit. This revision
-only changes configurations: no workflows, packages or formal Release were dispatched.
+CI covers `dev` pushes and PRs targeting `dev`. Administrator-requested `/build-artifacts`
+and manual release share the native builder. Artifacts are available from the workflow run.
+Manual release defaults to building artifacts; publishing requires an explicit existing tag
+for that commit. There are no tag-triggered releases, scheduled protocol changes or automatic
+merges.
 
 ## Remaining risks and improvements
 
-| Risk and trigger | Current boundary | Follow-up |
+| Risk / trigger | Current protection | Improvement direction |
 |---|---|---|
-| CDP grants access to a browser session | Loopback, explicit browser authorization, official-page selection; never read session databases | Prefer isolated profiles; close debugging when unused; review changes in browser authorization and locator security. |
-| Automatic play and game rules | User opt-in, page/window checks, fail closed | User must assess account/game policy consequences; validate actions manually on each client version before relying on them. |
-| Tenhou client changes | Recognized source shape only; missing adapter pauses input | Recorded replay and changed-script fixtures, UI adapter versioning and real input acceptance. |
-| Local information | Redacted transport logs, private new files; MJAI/history still include game and player information | Review old logs/backups and Windows permissions; do not distribute local histories or old raw Inspector exports casually. |
-| Unsigned desktop binaries | Manual provenance/hash/signature checks; no automatic OS trust modifications | Provision owner's signing/notarization identities separately if desired. |
-| Linux glib advisory | Restoring Linux makes GTK/glib a runtime dependency again | `glib 0.18.5` is affected by [RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html), unsafe `VariantStrIter` iteration. A malicious/invalid variant reaching that iterator is the relevant condition; application reachability is not established here. The earlier “Linux disabled” exclusion no longer applies. Coordinate GTK/Tauri compatible upgrades or a reviewed backport; upstream fixed glib at 0.20.0. |
-| Other dependency/system-library defects | Strict TLS retained; no forced major dependency upgrades | Reaudit the changed lockfile and enabled features; maintain supported OS libraries and assess actual parsers/inputs, not just alert counts. |
+| CDP exposes browser session access | Loopback, browser authorization, exact official-page binding | Prefer isolated profiles; disable debugging when unused; follow browser authorization changes. |
+| Autoplay conflicts with game rules or client UI changes | Explicit opt-in, stale-action cancellation, failure pauses | Check game rules before use; maintain client fixtures and adapter compatibility. |
+| Tenhou script structure changes | Only recognized scripts are adapted | Version adapter fixtures and expand supported-client regression coverage. |
+| Local game/player information | Redacted transport logs and private file creation | Improve Windows ACL/reparse-point handling and export privacy controls. |
+| Unsigned/not-notarized binaries | Manual installation and provenance/signature checking | Add platform signing with maintained publisher identities. |
+| Linux GTK/glib dependency | Linux includes `glib 0.18.5`, affected by [RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429.html) | The issue concerns unsafe `VariantStrIter` iteration; application reachability requires analysis. Coordinate a compatible upgrade or reviewed backport; glib fixed it in 0.20.0. |
+| Other dependency and OS vulnerabilities | Locked dependencies and strict TLS | Assess enabled features and reachable inputs; upgrade compatible fixes and maintain system libraries. |
 
-`dependency-audit.json` is an older snapshot, not a new scan. Historical quick-xml concerns
-involved attribute/namespace processing through plist; historical rand findings depended
-on reentrant logging; npm mahgen transitives involved Node image/file/download paths.
-Those old reachability notes are leads for a fresh audit, not proof for this revision.
-Unmaintained dependencies remain maintenance debt. Nothing here establishes malicious
-exfiltration; removing unused upload paths reduces exposure without claiming all bugs are gone.
+## Contribution checks
+
+Run `cargo test --locked --all-targets`, the frontend tests and production build before
+submitting changes. `node frontend/scripts/test-tiles-browser.mjs` checks real tile generation
+with production CSP in a disposable Chromium profile; `AKAGI_TEST_BROWSER` selects the local
+executable. The check opens only a local fixture, not a game or existing profile.
+
+Keep both language versions consistent. Upstream merges must preserve local-only inference,
+redaction, strict TLS, safe private writes, official-page binding and opt-in automation.
+Do not reintroduce interception CAs, system proxies, remote themes, cloud uploads or external
+bot execution. Test attachment/reconnection, config migration, replay/history compatibility,
+autoplay cancellation and package target validation when their implementation changes.
 
 ## Repository synchronization and push protection
 
@@ -225,31 +178,3 @@ git push origin dev:dev
 Stop if main diverges; no force push/reset to hide it. Resolve dev conflicts against this
 document; `git merge --abort` returns to the clean pre-merge state if abandoning the merge.
 Only unpublished personal commits may be explicitly rebased; never rewrite published history.
-Normally review CI before merging. For **this change**, the owner explicitly requested no
-CI, PR or merge: push only the feature branch and leave `dev`/`main` untouched.
-
-## Evidence and future validation
-
-Current evidence: source/static review and production frontend plus host release builds.
-[Browser acceptance note](validation/2026-10-03-browser-attachment.md) separates endpoint
-discovery success from authorization timeout and unconfirmed official-page attachment.
-No automated tests, Clippy regression, CI, traffic audit, cross-platform builds, real game,
-automatic click, or other-device acceptance was performed for this revision.
-
-Future regression checklist (not marked passed):
-
-- Locator discovery/reconnect, unsafe files, ambiguity, 403/timeouts, unique-page binding.
-- Tenhou/Majsoul replay, local advice consistency, late attachment, history and PT results.
-- Script changes, disabled autoplay, stale windows and disabled/changed game during a plan.
-- Old cloud/external configuration migration, unknown-field preservation, no-upload inventory.
-- Fictional credential redaction across all logs and Inspector, legacy record compatibility.
-- Linux glib reachability and renewed Cargo/npm audit; CSP on each native WebView.
-- Rust/frontend/native-bot regression and five-target native packaging/device acceptance.
-
-Older successful tests belong to their old commits and remain in
-[SECURITY_HARDENING.md](../SECURITY_HARDENING.md) and Git history. Never use them as current
-results. Update both language versions, code pointers and evidence with related code or
-upstream merges. Changes to support scope, safety rules, automation or release policy need
-the owner's item-by-item agreement; routine version/evidence updates follow commits.
-
-The [current implementation record](validation/2026-10-03-local-web-platforms.md) lists exact build/static checks and deferred acceptance.

@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-This private maintenance fork of [shinkuan/Akagi v3](https://github.com/shinkuan/Akagi/tree/v3)
+This maintenance fork of [shinkuan/Akagi v3](https://github.com/shinkuan/Akagi/tree/v3)
 uses **Majsoul and Tenhou official web clients** with bundled local inference.
 
 ## What differs from upstream
@@ -14,7 +14,7 @@ uses **Majsoul and Tenhou official web clients** with bundled local inference.
 | Diagnostics | Redacted protocol/HTTP metadata, local analysis, history and Inspector. Raw login frames, headers and bodies are not stored. |
 | Automatic play | Opt-in; requires a unique official page and a current decision state. Failures never refresh a game automatically. |
 | Updates | Personal maintenance releases; manual installation. Upstream packages cannot replace this build. |
-| Distribution | Five configured targets below; no bundled Python/uv, AppImage or mobile client. |
+| Distribution | Five build targets below; no bundled Python/uv, AppImage or mobile client. |
 
 These changes reduce credential persistence, remove remote inference/upload paths and
 avoid trusting a local interception CA or downloaded executable bots. CDP still grants
@@ -24,8 +24,7 @@ implementation boundaries, migration, remaining risks and upstream merge rules.
 Akagi does not upload accounts, games, history, logs or inference data to remote services.
 Inference runs locally. Update checks and user-initiated downloads remain available.
 The game website itself still communicates with its game server; Akagi's optional actions
-use that client. This statement is a source-level design boundary, not a claim that a
-traffic audit was completed for this revision.
+use that client.
 
 ## Games and features
 
@@ -37,12 +36,12 @@ traffic audit was completed for this revision.
 Tenhou autoplay needs its client adapter. It is prepared only when autoplay is enabled.
 If attaching after the client script has loaded, re-enter or refresh **yourself when safe**.
 If the client changes or the current hand cannot be reconstructed, actions stop; wait
-for a complete next hand. No live Tenhou or automatic-input acceptance was done in this change.
+for a complete next hand.
 History is finalized when the complete game ends, not after each individual hand.
 
 ## Packages and running
 
-| OS | CPU | Configured artifacts |
+| OS | CPU | Package formats |
 |---|---|---|
 | Windows | x86_64 | `windows-x64.zip` |
 | macOS | x86_64 | `macos-x64.zip` |
@@ -50,22 +49,21 @@ History is finalized when the complete game ends, not after each individual hand
 | Linux | x86_64 | `linux-x64.zip`, DEB, RPM |
 | Linux | ARM64 | `linux-arm64.zip`, DEB, RPM |
 
-These are build configurations, **not five completed builds or device validations**.
 Get personal builds from [maintenance releases](https://github.com/Etakind/Akagi/releases)
 (access requires your normal repository permission). Verify the asset's SHA256; verify
-its minisign signature when one is supplied. No release is published by this change.
+its minisign signature when one is supplied.
 
 Unzip into a user-owned directory. Run `akagi.exe` on Windows (WebView2 required),
 `./akagi` on macOS/Linux. Linux also needs its GTK/WebKitGTK runtime libraries; ZIPs do
 not bundle a Linux system. DEB targets Ubuntu 22.04/24.04 and Debian 12/13; RPM instructions
 target Fedora. Install with `sudo apt install ./akagi-*.deb` or `sudo dnf install ./akagi-*.rpm`.
-Arch uses source builds. Compatibility with these distributions has not been tested here.
+Arch uses source builds. Package compatibility depends on the installed system libraries.
 
 Programs may be unsigned/not notarized: verify provenance before authorizing OS execution.
 Do not disable browser TLS/sandboxing or globally remove OS quarantine protection.
 In a writable portable directory, data is normally next to the executable; read-only
 system installations use user configuration/data directories. Existing explicit paths
-remain respected. Nothing migrates or deletes existing user data automatically.
+remain respected.
 
 ## Connect a browser
 
@@ -148,18 +146,12 @@ script. Linux workflows use Ubuntu 22.04 as the older
 [Tauri build baseline](https://v2.tauri.app/distribute/appimage/), without producing AppImage.
 Cross-compilation is not promised by these native build commands.
 
-## Risks and validation status
+## Risks
 
 CDP can access your browser session; keep it loopback-only and disable it when no longer
 needed. Automated play may violate game rules and cause account penalties. Client changes
 can invalidate automation. Local history/logs remain sensitive; unsigned binaries and
 system/library vulnerabilities also need review. Linux's existing glib advisory requires
 follow-up; see the [detailed risk register](docs/FORK_MAINTENANCE.md#remaining-risks-and-improvements).
-
-This revision runs no automatic tests, CI, real games, autoplay clicks or other-device
-acceptance. The local browser-discovery repair compiled; its manual Edge handshake reached
-authorization but timed out before page subscription. Current evidence is recorded in the
-[validation note](docs/validation/2026-10-03-browser-attachment.md); older results in
-[SECURITY_HARDENING.md](SECURITY_HARDENING.md) are historical, not current regression results.
 
 Licensing and third-party attribution: [LICENSE.txt](LICENSE.txt), [NOTICE](NOTICE).

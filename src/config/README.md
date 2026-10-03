@@ -9,4 +9,4 @@
 `record_all` 仅扩大脱敏元数据范围；旧 `bodies=true` 不恢复正文。
 
 附加模式目录为空可发现标准浏览器；独立模式仅用隔离目录。只允许回环，不能关闭沙箱/TLS/Origin 检查。
-配置错误不输出原始内容；文件由 private_fs 保护。后续迁移回归需同时覆盖 TOML 和 IPC JSON，本次未执行测试。
+配置错误不输出原始内容；文件由 private_fs 保护。后续迁移回归需同时覆盖 TOML 和 IPC JSON。

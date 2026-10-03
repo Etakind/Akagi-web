@@ -1,6 +1,6 @@
 name: CI
 
-# Local web maintenance: reviewed five-target matrix. Not dispatched during implementation.
+# Local web maintenance: shared five-target build matrix.
 on:
   pull_request:
     branches: [dev]
