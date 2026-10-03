@@ -400,6 +400,7 @@
     "detect_status_detected": "Detected: {{paths}}",
     "user_data_dir": "User data dir",
     "user_data_dir_hint": "Leave blank to use the default Akagi profile under your config dir.",
+    "user_data_dir_attach_hint": "Attach mode: leave blank to discover standard browser directories. Otherwise select the existing browser user-data root; Akagi reads only its debugging locator.",
     "start_url": "Start URL",
     "start_url_hint": "Default for {{platform}}: {{url}}",
     "force_cft": "Use Chrome for Testing",

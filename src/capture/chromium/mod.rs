@@ -69,12 +69,19 @@ impl CaptureBackend for ChromiumBackend {
         if self.cfg.attach_port != 0 {
             let profile = (!self.cfg.user_data_dir.is_empty())
                 .then(|| std::path::Path::new(&self.cfg.user_data_dir));
+            let configured_executable =
+                (!self.cfg.executable.is_empty()).then(|| PathBuf::from(&self.cfg.executable));
             let attached = async {
                 let mut retries = 0u8;
                 loop {
                     // Re-read the locator on every attempt; a browser restart
                     // can change its endpoint while retaining the same port.
-                    let endpoint = launch::existing_endpoint(self.cfg.attach_port, profile).await?;
+                    let endpoint = launch::existing_endpoint(
+                        self.cfg.attach_port,
+                        profile,
+                        configured_executable.as_ref(),
+                    )
+                    .await?;
                     let bridges = Arc::new(FlowBridges::<cdp::FlowKey>::new(
                         ctx.session.clone(),
                         ctx.platform,

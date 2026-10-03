@@ -416,6 +416,9 @@ function ChromiumConfigStep({
         <Input type="number" min={0} max={65535} step={1} value={chromium.attach_port ?? 0}
           onChange={(e) => setChromium({ attach_port: Math.max(0, Math.min(65535, Math.trunc(Number(e.target.value) || 0))) })} />
       </Field>
+      <Field label={t('settings.user_data_dir')} hint={t(chromium.attach_port ? 'settings.user_data_dir_attach_hint' : 'settings.user_data_dir_hint')}>
+        <Input value={chromium.user_data_dir} onChange={(e) => setChromium({ user_data_dir: e.target.value })} placeholder={t('common.default')} />
+      </Field>
       <Field label={t('settings.browser_executable')} hint={t('setup.chromium.exec_hint')}>
         <Input
           value={chromium.executable}

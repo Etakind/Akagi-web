@@ -400,6 +400,7 @@
     "detect_status_detected": "已检测到：{{paths}}",
     "user_data_dir": "用户数据目录",
     "user_data_dir_hint": "留空则使用 config 目录下默认的 Akagi profile。",
+    "user_data_dir_attach_hint": "附加模式：留空自动发现标准浏览器目录；也可填写常用浏览器的用户数据根目录。Akagi 仅读取调试定位文件。",
     "start_url": "起始 URL",
     "start_url_hint": "{{platform}} 的默认值：{{url}}",
     "force_cft": "使用 Chrome for Testing",

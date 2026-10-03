@@ -400,6 +400,7 @@
     "detect_status_detected": "検出: {{paths}}",
     "user_data_dir": "ユーザーデータディレクトリ",
     "user_data_dir_hint": "空欄にすると config 配下の Akagi デフォルト profile を使用します。",
+    "user_data_dir_attach_hint": "接続モード：空欄で標準ブラウザーのディレクトリを検出します。手動指定は既存ブラウザーのユーザーデータルートです。デバッグ位置情報のみ読み取ります。",
     "start_url": "開始 URL",
     "start_url_hint": "{{platform}} のデフォルト: {{url}}",
     "force_cft": "Chrome for Testing を使用",

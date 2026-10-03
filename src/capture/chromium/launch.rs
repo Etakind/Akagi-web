@@ -14,7 +14,7 @@ use crate::config::ChromiumConfig;
 use crate::util::NoConsoleWindow;
 use anyhow::{anyhow, Context, Result};
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::{Child, Command};
 use tracing::{debug, warn};
@@ -258,18 +258,26 @@ pub async fn devtools_http_alive(port: u16) -> bool {
 }
 
 /// Discover an explicitly opted-in existing browser, without proxying or redirects.
-pub async fn existing_endpoint(port: u16, profile: Option<&Path>) -> Result<String> {
+pub async fn existing_endpoint(
+    port: u16,
+    profile: Option<&Path>,
+    executable: Option<&PathBuf>,
+) -> Result<String> {
     if port == 0 {
-        return Err(anyhow!("an existing browser requires a nonzero port"));
+        return Err(anyhow!(
+            "CDP_INVALID_PORT: an existing browser requires a nonzero port"
+        ));
     }
-    // UI-enabled remote debugging (current Edge) deliberately exposes no
-    // unauthenticated HTTP discovery API. Read its local locator instead.
-    // Never alter permissions, session restore state, or the user's profile.
     if let Some(profile) = profile {
+        if !profile.is_dir() {
+            return Err(anyhow!(
+                "CDP_PROFILE_INVALID: select the existing browser user-data root directory"
+            ));
+        }
         match read_existing_port_file(&profile.join(DEVTOOLS_FILE), port) {
             Ok(endpoint) => return Ok(endpoint),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(anyhow!("existing browser locator rejected")),
+            Err(_) => return Err(anyhow!("CDP_LOCATOR_REJECTED: the selected directory locator is unsafe, invalid or uses a different port")),
         }
     }
     let client = reqwest::Client::builder()
@@ -277,10 +285,32 @@ pub async fn existing_endpoint(port: u16, profile: Option<&Path>) -> Result<Stri
         .redirect(reqwest::redirect::Policy::none())
         .timeout(HTTP_DISCOVERY_TIMEOUT)
         .build()?;
-    let endpoint =
-        fetch_devtools_endpoint(&client, &format!("http://127.0.0.1:{port}/json/version")).await?;
-    validate_existing_endpoint(&endpoint, port)?;
-    Ok(endpoint)
+    if let Ok(endpoint) =
+        fetch_devtools_endpoint(&client, &format!("http://127.0.0.1:{port}/json/version")).await
+    {
+        validate_existing_endpoint(&endpoint, port)?;
+        return Ok(endpoint);
+    }
+    // Edge's UI-enabled service may return 404 for /json/version. Read only
+    // fixed locator files; never change or traverse a user's browser profile.
+    if profile.is_none() {
+        let mut candidates = std::collections::HashSet::new();
+        for root in super::detect::standard_user_data_dirs(executable) {
+            if let Ok(endpoint) = read_existing_port_file(&root.join(DEVTOOLS_FILE), port) {
+                candidates.insert(endpoint);
+            }
+        }
+        if candidates.len() > 1 {
+            return Err(anyhow!("CDP_LOCATOR_AMBIGUOUS: multiple browser locators match this port; specify the browser user-data directory"));
+        }
+        if let Some(endpoint) = candidates.into_iter().next() {
+            return Ok(endpoint);
+        }
+    }
+    match tokio::time::timeout(HTTP_DISCOVERY_TIMEOUT, tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))).await {
+        Ok(Ok(_)) => Err(anyhow!("CDP_DISCOVERY_UNAVAILABLE: HTTP discovery is unavailable and no valid locator was found; specify the browser user-data root and verify its debugging port")),
+        _ => Err(anyhow!("CDP_PORT_UNREACHABLE: enable the browser's loopback remote debugging service, then restart capture")),
+    }
 }
 
 fn read_existing_port_file(path: &Path, port: u16) -> std::io::Result<String> {

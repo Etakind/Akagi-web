@@ -1092,7 +1092,7 @@ function CaptureCard({
                 value={chromium.attach_port ?? 0}
                 onChange={(e) => setChromium({ attach_port: Math.max(0, Math.min(65535, Math.trunc(Number(e.target.value) || 0))) })} />
             </Field>
-            <Field label={t('settings.user_data_dir')} hint={t('settings.user_data_dir_hint')}>
+            <Field label={t('settings.user_data_dir')} hint={t(chromium.attach_port ? 'settings.user_data_dir_attach_hint' : 'settings.user_data_dir_hint')}>
               <Input
                 value={chromium.user_data_dir}
                 onChange={(e) => setChromium({ user_data_dir: e.target.value })}
