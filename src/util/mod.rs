@@ -76,6 +76,21 @@ impl NoConsoleWindow for std::process::Command {
     }
 }
 
+pub fn directory_writable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return false;
+        };
+        unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        path.metadata().is_ok_and(|m| !m.permissions().readonly())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,20 +111,5 @@ mod tests {
         let s = resolved.to_string_lossy();
         assert!(!s.contains("/./"), "got: {s}");
         assert!(!s.contains("\\.\\"), "got: {s}");
-    }
-}
-
-pub fn directory_writable(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-            return false;
-        };
-        unsafe { libc::access(path.as_ptr(), libc::W_OK) == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        path.metadata().is_ok_and(|m| !m.permissions().readonly())
     }
 }

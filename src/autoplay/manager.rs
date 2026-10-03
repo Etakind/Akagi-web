@@ -954,6 +954,10 @@ pub async fn run_autoplay_manager(
         .await
 }
 
+fn discard_needs_window_guard(action: &MjaiEvent) -> bool {
+    !matches!(action, MjaiEvent::Reach { .. })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1178,8 +1182,4 @@ mod tests {
             "stale seat must be cleared"
         );
     }
-}
-
-fn discard_needs_window_guard(action: &MjaiEvent) -> bool {
-    !matches!(action, MjaiEvent::Reach { .. })
 }
