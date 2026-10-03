@@ -84,6 +84,7 @@ impl BotRunner for NativeBot {
         );
         if matches!(events.last(), Some(MjaiEvent::ReachAccepted { .. })) || waits_for_rinshan {
             return Ok(BotResponse {
+                decision_started: None,
                 action: MjaiEvent::None,
                 meta: None,
             });
@@ -95,6 +96,7 @@ impl BotRunner for NativeBot {
             Some(d) if is_decision_point(&d.candidates) => d,
             _ => {
                 return Ok(BotResponse {
+                    decision_started: None,
                     action: MjaiEvent::None,
                     meta: None,
                 })
@@ -102,7 +104,11 @@ impl BotRunner for NativeBot {
         };
 
         let (action, meta) = local_reply(&local, self.seat);
-        Ok(BotResponse { action, meta })
+        Ok(BotResponse {
+            action,
+            meta,
+            decision_started: None,
+        })
     }
 
     async fn reset(&mut self) -> Result<()> {

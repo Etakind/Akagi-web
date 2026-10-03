@@ -34,6 +34,7 @@
 //! | `notify`           | `schema::Notification`        |
 //! | `analysis-result`  | `analysis::AnalysisResult`    |
 //! | `history-recorded` | `schema::HistoryEvent`        |
+//! | `autoplay-enabled` | `bool` (effective input switch) |
 //! | `overlay-config`   | `config::OverlayConfig`       |
 //!
 //! All of the above are broadcast to every webview, which is what lets the
@@ -61,6 +62,14 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, state: AppState) -> Result<()> {
 }
 
 fn spawn_forwarders<R: Runtime>(app: AppHandle<R>, state: AppState) {
+    let mut autoplay_rx = state.autoplay_context.enabled_changes.subscribe();
+    let autoplay_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while autoplay_rx.changed().await.is_ok() {
+            let enabled = *autoplay_rx.borrow_and_update();
+            let _ = autoplay_app.emit("autoplay-enabled", enabled);
+        }
+    });
     forward(app.clone(), state.mjai_bus.subscribe(), "mjai-event");
     forward(
         app.clone(),

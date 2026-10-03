@@ -8,8 +8,6 @@ use anyhow::{bail, Context, Result};
 use chrono::Local;
 use std::sync::Arc;
 use std::time::Instant;
-#[cfg(test)]
-use tokio::sync::Mutex;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -313,6 +311,7 @@ impl BotManager {
         }
         // MjaiEvent::None still goes on the bus — downstream consumers
         // decide whether to render. Centralizes the "skip" decision.
+        resp.decision_started = Some(started);
         let _ = self.out_tx.send(resp);
 
         if matches!(event, MjaiEvent::EndGame { .. }) {
@@ -498,6 +497,7 @@ mod tests {
             let mut q = self.next.lock().await;
             if q.is_empty() {
                 Ok(BotResponse {
+                    decision_started: None,
                     action: MjaiEvent::None,
                     meta: None,
                 })
@@ -903,6 +903,7 @@ mod tests {
     #[tokio::test]
     async fn bot_response_broadcast_to_subscribers() {
         let scripted = BotResponse {
+            decision_started: None,
             action: dahai(2),
             meta: None,
         };
@@ -910,7 +911,11 @@ mod tests {
         mgr.handle(dahai(0)).await.unwrap(); // others' dahai → flush
 
         let received = rx.try_recv().expect("bot response should be broadcast");
-        assert_eq!(received, scripted);
+        assert!(received.decision_started.is_some());
+        assert_eq!(
+            serde_json::to_value(&received).unwrap(),
+            serde_json::to_value(&scripted).unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1038,6 +1043,7 @@ mod tests {
 
     fn reach_none(actor: u8) -> BotResponse {
         BotResponse {
+            decision_started: None,
             action: MjaiEvent::Reach { actor, pai: None },
             meta: None,
         }
@@ -1045,6 +1051,7 @@ mod tests {
 
     fn dahai_reply(actor: u8, pai: &str) -> BotResponse {
         BotResponse {
+            decision_started: None,
             action: MjaiEvent::Dahai {
                 actor,
                 pai: pai.into(),
@@ -1163,6 +1170,7 @@ mod tests {
     #[tokio::test]
     async fn autoplay_prefilled_reach_pai_skips_followup() {
         let prefilled = BotResponse {
+            decision_started: None,
             action: MjaiEvent::Reach {
                 actor: 2,
                 pai: Some("3p".into()),

@@ -133,8 +133,7 @@ pub async fn run(
     let platform = bridges.platform();
     if let Some(ctx) = &autoplay {
         *ctx.platform.write().unwrap() = platform;
-        ctx.generation
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ctx.invalidate_actions();
         *ctx.tenhou_state.write().unwrap() = None;
         *ctx.time_budget.write().unwrap() = None;
         *ctx.page.write().await = None;
@@ -251,8 +250,7 @@ pub async fn run(
             // game-gateway socket; clearing the handle on those closes was
             // silently stopping autoplay mid-game.
             if let (Some(ctx), false) = (&autoplay, removes.is_empty()) {
-                ctx.generation
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ctx.invalidate_actions();
                 *ctx.tenhou_state.write().unwrap() = None;
                 *ctx.time_budget.write().unwrap() = None;
                 // Hold the write lock across the check + clear so a
@@ -325,8 +323,7 @@ pub async fn run(
                     if bound.as_ref().map(|p| p.session_id())
                         != desired.as_ref().map(|p| p.session_id())
                     {
-                        ctx.generation
-                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        ctx.invalidate_actions();
                         *ctx.tenhou_state.write().unwrap() = None;
                         *ctx.time_budget.write().unwrap() = None;
                         *bound = desired;
@@ -376,10 +373,12 @@ pub async fn run(
 }
 
 // Dropping a page subscription must release any paused Tenhou response.
-struct FetchLease(Page);
+struct FetchLease(Option<Page>);
 impl Drop for FetchLease {
     fn drop(&mut self) {
-        let page = self.0.clone();
+        let Some(page) = self.0.take() else {
+            return;
+        };
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
                 let _ = tokio::time::timeout(
@@ -392,6 +391,39 @@ impl Drop for FetchLease {
             });
         }
     }
+}
+
+/// Toggle only script interception. Network listeners and bridge state survive.
+async fn set_tenhou_interception(
+    page: &Page,
+    lease: &mut Option<FetchLease>,
+    enabled: bool,
+) -> Result<()> {
+    use chromiumoxide::cdp::browser_protocol::fetch::{
+        DisableParams, EnableParams, RequestPattern, RequestStage,
+    };
+    if enabled && lease.is_none() {
+        *lease = Some(FetchLease(Some(page.clone())));
+        page.execute(EnableParams {
+            patterns: Some(vec![RequestPattern {
+                url_pattern: Some("https://tenhou.net/4/*.js".into()),
+                resource_type: Some(ResourceType::Script),
+                request_stage: Some(RequestStage::Response),
+            }]),
+            handle_auth_requests: None,
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("Could not prepare Tenhou adaptation"))?;
+    } else if !enabled && lease.is_some() {
+        page.execute(DisableParams::default())
+            .await
+            .map_err(|_| anyhow::anyhow!("Could not stop Tenhou adaptation"))?;
+        // Disable completed before disarming; Drop must not race a later enable.
+        if let Some(mut old) = lease.take() {
+            old.0 = None;
+        }
+    }
+    Ok(())
 }
 
 // Task cancellation must detach from a user-owned browser, even if the
@@ -512,32 +544,17 @@ async fn attach_page(
         .event_listener::<chromiumoxide::cdp::browser_protocol::fetch::EventRequestPaused>()
         .await
         .map_err(|_| anyhow::anyhow!("Could not subscribe to script adaptation"))?;
+    let tenhou = bridges.platform() == crate::config::Platform::Tenhou;
+    let adaptation_enabled = || {
+        tenhou
+            && autoplay.as_ref().is_some_and(|ctx| {
+                ctx.autoplay_enabled
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            })
+    };
+    let mut autoplay_changes = autoplay.as_ref().map(|ctx| ctx.enabled_changes.subscribe());
     let mut fetch_lease = None;
-    if bridges.platform() == crate::config::Platform::Tenhou
-        && autoplay.as_ref().is_some_and(|ctx| {
-            ctx.autoplay_enabled
-                .load(std::sync::atomic::Ordering::SeqCst)
-        })
-    {
-        use chromiumoxide::cdp::browser_protocol::fetch::{
-            EnableParams, RequestPattern, RequestStage,
-        };
-        fetch_lease = Some(FetchLease(page.clone()));
-        page.execute(EnableParams {
-            patterns: Some(vec![RequestPattern {
-                url_pattern: Some("https://tenhou.net/4/*.js".into()),
-                resource_type: Some(
-                    chromiumoxide::cdp::browser_protocol::network::ResourceType::Script,
-                ),
-                request_stage: Some(RequestStage::Response),
-            }]),
-            handle_auth_requests: None,
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("Could not prepare Tenhou adaptation"))?;
-        let _ = notify.send(Notification::info("Tenhou autoplay preparation")
-            .body("Already-open clients may lack the action adapter. If so, re-enter or refresh the game yourself when safe; Akagi never refreshes it.").id("tenhou-adapter"));
-    }
+    set_tenhou_interception(&page, &mut fetch_lease, adaptation_enabled()).await?;
 
     // Install every listener before enabling traffic delivery.
     page.execute(NetworkEnableParams::default())
@@ -545,10 +562,18 @@ async fn attach_page(
         .context("Network.enable")?;
 
     let handle = tokio::spawn(async move {
-        let _fetch_lease = fetch_lease;
         let mut readiness: HashMap<String, GameReadiness> = HashMap::new();
         loop {
             tokio::select! {
+                changed = async { autoplay_changes.as_mut().unwrap().changed().await }, if autoplay_changes.is_some() && tenhou => {
+                    if changed.is_err() { break; }
+                    let enabled = autoplay.as_ref().is_some_and(|ctx| ctx.autoplay_enabled.load(std::sync::atomic::Ordering::SeqCst));
+                    if set_tenhou_interception(&page, &mut fetch_lease, enabled).await.is_err() {
+                        if let Some(ctx) = &autoplay { ctx.set_enabled(false); }
+                        let _ = notify.send(Notification::warn("Tenhou autoplay unavailable")
+                            .body("Could not prepare the client adapter. Observation continues; re-enter the page yourself when safe.").sticky().id("tenhou-adapter"));
+                    }
+                }
                 Some(ev) = on_paused.next() => {
                     rewrite_tenhou_script(&page, &notify, &autoplay, &ev).await;
                 }
@@ -1041,8 +1066,7 @@ async fn rewrite_tenhou_script(
         }
         if !fulfilled {
             if let Some(ctx) = autoplay {
-                ctx.autoplay_enabled
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                ctx.set_enabled(false);
             }
             let _ = notify.send(Notification::warn("Tenhou autoplay unavailable")
                 .body("Client adaptation failed. Observation remains available; automatic actions are paused.").sticky().id("tenhou-adapter"));

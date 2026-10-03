@@ -15,7 +15,7 @@ type Props = {
   className?: string
 }
 
-// Wraps a single <mah-gen> custom element, manages registry lifecycle, and
+// Wraps a single <akagi-tiles> custom element, manages registry lifecycle, and
 // animates seq swaps via setMahgenSeq (opacity crossfade).
 export function Mahgen({ seq, kind, riverMode, containerRef, className }: Props) {
   const wrapperRef = useRef<HTMLSpanElement>(null)
@@ -25,7 +25,7 @@ export function Mahgen({ seq, kind, riverMode, containerRef, className }: Props)
     const wrapper = wrapperRef.current
     if (!wrapper) return
 
-    const el = document.createElement('mah-gen') as HTMLElement
+    const el = document.createElement('akagi-tiles') as HTMLElement
     if (riverMode) el.setAttribute('data-river-mode', '')
     if (seq) el.setAttribute('data-seq', seq)
     wrapper.appendChild(el)

@@ -109,7 +109,7 @@ export function Settings() {
     setErr(null)
     try {
       await invoke('update_config', { newConfig: draft })
-      setStored(draft)
+      setStored(await invoke<AppConfig>('get_config'))
     } catch (e) {
       setErr(String(e))
     } finally {
@@ -122,7 +122,7 @@ export function Settings() {
     setErr(null)
     try {
       await invoke('update_config', { newConfig: draft })
-      setStored(draft)
+      setStored(await invoke<AppConfig>('get_config'))
       blocker.proceed?.()
     } catch (e) {
       setErr(String(e))

@@ -53,12 +53,20 @@ type CmdResult<T> = Result<T, String>;
 
 #[tauri::command]
 pub async fn get_config(state: State<'_, AppState>) -> CmdResult<AppConfig> {
-    Ok(state.config.read().await.clone())
+    let mut config = state.config.read().await.clone();
+    config.autoplay.enabled &= state
+        .autoplay_context
+        .autoplay_enabled
+        .load(std::sync::atomic::Ordering::SeqCst);
+    Ok(config)
+}
+
+fn requires_capture_restart(previous: &AppConfig, next: &AppConfig) -> bool {
+    previous.capture != next.capture || previous.platform.kind != next.platform.kind
 }
 
 /// Replace the entire config and persist it to the same file the app
-/// loaded from. Capture-related changes (mode, chromium settings, proxy
-/// settings) trigger an automatic supervisor restart so the user doesn't
+/// loaded from. Capture-related changes (browser settings or selected game) trigger an automatic supervisor restart so the user doesn't
 /// have to relaunch the app to switch capture modes. A `bot.enabled`
 /// false→true flip (typically the first-run wizard finishing) hot-starts
 /// the `BotManager` so the user doesn't have to relaunch either; once
@@ -76,25 +84,19 @@ pub async fn update_config(
     // Snapshot the *previous* capture-relevant fields before we overwrite,
     // so we can decide whether the supervisor needs a swap.
     let previous = state.config.read().await;
-    let capture_changed = previous.capture != new_config.capture
-        || previous.platform.kind != new_config.platform.kind
-        || previous.autoplay.enabled != new_config.autoplay.enabled;
+    let capture_changed = requires_capture_restart(&previous, &new_config);
     drop(previous);
     if capture_changed {
-        state
-            .autoplay_context
-            .generation
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        state.autoplay_context.invalidate_actions();
         *state.autoplay_context.page.write().await = None;
         *state.autoplay_context.canvas_rect.write().await = None;
         *state.autoplay_context.tenhou_state.write().unwrap() = None;
         *state.autoplay_context.time_budget.write().unwrap() = None;
         *state.game_tracker.lock().await = crate::game_state::GameTracker::new();
     }
-    state.autoplay_context.autoplay_enabled.store(
-        new_config.autoplay.enabled,
-        std::sync::atomic::Ordering::SeqCst,
-    );
+    state
+        .autoplay_context
+        .set_enabled(new_config.autoplay.enabled);
     *state.history_platform.write().unwrap() = new_config.platform.kind.into();
     let capture_enabled = new_config.capture.enabled;
     let bot_now_enabled = new_config.bot.enabled;
@@ -327,7 +329,7 @@ pub async fn stop_capture(state: State<'_, AppState>) -> CmdResult<()> {
 
 #[tauri::command]
 pub async fn get_status(state: State<'_, AppState>) -> CmdResult<Snapshot> {
-    let config = state.config.read().await.clone();
+    let config = get_config(state.clone()).await?;
     let bot_status = state.bot_status.read().await.clone();
     let capture_status = state.capture_control.lock().await.status.clone();
     let log_dir = state.log_session.dir().to_path_buf();
@@ -1079,6 +1081,19 @@ mod tests {
                 "{url} must be refused"
             );
         }
+    }
+
+    #[test]
+    fn autoplay_toggle_preserves_capture_but_browser_and_game_changes_restart() {
+        let original = AppConfig::default();
+        let mut next = original.clone();
+        next.autoplay.enabled = !original.autoplay.enabled;
+        assert!(!requires_capture_restart(&original, &next));
+        next.capture.chromium.attach_port = 9333;
+        assert!(requires_capture_restart(&original, &next));
+        next = original.clone();
+        next.platform.kind = crate::config::Platform::Tenhou;
+        assert!(requires_capture_restart(&original, &next));
     }
 
     #[test]

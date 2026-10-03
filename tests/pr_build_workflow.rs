@@ -1,21 +1,19 @@
 const WORKFLOW: &str = include_str!("../.github/workflows/pr-build.yml");
 
 #[test]
-fn pr_build_comment_job_uses_pull_request_write_permission() {
-    let lf = WORKFLOW.replace("\r\n", "\n");
-    for checkout in [lf.clone(), lf.replace('\n', "\r\n")] {
+fn pr_build_requires_admin_and_pins_the_authorized_head() {
+    for checkout in [WORKFLOW.to_owned(), WORKFLOW.replace('\n', "\r\n")] {
         let normalized = checkout.replace("\r\n", "\n");
-        let (_, comment_job) = normalized
-            .split_once("\n  comment:\n")
-            .expect("PR build workflow must contain a comment job");
-
+        assert!(normalized.contains("access.permission !== 'admin'"));
+        assert!(normalized.contains("github.event.comment.body == '/build-artifacts'"));
+        assert!(normalized.contains("core.setOutput('head_sha', pull.head.sha)"));
+        assert!(normalized.contains("if: needs.authorize.outputs.authorized == 'true'"));
+        assert!(normalized.contains("uses: ./.github/workflows/build-packages.yml"));
+        assert!(normalized.contains("ref: ${{ needs.authorize.outputs.head_sha }}"));
+        assert!(normalized.contains("repository: ${{ needs.authorize.outputs.head_repository }}"));
         assert!(
-            comment_job.contains("\n      pull-requests: write\n"),
-            "the PR comment job must request pull-requests: write"
-        );
-        assert!(
-            !comment_job.contains("\n      issues: write\n"),
-            "the PR comment job must not rely on issues: write"
+            !normalized.contains(": write"),
+            "build requests need no write permission"
         );
     }
 }

@@ -129,6 +129,10 @@ export function useTauriBridge() {
       }
     }).then((u) => unlistens.push(u))
 
+    listen<boolean>('autoplay-enabled', (enabled) => {
+      useConfigStore.getState().setAutoplayEnabled(enabled)
+    }).then((u) => unlistens.push(u))
+
     listen<Notification>('notify', (n) => {
       useNotifyStore.getState().pushToast(n)
       toast[TOAST_SEVERITY[n.level]](n.title, {

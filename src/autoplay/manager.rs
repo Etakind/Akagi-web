@@ -129,7 +129,7 @@ impl AutoplayManager {
         // Re-read config every iteration so `cfg.autoplay.enabled` can be
         // toggled at runtime via the Settings UI without restarting.
         let cfg_guard = self.cfg.read().await;
-        if !cfg_guard.autoplay.enabled {
+        if !cfg_guard.autoplay.enabled || !self.ctx.accepts_decision(resp.decision_started) {
             return;
         }
         let cfg = cfg_guard.autoplay.majsoul.clone();
@@ -277,9 +277,8 @@ impl AutoplayManager {
             if !matches!(adapter, Ok(value) if value.value().and_then(|v| v.as_bool()) == Some(true))
             {
                 drop(guard);
-                self.ctx
-                    .autoplay_enabled
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                self.cfg.write().await.autoplay.enabled = false;
+                self.ctx.set_enabled(false);
                 let _ = self.notify.send(crate::schema::Notification::warn("Tenhou autoplay unavailable").body("Client adapter missing. Re-enter the official page yourself when safe, then enable autoplay again. Observation remains available.").sticky());
                 return;
             }
@@ -799,9 +798,7 @@ impl AutoplayManager {
     /// Pause after input failures without navigating or refreshing the client.
     async fn pause_autoplay(&mut self) {
         self.cfg.write().await.autoplay.enabled = false;
-        self.ctx
-            .autoplay_enabled
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.ctx.set_enabled(false);
         let _ = self.notify.send(crate::schema::Notification::warn("Autoplay paused").body("Input stopped registering. Check the game when safe; Akagi will not refresh it.").sticky());
     }
     fn handle_mjai_event(&mut self, ev: &MjaiEvent) {
@@ -978,6 +975,26 @@ mod tests {
             crate::event_bus::notify_bus(),
             std::env::temp_dir(),
         )
+    }
+
+    #[tokio::test]
+    async fn disable_and_reenable_cancel_delayed_action_and_pause_updates_state() {
+        let mut m = make_manager();
+        m.cfg.write().await.autoplay.enabled = true;
+        m.ctx.set_enabled(true);
+        let generation = m.ctx.generation.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(m.plan_active(generation).await);
+        let mut status = m.ctx.enabled_changes.subscribe();
+        m.ctx.set_enabled(false);
+        m.ctx.set_enabled(true);
+        assert!(!m.plan_active(generation).await);
+        let current = m.ctx.generation.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(m.plan_active(current).await);
+        m.pause_autoplay().await;
+        status.changed().await.unwrap();
+        assert!(!*status.borrow_and_update());
+        assert!(!m.cfg.read().await.autoplay.enabled);
+        assert!(!m.plan_active(current).await);
     }
 
     /// Regression: `cached_our_seat` must be populated immediately when

@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createHashRouter, redirect, RouterProvider } from 'react-router-dom'
-import 'mahgen'
+import './lib/tileRenderer'
 import './index.css'
 import './i18n'
 import './stores/themeStore'
