@@ -1,4 +1,4 @@
-//! Personal release metadata only; no download or installation path.
+//! Akagi Web release metadata only; no download or installation path.
 
 use crate::github::Source;
 use crate::github::{find_sig_asset, Asset, ReleaseJson};
@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use semver::Version;
 use serde::Serialize;
 
-/// Read-only personal release metadata for display and manual acquisition.
+/// Read-only Akagi Web release metadata for display and manual acquisition.
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateInfo {
     /// Version we're running right now (`env!("CARGO_PKG_VERSION")`).
@@ -18,7 +18,7 @@ pub struct UpdateInfo {
     /// Markdown release notes from `release.body`. Empty string if the
     /// release omits a body.
     pub body: String,
-    /// Canonical personal release page, not chosen by response metadata.
+    /// Canonical Akagi Web release page, not chosen by response metadata.
     pub html_url: String,
     /// Filename of the matched asset for this platform.
     pub asset_name: String,
@@ -30,10 +30,10 @@ pub struct UpdateInfo {
     /// `None` for old releases that pre-date the GitHub `digest` field.
     pub asset_digest_sha256: Option<String>,
     /// `browser_download_url` of the `<asset_name>.minisig` companion
-    /// asset, when the release ships one. CI signs every release newer
-    /// than v3.5.0; `None` marks an older, unsigned release.
+    /// asset, when a matching publisher identity signs the release.
+    /// `None` means no signature was supplied.
     pub sig_url: Option<String>,
-    /// Direct personal repository metadata only.
+    /// Direct Akagi Web repository metadata only.
     pub meta_source: Source,
 }
 
@@ -106,14 +106,14 @@ pub async fn check_for_update(repo: &str) -> Result<Option<UpdateInfo>> {
         return Ok(None);
     };
 
-    if repo != "Etakind/Akagi" {
+    if repo != "Etakind/Akagi-web" {
         anyhow::bail!("Only maintenance-fork updates are supported");
     }
     let client = crate::network::client(crate::network::Purpose::ReleaseMetadata)?;
-    let release: ReleaseJson = client.get("https://api.github.com/repos/Etakind/Akagi/releases/latest")
+    let release: ReleaseJson = client.get("https://api.github.com/repos/Etakind/Akagi-web/releases/latest")
         .header("Accept", "application/vnd.github+json").send().await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|_| anyhow::anyhow!("Maintenance releases unavailable. Open https://github.com/Etakind/Akagi/releases in your browser."))?
+        .map_err(|_| anyhow::anyhow!("Maintenance releases unavailable. Open https://github.com/Etakind/Akagi-web/releases in your browser."))?
         .json().await.context("invalid release metadata")?;
     let source = Source::Direct;
     build_update_info(env!("CARGO_PKG_VERSION"), triple, repo, &release, source)

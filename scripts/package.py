@@ -40,7 +40,7 @@ def main():
         stage = pathlib.Path(temporary) / name
         stage.mkdir()
         shutil.copy2(binary, stage / binary_name)
-        for file in ('LICENSE.txt', 'NOTICE', 'README.md', 'README.zh-CN.md', 'SECURITY_HARDENING.md'):
+        for file in ('LICENSE.txt', 'NOTICE', 'README.md', 'README.zh-CN.md'):
             shutil.copy2(ROOT / file, stage / file)
         shutil.copytree(ROOT / 'docs', stage / 'docs')
         archive = dist / (name + '.zip')
@@ -65,7 +65,10 @@ def main():
     inventory = []
     for asset in assets:
         with asset.open('rb') as stream:
-            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+            digest = hashlib.sha256()
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+            digest = digest.hexdigest()
         inventory.append({'name': asset.name, 'bytes': asset.stat().st_size, 'sha256': digest})
     for suffix in ('.assets.json', '.sha256'):
         if (dist / (name + suffix)).is_symlink():

@@ -14,7 +14,7 @@ export type UpdateInfo = {
   asset_url: string
   asset_size: number
   asset_digest_sha256: string | null
-  /** `.minisig` companion asset URL; null for unsigned (≤v3.5.0) releases. */
+  /** `.minisig` companion asset URL; null for unsigned releases. */
   sig_url: string | null
   /** Where the release metadata came from (direct GitHub only). */
   meta_source: 'direct'
@@ -87,7 +87,7 @@ export const useUpdaterStore = create<UpdaterStore>()(
           set({ pendingUpdate: info, lastChecked: Date.now() })
           return true
         } catch {
-          // A private repository may be inaccessible anonymously. Never report this as current.
+          // Release metadata may be unavailable. Never report a failed check as current.
           return false
         } finally {
           set({ checking: false })

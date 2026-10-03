@@ -1,7 +1,11 @@
 [package]
 name = "akagi"
-version = "3.7.1"
+version = "0.1.0"
 edition = "2021"
+authors = ["Etakind <157187657+Etakind@users.noreply.github.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/Etakind/Akagi-web"
+description = "Local mahjong analysis for Majsoul and Tenhou web clients"
 
 [lib]
 name = "akagi"

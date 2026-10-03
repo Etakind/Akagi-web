@@ -1,6 +1,7 @@
 {
-  "productName": "Akagi",
-  "identifier": "com.akagi.akagi",
+  "productName": "Akagi Web",
+  "mainBinaryName": "akagi",
+  "identifier": "io.github.etakind.akagi-web",
   "build": {
     "frontendDist": "./frontend/dist",
     "devUrl": "http://localhost:1420",
@@ -19,7 +20,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Akagi",
+        "title": "Akagi Web",
         "width": 1560,
         "height": 980,
         "minWidth": 800,

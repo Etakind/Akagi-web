@@ -51,7 +51,7 @@ no filesystem, process or network access.
 Akagi does not upload accounts, games, history, logs or inference data. Inference is local.
 Remaining requests are maintenance release metadata, user-requested official Chrome for
 Testing assets, and loopback CDP discovery/control. The game website communicates normally
-with its own server. Private release API access failures leave a release-page link; Akagi
+with its own server. Release API failures leave a release-page link; Akagi
 never asks for browser cookies or falls back to upstream installation packages.
 
 New WebSocket records omit raw frames. HTTP records omit URL credentials/query/fragment,
@@ -88,7 +88,7 @@ an asset inventory and SHA256. Optional minisign signing requires a configured k
 matches the repository public key; identities are never generated or rotated automatically.
 SHA256 checks consistency, while a trusted signature verifies publisher identity.
 
-CI covers `dev` pushes and PRs targeting `dev`. Administrator-requested `/build-artifacts`
+CI covers `main` pushes and PRs targeting `main`. Administrator-requested `/build-artifacts`
 and manual release share the native builder. Artifacts are available from the workflow run.
 Manual release defaults to building artifacts; publishing requires an explicit existing tag
 for that commit. There are no tag-triggered releases, scheduled protocol changes or automatic
@@ -127,60 +127,56 @@ autoplay cancellation and package target validation when their implementation ch
 
 ## Repository synchronization and push protection
 
-| Ref | Role |
-|---|---|
-| `origin` | Private `git@github.com:Etakind/Akagi.git`; personal code and multi-device synchronization |
-| `upstream` | `https://github.com/shinkuan/Akagi`; fetch only, actual baseline branch `v3` |
-| `main` | Exact upstream mirror, tracks `origin/main`; fast-forward only, no personal commits |
-| `dev` | Personal default/integration branch, tracks `origin/dev` |
-| `feature/*`, `fix/*`, `experiment/*` | Start from `dev`; review before integration |
-
-New clone:
+`origin` is the public [Etakind/Akagi-web](https://github.com/Etakind/Akagi-web) repository.
+`main` is the maintained default/release branch. `upstream` points to shinkuan/Akagi and
+is fetch-only; `upstream/v3` tracks its development line. There is no local mirror branch.
+The upstream history and existing maintenance commits are retained; published commits are
+not rewritten. Akagi Web uses independent version numbers starting at 0.1.0.
 
 ```sh
-git clone --branch dev git@github.com:Etakind/Akagi.git
-cd Akagi
+git clone https://github.com/Etakind/Akagi-web.git
+cd Akagi-web
 python3 scripts/setup-fork.py
 python3 scripts/setup-fork.py --check
 ```
 
-Use `python` if that is Python 3's Windows command. The standard-library/Git script sets
-repository-local `remote.pushDefault=origin`, `push.default=simple`, `pull.ff=only`, an
-unusable upstream push URL and a local `pre-push` guard. The guard blocks upstream by
-remote name and SSH/HTTPS URL. It lives under Git's local management directory, so it
-survives checkout of `main`; existing hooks are preserved/chained. External shared hooks
-are not overwritten. Reinstall after cloning/moving or changing Python installations.
-This prevents accidents and is deliberately bypassable; it is not a remote permission wall.
+The setup script uses Python 3's standard library and Git. It configures only this repository:
+`remote.pushDefault=origin`, `push.default=simple`, `pull.ff=only`, an unusable upstream push
+URL and a local pre-push guard. The guard blocks upstream by name and SSH/HTTPS address,
+lives in Git's management directory, and chains existing hooks without overwriting shared
+hook configuration. This prevents mistakes; it is not an unbreakable permission boundary.
+Use `python` instead of `python3` when that is your Windows Python 3 command.
 
-Require a clean working tree; never discard user changes to synchronize. Daily work:
+Start with a clean working tree. Develop on `feature/*`, `fix/*` or `experiment/*`:
 
 ```sh
-git switch dev
-git pull --ff-only origin dev
+git switch main
+git pull --ff-only origin main
 git switch -c feature/example
-# Stage reviewed files explicitly, commit, then:
+# Commit reviewed changes, then:
 git push -u origin feature/example
 ```
 
-Run each upstream synchronization step separately and stop on failure:
+Merge upstream through a review branch; do not replace main with upstream:
 
 ```sh
 git fetch --no-tags origin
 git fetch --no-tags upstream
 git switch main
 git merge --ff-only origin/main
-git merge-base --is-ancestor main upstream/v3
-git merge --ff-only upstream/v3
-git rev-parse main upstream/v3
-# Both hashes must match before pushing:
-git push origin main:main
-git switch dev
-git merge --ff-only origin/dev
-git merge main
-# Review personal differences, resolve conflicts, perform the agreed validation:
-git push origin dev:dev
+git switch -c maintenance/upstream-sync
+git merge upstream/v3
+# Resolve conflicts, check fork boundaries and run the full test matrix.
+git push -u origin maintenance/upstream-sync
 ```
 
-Stop if main diverges; no force push/reset to hide it. Resolve dev conflicts against this
-document; `git merge --abort` returns to the clean pre-merge state if abandoning the merge.
-Only unpublished personal commits may be explicitly rebased; never rewrite published history.
+Open a PR targeting `main`. Use `git merge --abort` to abandon a conflicting merge;
+never force-push to hide divergence. Rebase only unpublished commits. Delete merged
+feature branches when no longer needed. No scheduled automatic merges are configured.
+
+For a release, synchronize the Cargo version, frontend fallback and reviewed bilingual
+notes in `docs/releases/vX.Y.Z.md`. Tag the reviewed commit and run the manual Release
+workflow for that tag. It builds all five targets and validates their inventories and
+SHA256 files before publication. The upstream key retained as `upstream.minisign.pub`
+is not an Akagi Web signing identity. Optional signing requires a separate publisher
+`minisign.pub` and matching configured secret; unsigned releases are identified as such.

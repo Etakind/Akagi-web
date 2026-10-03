@@ -40,7 +40,7 @@ Lua 延时环境不提供文件、进程或网络访问。
 
 Akagi 不上传账号、牌局、历史、日志或推理数据，推理全部本地执行。
 剩余请求仅用于维护版发布信息、用户主动下载官方 Chrome for Testing，以及回环 CDP 发现与控制。
-游戏网页正常连接自身服务器。私有发布 API 不可访问时保留发布页入口，不索要浏览器 Cookie，也不回退安装上游包。
+游戏网页正常连接自身服务器。发布 API 不可访问时保留发布页入口，不索要浏览器 Cookie，也不回退安装上游包。
 
 新 WebSocket 记录省略原始帧；HTTP 记录去除 URL 用户信息、查询和片段、敏感头及正文；Inspector 广播使用相同脱敏规则。
 MJAI、分析和历史仍含对局与玩家信息，分享时应注意范围。新 Unix 私密文件使用 0600，目录使用 0700，并检查所有者和链接。
@@ -70,7 +70,7 @@ DEB 安装说明面向 Ubuntu 22.04/24.04、Debian 12/13；RPM 面向 Fedora，A
 每次构建生成资产清单和 SHA256；可选 minisign 签名要求预配置密钥与仓库公钥匹配，不自动创建或轮换身份。
 SHA256 检查文件一致性，可信签名用于确认发布者身份。
 
-CI 覆盖 `dev` 推送及目标为 `dev` 的 PR。管理员请求的 `/build-artifacts` 与手动发布复用原生构建流程，产物从工作流运行页面获取。
+CI 覆盖 `main` 推送及目标为 `main` 的 PR。管理员请求的 `/build-artifacts` 与手动发布复用原生构建流程，产物从工作流运行页面获取。
 手动发布默认仅构建产物，正式发布要求显式指定该提交已有的标签。不设置标签自动发布、定时协议更新或自动合并。
 
 应用与独立 `native_bot` 的 Cargo 配置在开发/测试模式下优化 `gemm-common` 和 `gemm-f16`，
@@ -101,57 +101,49 @@ CI 覆盖 `dev` 推送及目标为 `dev` 的 PR。管理员请求的 `/build-art
 
 ## 仓库同步与推送防护
 
-| 引用 | 用途 |
-|---|---|
-| `origin` | 私有 `git@github.com:Etakind/Akagi.git`；个人代码、多设备同步 |
-| `upstream` | `https://github.com/shinkuan/Akagi`；仅获取，真实主线是 `v3` |
-| `main` | 上游精确镜像，跟踪 `origin/main`；只快进，不放个人提交 |
-| `dev` | 个人默认/集成分支，跟踪 `origin/dev` |
-| `feature/*`、`fix/*`、`experiment/*` | 从 `dev` 创建，审查后集成 |
-
-新设备克隆后执行：
+`origin` 指向公开仓库 [Etakind/Akagi-web](https://github.com/Etakind/Akagi-web)。
+`main` 是维护版默认分支与发布主线；`upstream` 指向 shinkuan/Akagi，仅获取更新，通过 `upstream/v3` 跟踪上游。
+不再维护本地上游镜像分支。保留上游历史及现有维护提交，不改写已发布历史；Akagi Web 从 0.1.0 开始独立编号。
 
 ```sh
-git clone --branch dev git@github.com:Etakind/Akagi.git
-cd Akagi
+git clone https://github.com/Etakind/Akagi-web.git
+cd Akagi-web
 python3 scripts/setup-fork.py
 python3 scripts/setup-fork.py --check
 ```
 
-Windows 如用 `python` 启动 Python 3，则替换命令名。脚本仅用标准库/Git，设置仓库本地
-`remote.pushDefault=origin`、`push.default=simple`、`pull.ff=only`、不可用 upstream push URL
-及本地 `pre-push`。防护同时拦截 upstream 名称和原仓库 SSH/HTTPS 地址，安装于本地 Git 管理目录，
-切换 main 后仍有效；保留并串联已有 hook，不覆盖外部共享 hook。新克隆、移动目录或更换 Python 后重装。
-这是可主动绕过的防误操作措施，不是远端权限隔离。
+脚本仅使用 Python 3 标准库和 Git，只设置当前仓库的 `remote.pushDefault=origin`、`push.default=simple`、
+`pull.ff=only`、不可用的 upstream 推送地址及本地 pre-push 防护。
+防护同时拦截上游名称与 SSH/HTTPS 地址，安装在 Git 管理目录内，并串联已有 hook，不覆盖共享 hook 配置。
+这是防误操作措施，不是不可突破的权限隔离。Windows 如使用 `python` 启动 Python 3，请相应替换命令名。
 
-同步前工作区必须干净，不能丢弃用户修改。日常开发：
+工作区干净时，从 `main` 创建 `feature/*`、`fix/*` 或 `experiment/*`：
 
 ```sh
-git switch dev
-git pull --ff-only origin dev
+git switch main
+git pull --ff-only origin main
 git switch -c feature/example
-# 只暂存审查过的文件，提交后：
+# 提交审查后的改动，再推送：
 git push -u origin feature/example
 ```
 
-上游同步逐条执行，失败立即停止：
+上游更新通过独立分支审查，不用上游覆盖 main：
 
 ```sh
 git fetch --no-tags origin
 git fetch --no-tags upstream
 git switch main
 git merge --ff-only origin/main
-git merge-base --is-ancestor main upstream/v3
-git merge --ff-only upstream/v3
-git rev-parse main upstream/v3
-# 两个 SHA 必须相同，然后才推送：
-git push origin main:main
-git switch dev
-git merge --ff-only origin/dev
-git merge main
-# 核对个人差异、解决冲突并完成约定验证后：
-git push origin dev:dev
+git switch -c maintenance/upstream-sync
+git merge upstream/v3
+# 解决冲突、核对维护版边界并完成完整测试矩阵。
+git push -u origin maintenance/upstream-sync
 ```
 
-main 分叉立即停下，不用强推/reset 掩盖。dev 冲突按本文规则解决；放弃合并可用 `git merge --abort`
-回到原本干净的状态。只有未发布的个人提交可显式 rebase，不改写已发布历史。
+创建目标为 `main` 的 PR。放弃冲突合并可用 `git merge --abort`，不要通过强推掩盖分叉。
+只对尚未发布的提交 rebase；已合并且不再使用的功能分支可以删除。不配置定时自动合并。
+
+发布前同步 Cargo 版本、前端回退版本和 `docs/releases/vX.Y.Z.md` 中的双语发布说明。
+为审查后的提交创建标签，再对该标签运行手动 Release 工作流；五目标构建及资产清单、SHA256 校验通过后才能发布。
+保留的 `upstream.minisign.pub` 仅属于上游，不是 Akagi Web 签名身份。可选签名需要独立发布者的 `minisign.pub`
+和匹配的已配置密钥；未签名发布应明确标注。

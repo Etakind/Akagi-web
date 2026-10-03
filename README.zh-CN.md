@@ -1,9 +1,11 @@
-# Akagi — 本地网页维护版
+# Akagi Web — 本地网页维护版
 
 [English](README.md) | **简体中文**
 
 本仓库是 [shinkuan/Akagi v3](https://github.com/shinkuan/Akagi/tree/v3) 的维护分支，
 仅通过 **Majsoul、Tenhou 官方网页端**采集，使用内置本地模型。
+
+Akagi Web 从 **0.1.0** 开始独立编号，与 upstream 版本序列分开。
 
 ## 相较 upstream 的区别
 
@@ -46,7 +48,7 @@ Tenhou 自动打牌需要客户端适配入口，仅开启自动打牌时准备�
 | Linux | x86_64 | `linux-x64.zip`、DEB、RPM |
 | Linux | ARM64 | `linux-arm64.zip`、DEB、RPM |
 
-从[个人维护版发布页](https://github.com/Etakind/Akagi/releases) 获取产物，需要正常的私有仓库权限。
+从[个人维护版发布页](https://github.com/Etakind/Akagi-web/releases) 获取产物。
 核对 SHA256；附带 minisign 签名时使用相应公钥核验。
 
 ZIP 解压到当前用户拥有的目录：Windows 运行 `akagi.exe`（需要 WebView2），macOS/Linux 运行 `./akagi`。

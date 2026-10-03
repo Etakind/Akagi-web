@@ -1,9 +1,11 @@
-# Akagi — local web maintenance fork
+# Akagi Web — local web maintenance fork
 
 **English** | [简体中文](README.zh-CN.md)
 
 This maintenance fork of [shinkuan/Akagi v3](https://github.com/shinkuan/Akagi/tree/v3)
 uses **Majsoul and Tenhou official web clients** with bundled local inference.
+
+Akagi Web uses independent version numbers starting at **0.1.0**; upstream releases use a separate version line.
 
 ## What differs from upstream
 
@@ -49,8 +51,8 @@ History is finalized when the complete game ends, not after each individual hand
 | Linux | x86_64 | `linux-x64.zip`, DEB, RPM |
 | Linux | ARM64 | `linux-arm64.zip`, DEB, RPM |
 
-Get personal builds from [maintenance releases](https://github.com/Etakind/Akagi/releases)
-(access requires your normal repository permission). Verify the asset's SHA256; verify
+Get builds from [maintenance releases](https://github.com/Etakind/Akagi-web/releases)
+Verify the asset's SHA256; verify
 its minisign signature when one is supplied.
 
 Unzip into a user-owned directory. Run `akagi.exe` on Windows (WebView2 required),

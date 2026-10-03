@@ -13,13 +13,15 @@ on:
 permissions:
   contents: read
 jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
   build:
     uses: ./.github/workflows/build-packages.yml
     with:
       ref: ${{ github.sha }}
       repository: ${{ github.repository }}
   assets:
-    needs: build
+    needs: [build, checks]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -42,6 +44,7 @@ jobs:
             echo 'No signing key configured; artifacts remain unsigned.'
             exit 0
           fi
+          [[ -f minisign.pub ]] || { echo 'Publisher public key minisign.pub is required for signing'; exit 1; }
           sudo apt-get update && sudo apt-get install -y minisign
           umask 077
           key_file=$(mktemp)
@@ -71,4 +74,7 @@ jobs:
           git check-ref-format "refs/tags/$RELEASE_TAG"
           tag_sha=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")
           [[ "$tag_sha" == "$GITHUB_SHA" ]] || { echo 'Tag must point to this build commit'; exit 1; }
-          gh release create "$RELEASE_TAG" release-assets/* --verify-tag --title "Akagi maintenance $RELEASE_TAG" --generate-notes
+          notes="docs/releases/${RELEASE_TAG}.md"
+          [[ -f "$notes" ]] || { echo 'Reviewed release notes are required'; exit 1; }
+          python3 scripts/verify_release.py release-assets
+          gh release create "$RELEASE_TAG" release-assets/* --verify-tag --title "Akagi Web $RELEASE_TAG" --notes-file "$notes"

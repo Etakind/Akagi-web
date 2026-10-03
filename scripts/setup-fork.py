@@ -11,7 +11,7 @@ import sys
 import tempfile
 from urllib.parse import unquote, urlsplit
 
-ORIGIN = ("github.com", "etakind/akagi")
+ORIGIN = ("github.com", "etakind/akagi-web")
 UPSTREAM = ("github.com", "shinkuan/akagi")
 UPSTREAM_URL = "https://github.com/shinkuan/Akagi"
 DISABLED_PUSH = "disabled://upstream-push-disabled"
@@ -78,7 +78,7 @@ def setup(check=False):
         raise RuntimeError("Shared/external core.hooksPath: not modified; use repository-local hooks first")
     remotes = git("remote").splitlines()
     if "origin" not in remotes or repository_identity(git("remote", "get-url", "origin")) != ORIGIN:
-        raise RuntimeError("origin must identify the approved personal repository")
+        raise RuntimeError("origin must identify the Akagi Web publishing repository")
     for url in git("remote", "get-url", "--push", "--all", "origin").splitlines():
         if repository_identity(url) != ORIGIN:
             raise RuntimeError("origin has an unexpected push destination")
@@ -105,11 +105,8 @@ def setup(check=False):
         "push.followTags": "false",
         "pull.ff": "only",
         "branch.main.pushRemote": "origin",
-        "branch.dev.pushRemote": "origin",
         "branch.main.remote": "origin",
         "branch.main.merge": "refs/heads/main",
-        "branch.dev.remote": "origin",
-        "branch.dev.merge": "refs/heads/dev",
         "remote.upstream.pushurl": DISABLED_PUSH,
     }
     wrapper = "\n".join([

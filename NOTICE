@@ -63,10 +63,11 @@ mahgen
   https://github.com/eric200203/mahgen
   Licensed under the MIT License.
 
-  Used in: src/game_state/mahgen_view.rs, frontend <mah-gen> custom element
+  Used in: src/game_state/mahgen_view.rs, frontend tile renderer
   Notes:   Provides the DSL syntax used to pre-encode hand / meld / river
-           strings backend-side and the <mah-gen> Web Component used by the
-           frontend.
+           strings backend-side and the image compositor used by the frontend.
+           The maintenance fork adapts its embedded worker initialization for
+           CSP compatibility and uses a local error-reporting wrapper.
 
   MIT License
 

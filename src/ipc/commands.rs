@@ -972,7 +972,7 @@ pub async fn delete_game_history_entry(id: String, state: State<'_, AppState>) -
 /// `shinkuan/Akagi` is the canonical upstream — kept here as a const
 /// instead of plumbing through config so the user can't accidentally
 /// point the auto-updater at a fork.
-const MAINTENANCE_REPO: &str = "Etakind/Akagi";
+const MAINTENANCE_REPO: &str = "Etakind/Akagi-web";
 
 /// One-shot "is there a newer release?" — frontend calls this on app
 /// launch (with a 6h cache) and from the Settings "Check for updates"

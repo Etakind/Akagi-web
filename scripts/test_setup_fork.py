@@ -25,7 +25,7 @@ class ForkSetupTests(unittest.TestCase):
             ):
                 self.env.pop(key)
         self.git("init", "-b", "main")
-        self.git("remote", "add", "origin", "git@github.com:Etakind/Akagi.git")
+        self.git("remote", "add", "origin", "git@github.com:Etakind/Akagi-web.git")
         self.git("remote", "add", "upsteam", "https://github.com/shinkuan/Akagi")
         self.hooks = self.root / ".git" / "hooks"
 
@@ -72,7 +72,7 @@ class ForkSetupTests(unittest.TestCase):
         ]:
             with self.subTest(remote=remote, url=url):
                 self.assertNotEqual(self.hook(remote, url).returncode, 0)
-        for url in ["git@github.com:Etakind/Akagi.git", "https://github.com/Etakind/Akagi"]:
+        for url in ["git@github.com:Etakind/Akagi-web.git", "https://github.com/Etakind/Akagi-web"]:
             self.assertEqual(self.hook("origin", url).returncode, 0)
 
     def test_preserves_hook_arguments_stdin_and_failure(self):
@@ -83,7 +83,7 @@ class ForkSetupTests(unittest.TestCase):
         self.install()
         self.install()
         self.assertEqual((self.hooks / "pre-push.akagi-original").read_bytes(), content)
-        self.assertEqual(self.hook("origin", "https://github.com/Etakind/Akagi", "refs fixture\n").returncode, 23)
+        self.assertEqual(self.hook("origin", "https://github.com/Etakind/Akagi-web", "refs fixture\n").returncode, 23)
         self.assertEqual((self.root / "hook-input").read_text(), "refs fixture\n")
         self.assertEqual((self.root / "hook-args").read_text().splitlines()[0], "origin")
         (self.root / "hook-input").unlink()

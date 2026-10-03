@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline source-boundary regressions. Not run during the 2026-10-03 change."""
+"""Offline source-boundary and target-inventory regressions."""
 import json
 import pathlib
 import unittest
