@@ -83,7 +83,9 @@ fn countdown_is_monotonic_and_never_publishes_zero() {
     };
     let observation = status.begin(&action, status.current_window(), 0);
     observation.preparing("input", 0);
-    observation.scheduled(Duration::from_millis(100));
+    // Keep this deadline comfortably above scheduler jitter; expiry behavior
+    // is covered separately so this test only measures a live countdown.
+    observation.scheduled(Duration::from_secs(30));
 
     let first = status.poll().expect("scheduled record is dirty");
     let first_ms = first.records[0].remaining_ms.expect("countdown");
@@ -93,6 +95,27 @@ fn countdown_is_monotonic_and_never_publishes_zero() {
     let second_ms = second.records[0].remaining_ms.expect("countdown");
     assert!(second_ms > 0, "a countdown must never display zero");
     assert!(second_ms <= first_ms, "countdown must be monotonic");
+}
+
+#[test]
+fn expired_countdown_becomes_preparing_without_zero() {
+    let status = status_with_window();
+    let observation = status.begin(
+        &MjaiEvent::Dahai {
+            actor: 0,
+            pai: "5m".into(),
+            tsumogiri: false,
+        },
+        status.current_window(),
+        0,
+    );
+    observation.preparing("input", 0);
+    observation.scheduled(Duration::from_millis(1));
+    thread::sleep(Duration::from_millis(5));
+
+    let update = status.poll().expect("expired countdown remains observable");
+    assert_eq!(phase(&status, 0), Phase::Preparing);
+    assert!(update.records[0].remaining_ms.is_none());
 }
 
 #[test]
