@@ -25,6 +25,8 @@ jobs:
         run: echo "matrix=$(python3 scripts/package.py --matrix)" >> "$GITHUB_OUTPUT"
   build:
     needs: targets
+    env:
+      RUSTFLAGS: '-D warnings'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}

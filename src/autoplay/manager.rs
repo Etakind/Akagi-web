@@ -13,7 +13,7 @@
 //! manager logs a warning and skips the click. The bot pipeline is
 //! untouched; the user can still play the round manually.
 
-use crate::autoplay::cdp_input::{dispatch_click_shaped, evaluate_canvas_rect};
+use crate::autoplay::cdp_input::{dispatch_click_observed, evaluate_canvas_rect};
 use crate::autoplay::context::{AutoplayContext, CanvasRect};
 use crate::autoplay::majsoul::MajsoulAutoplay;
 use crate::autoplay::platform::{ActionContext, PlatformAutoplay, Step};
@@ -35,6 +35,15 @@ use tracing::{debug, info, warn};
 
 /// How long before a cached `CanvasRect` is treated as stale and re-queried.
 const CANVAS_RECT_TTL: Duration = Duration::from_secs(30);
+
+fn operation_step(action: &MjaiEvent, index: usize) -> &'static str {
+    match (action, index) {
+        (MjaiEvent::Reach { .. }, 0) => "declare_reach",
+        (MjaiEvent::Reach { .. }, _) => "discard",
+        (_, 0) => "input",
+        _ => "select_candidate",
+    }
+}
 
 pub struct AutoplayManager {
     cfg: Arc<RwLock<AppConfig>>,
@@ -149,6 +158,7 @@ impl AutoplayManager {
         // model — neither can alter the chosen action. `opened_at` is kept
         // as the window's identity for the post-sleep staleness check.
         let planned_budget = self.ctx.time_budget.read().ok().and_then(|g| *g);
+        let observed_window = self.ctx.status.current_window();
         let budget = planned_budget.map(|b| crate::autoplay::delay::BudgetSnapshot {
             fixed_ms: b.fixed_ms,
             add_ms: b.add_ms,
@@ -227,6 +237,22 @@ impl AutoplayManager {
         if plan.steps.is_empty() {
             return;
         }
+        let observed_action =
+            if self.state.self_riichi_accepted && matches!(resp.action, MjaiEvent::Dahai { .. }) {
+                MjaiEvent::None // the generated plan cancels the riichi prompt
+            } else {
+                resp.action.clone()
+            };
+        let observation = (platform_kind == crate::config::Platform::Majsoul
+            && plan
+                .steps
+                .iter()
+                .any(|step| matches!(step, Step::Click { .. })))
+        .then(|| {
+            self.ctx
+                .status
+                .begin(&observed_action, observed_window, our_seat)
+        });
         debug!(
             "autoplay: action={:?} steps={}",
             resp.action,
@@ -287,6 +313,7 @@ impl AutoplayManager {
         if let Some(window) = planned_window {
             self.state.acted_window = Some(window.opened_at);
         }
+        let mut click_index = 0;
         for step in &plan.steps {
             let current = self.cfg.read().await;
             if !self
@@ -306,6 +333,12 @@ impl AutoplayManager {
             drop(current);
             match step {
                 Step::Sleep { duration_ms } => {
+                    if let Some(observer) = &observation {
+                        observer.preparing(operation_step(&observed_action, click_index), 0);
+                        observer.scheduled(Duration::from_millis(
+                            u64::from(*duration_ms) + u64::from(cfg.hover_delay_ms),
+                        ));
+                    }
                     tokio::time::sleep(Duration::from_millis(*duration_ms as u64)).await;
                 }
                 Step::AwaitReady { timeout_ms } => {
@@ -394,6 +427,9 @@ impl AutoplayManager {
                     }
                 }
                 Step::Click { x_norm, y_norm } => {
+                    if let Some(observer) = &observation {
+                        observer.preparing(operation_step(&observed_action, click_index), 0);
+                    }
                     let Some(rect) = rect else {
                         warn!("autoplay: click step with no canvas rect; skipping");
                         continue;
@@ -412,6 +448,14 @@ impl AutoplayManager {
                     // signal — behaviour is unchanged there.
                     if !window_checked {
                         window_checked = true;
+                        if observation.is_some()
+                            && !self
+                                .ctx
+                                .status
+                                .window_valid(observed_window, resp.decision_started)
+                        {
+                            return;
+                        }
                         if planned_budget.is_some() {
                             let current = self.ctx.time_budget.read().ok().and_then(|g| *g);
                             if current.map(|b| b.opened_at) != planned_budget.map(|b| b.opened_at) {
@@ -452,26 +496,33 @@ impl AutoplayManager {
                     // goes out, so the hand throws its riichi tile with no
                     // riichi behind it. That press gets the sturdier shape
                     // from the first attempt rather than only on a retry.
-                    if let Err(e) = dispatch_click_shaped(
+                    if let Err(e) = dispatch_click_observed(
                         page,
                         px,
                         py,
                         cfg.hover_delay_ms,
                         cfg.click_hold_ms,
                         declares_reach,
+                        observation.as_ref(),
                     )
                     .await
                     {
                         warn!("autoplay: dispatch_click failed: {e:#}");
+                        if let Some(observer) = &observation {
+                            observer.failed();
+                        }
                         return;
                     }
                     drop(page_guard);
+                    click_index += 1;
                 }
             }
         }
 
         if let (true, Some(rect)) = (cfg.verify_input_ms > 0, rect) {
-            // What counts as proof. A discard plan is proven by any input.
+            // Legacy registration check controls retries only; server-backed
+            // operation success is handled independently by the status store.
+            // This check accepts any input for a discard plan.
             // Every other plan pressed action buttons, and for those a
             // plain discard can only be the client's own turn-timeout
             // tsumogiri — it arrives with a human-scale `timeuse` and no
@@ -489,6 +540,7 @@ impl AutoplayManager {
                     &resp.action,
                     require_non_discard,
                     generation,
+                    observation.as_ref(),
                 )
                 .await;
             // Repeated unregistered input pauses actions; never reload a game.
@@ -536,6 +588,9 @@ impl AutoplayManager {
                     ),
                 );
             }
+        }
+        if let Some(observer) = &observation {
+            observer.finish();
         }
     }
 
@@ -647,6 +702,7 @@ impl AutoplayManager {
         action: &MjaiEvent,
         require_non_discard: bool,
         generation: u64,
+        observation: Option<&crate::autoplay::status::Observation>,
     ) -> bool {
         let clicks: Vec<(f64, f64)> = plan
             .steps
@@ -699,7 +755,16 @@ impl AutoplayManager {
             let hold = retry_hold_ms(cfg.click_hold_ms, attempt);
             let jiggle = attempt >= 1;
             for (i, (x_norm, y_norm)) in again.iter().enumerate() {
+                if let Some(observer) = observation {
+                    let index = clicks.len() - again.len() + i;
+                    observer.preparing(operation_step(action, index), attempt + 1);
+                }
                 if i > 0 {
+                    if let Some(observer) = observation {
+                        observer.scheduled(Duration::from_millis(
+                            u64::from(cfg.inter_click_delay_ms) + u64::from(cfg.hover_delay_ms),
+                        ));
+                    }
                     tokio::time::sleep(Duration::from_millis(u64::from(cfg.inter_click_delay_ms)))
                         .await;
                 }
@@ -723,10 +788,21 @@ impl AutoplayManager {
                     );
                     return false;
                 }
-                if let Err(e) =
-                    dispatch_click_shaped(page, px, py, cfg.hover_delay_ms, hold, jiggle).await
+                if let Err(e) = dispatch_click_observed(
+                    page,
+                    px,
+                    py,
+                    cfg.hover_delay_ms,
+                    hold,
+                    jiggle,
+                    observation,
+                )
+                .await
                 {
                     warn!("autoplay: retry dispatch_click failed: {e:#}");
+                    if let Some(observer) = observation {
+                        observer.failed();
+                    }
                 }
             }
         }

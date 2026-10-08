@@ -157,6 +157,8 @@ export type AutoplayConfig = {
 export type OverlayConfig = {
   enabled: boolean
   top_n: number
+  event_count: number
+  font_size: number
   opacity: number
   always_on_top: boolean
 }
@@ -165,6 +167,32 @@ export type OverlayConfig = {
  *  offer a value the backend would silently clamp. */
 export const OVERLAY_TOP_N_MIN = 1
 export const OVERLAY_TOP_N_MAX = 5
+export const OVERLAY_EVENT_COUNT_MIN = 1
+export const OVERLAY_EVENT_COUNT_MAX = 10
+export const OVERLAY_FONT_SIZE_MIN = 12
+export const OVERLAY_FONT_SIZE_MAX = 24
+
+export type AutoplayPhase = 'preparing' | 'scheduled' | 'executing' | 'awaiting_feedback'
+  | 'succeeded' | 'failed' | 'cancelled' | 'unconfirmed'
+
+export type AutoplayRecord = {
+  id: number
+  round: string
+  created_at: number
+  action: { type: string; actor?: number; target?: number; pai?: string; consumed?: string[] }
+  step: string
+  retry: number
+  phase: AutoplayPhase
+  remaining_ms: number | null
+  reason: string | null
+}
+
+export type AutoplayStatusUpdate = {
+  version: number
+  reset: boolean
+  enabled: boolean
+  records: AutoplayRecord[]
+}
 export const OVERLAY_OPACITY_MIN = 0.3
 export const OVERLAY_OPACITY_MAX = 1.0
 

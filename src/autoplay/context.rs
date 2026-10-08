@@ -23,9 +23,10 @@ pub struct AutoplayContext {
     pub time_budget: crate::autoplay::budget::SharedTimeBudget,
     /// Counter of the client's own uplink input commands, bumped by the
     /// Majsoul bridge as it parses. The manager takes a ticket before a
-    /// click and asks afterwards whether the count moved — the proof that
-    /// the click registered (see `autoplay::verify`).
+    /// click and asks afterwards whether the count moved to control the
+    /// existing retries. This is not server confirmation of an action.
     pub input_watch: crate::autoplay::verify::SharedInputWatch,
+    pub status: Arc<crate::autoplay::status::AutoplayStatus>,
 }
 
 impl AutoplayContext {
@@ -35,6 +36,7 @@ impl AutoplayContext {
 
     /// Cancel queued/in-flight actions without resetting observation state.
     pub fn invalidate_actions(&self) {
+        self.status.invalidate();
         *self.action_cutoff.write().unwrap() = Some(std::time::Instant::now());
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -56,6 +58,9 @@ impl AutoplayContext {
                 .store(enabled, std::sync::atomic::Ordering::SeqCst);
             self.enabled_changes.send_replace(enabled);
         }
+        self.status.set_enabled(
+            enabled && *self.platform.read().unwrap() == crate::config::Platform::Majsoul,
+        );
     }
 
     pub fn accepts_decision(&self, started: Option<std::time::Instant>) -> bool {

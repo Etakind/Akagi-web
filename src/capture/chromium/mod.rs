@@ -90,6 +90,7 @@ impl CaptureBackend for ChromiumBackend {
                             notify: Some(ctx.notify_bus.clone()),
                             time_budget: ctx.autoplay.as_ref().map(|a| a.time_budget.clone()),
                             input_watch: ctx.autoplay.as_ref().map(|a| a.input_watch.clone()),
+                            autoplay_status: ctx.autoplay.as_ref().map(|a| a.status.clone()),
                         },
                     ));
                     info!("attaching existing local browser; selected official game pages only");
@@ -197,6 +198,7 @@ impl CaptureBackend for ChromiumBackend {
             .map(|a| crate::bridge::BridgeHooks {
                 time_budget: Some(a.time_budget.clone()),
                 input_watch: Some(a.input_watch.clone()),
+                autoplay_status: Some(a.status.clone()),
                 tenhou_state: Some(a.tenhou_state.clone()),
                 notify: None,
             })

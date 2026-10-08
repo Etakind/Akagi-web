@@ -1,4 +1,68 @@
 {
+  "autoplay_status": {
+    "title": "自动操作",
+    "game_events": "牌局事件",
+    "empty": "暂无自动操作记录",
+    "round": "局",
+    "retry": "重试 {{count}}",
+    "action": {
+      "dahai": "弃牌",
+      "chi": "吃",
+      "pon": "碰",
+      "daiminkan": "明杠",
+      "ankan": "暗杠",
+      "kakan": "加杠",
+      "reach": "立直",
+      "hora": "和牌",
+      "kita": "拔北",
+      "ryukyoku": "九种九牌",
+      "none": "跳过"
+    },
+    "step": {
+      "input": "点击",
+      "declare_reach": "声明立直",
+      "discard": "点击出牌",
+      "select_candidate": "选择候选"
+    },
+    "phase": {
+      "preparing": "准备中",
+      "scheduled": "待点击",
+      "executing": "正在执行",
+      "awaiting_feedback": "等待反馈",
+      "succeeded": "成功",
+      "failed": "失败",
+      "cancelled": "已取消",
+      "unconfirmed": "未确认"
+    },
+    "reason": {
+      "server_confirmed": "服务端确认",
+      "autoplay_disabled": "自动打牌已关闭",
+      "disconnected": "连接中断",
+      "page_invalid": "页面失效",
+      "window_expired": "决策窗口过期",
+      "manual_takeover": "检测到手动接管",
+      "input_conflict": "输入与计划冲突",
+      "feedback_conflict": "反馈动作与计划冲突",
+      "server_error": "服务端拒绝：{{code}}",
+      "cdp_failed": "CDP 输入失败",
+      "feedback_timeout": "5 秒内未收到充分反馈",
+      "operation_aborted": "操作已中止",
+      "request_id_reused": "请求 ID 复用，无法关联"
+    },
+    "tile": {
+      "m": "{{number}}万",
+      "p": "{{number}}筒",
+      "s": "{{number}}索",
+      "red": "（赤）",
+      "E": "东",
+      "S": "南",
+      "W": "西",
+      "N": "北",
+      "P": "白",
+      "F": "发",
+      "C": "中"
+    }
+  },
   "nav": {
     "overview": "总览",
     "game": "对局",
@@ -301,6 +365,10 @@
     "close": "关闭"
   },
   "settings": {
+    "overlay_font_size": "悬浮窗基准字号",
+    "overlay_font_size_hint": "12～24px，默认 14。按比例缩放全部悬浮窗文字与行高，不影响主界面。",
+    "overlay_event_count": "自动操作记录条数",
+    "overlay_event_count_hint": "开启雀魂自动打牌时在悬浮窗展示最近 1～10 条；主界面保留整场记录。",
     "title": "设置",
     "general": "通用",
     "language": "语言",

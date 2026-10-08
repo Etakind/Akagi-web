@@ -5,6 +5,7 @@ pub mod delay;
 pub mod majsoul;
 pub mod manager;
 pub mod platform;
+pub mod status;
 pub mod tenhou;
 pub mod tenhou_state;
 pub mod verify;

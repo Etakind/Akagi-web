@@ -1,4 +1,68 @@
 {
+  "autoplay_status": {
+    "title": "自動操作",
+    "game_events": "牌局事件",
+    "empty": "尚無自動操作紀錄",
+    "round": "局",
+    "retry": "重試 {{count}}",
+    "action": {
+      "dahai": "捨牌",
+      "chi": "吃",
+      "pon": "碰",
+      "daiminkan": "明槓",
+      "ankan": "暗槓",
+      "kakan": "加槓",
+      "reach": "立直",
+      "hora": "和牌",
+      "kita": "拔北",
+      "ryukyoku": "九種九牌",
+      "none": "跳過"
+    },
+    "step": {
+      "input": "點擊",
+      "declare_reach": "宣告立直",
+      "discard": "點擊出牌",
+      "select_candidate": "選擇候選"
+    },
+    "phase": {
+      "preparing": "準備中",
+      "scheduled": "待點擊",
+      "executing": "正在執行",
+      "awaiting_feedback": "等待回饋",
+      "succeeded": "成功",
+      "failed": "失敗",
+      "cancelled": "已取消",
+      "unconfirmed": "未確認"
+    },
+    "reason": {
+      "server_confirmed": "伺服器確認",
+      "autoplay_disabled": "自動打牌已關閉",
+      "disconnected": "連線中斷",
+      "page_invalid": "頁面失效",
+      "window_expired": "決策視窗過期",
+      "manual_takeover": "偵測到手動接管",
+      "input_conflict": "輸入與計畫衝突",
+      "feedback_conflict": "回饋動作與計畫衝突",
+      "server_error": "伺服器拒絕：{{code}}",
+      "cdp_failed": "CDP 輸入失敗",
+      "feedback_timeout": "5 秒內未收到充分回饋",
+      "operation_aborted": "操作已中止",
+      "request_id_reused": "請求 ID 重用，無法關聯"
+    },
+    "tile": {
+      "m": "{{number}}萬",
+      "p": "{{number}}筒",
+      "s": "{{number}}索",
+      "red": "（赤）",
+      "E": "東",
+      "S": "南",
+      "W": "西",
+      "N": "北",
+      "P": "白",
+      "F": "發",
+      "C": "中"
+    }
+  },
   "nav": {
     "overview": "總覽",
     "game": "對局",
@@ -301,6 +365,10 @@
     "close": "關閉"
   },
   "settings": {
+    "overlay_font_size": "懸浮視窗基準字號",
+    "overlay_font_size_hint": "12～24px，預設 14。等比例縮放全部懸浮視窗文字與行高，不影響主介面。",
+    "overlay_event_count": "自動操作紀錄數量",
+    "overlay_event_count_hint": "開啟雀魂自動打牌時在懸浮視窗顯示最近 1～10 筆；主介面保留整場紀錄。",
     "title": "設定",
     "general": "一般",
     "language": "語言",

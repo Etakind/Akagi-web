@@ -1,10 +1,10 @@
 // Exercise the real compositor and production CSP in a disposable browser.
 // Never attaches to an existing browser/profile or opens a game page.
 import { build } from 'vite'
-import { mahgenCsp } from './mahgen-csp.mjs'
+import { mahgenCsp, MAHGEN_DATA_PREFIX } from './mahgen-csp.mjs'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 
 const root = resolve(import.meta.dirname, '../..')
 const tmp = await mkdtemp(join(tmpdir(), 'akagi-tiles-'))
+const assets = resolve(tmp, 'assets')
 const csp = JSON.parse(await readFile(join(root, 'tauri.conf.json'), 'utf8')).app.security.csp
 const candidates = [process.env.AKAGI_TEST_BROWSER,
   '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
@@ -26,8 +27,35 @@ try {
   }
   assert(executable, 'Set AKAGI_TEST_BROWSER to an installed Chromium executable')
   await build({ configFile: false, plugins: [mahgenCsp()], root: join(root, 'frontend'), logLevel: 'error',
-    build: { outDir: join(tmp, 'assets'), lib: { entry: join(root, 'frontend/src/lib/tileRenderer.ts'), formats: ['es'], fileName: () => 'tiles.js' } } })
-  const tiles = await readFile(join(tmp, 'assets/tiles.js'))
+    build: {
+      outDir: assets,
+      lib: { entry: join(root, 'frontend/src/lib/tileRenderer.ts'), formats: ['es'], fileName: () => 'tiles.js' },
+      rolldownOptions: {
+        preserveEntrySignatures: 'allow-extension',
+        output: {
+          codeSplitting: {
+            groups: [
+              {
+                name: id => `mahgen-data-${id.slice(MAHGEN_DATA_PREFIX.length)}`,
+                debugName: 'mahgen-data',
+                test: id => id.startsWith(MAHGEN_DATA_PREFIX),
+                priority: 20,
+                includeDependenciesRecursively: false,
+              },
+              {
+                name: 'tile-support',
+                debugName: 'tile-support',
+                test: /[\\/]src[\\/]/,
+                priority: 10,
+                maxSize: 300_000,
+                includeDependenciesRecursively: false,
+              },
+            ],
+          },
+        },
+      },
+    },
+  })
   if (process.platform === 'darwin') {
     const compiler = spawn('/usr/bin/clang', ['-fobjc-arc', '-framework', 'Cocoa', '-framework', 'WebKit',
       join(root, 'frontend/scripts/test-tiles-webkit.m'), '-o', join(tmp, 'webkit-fixture')], { stdio: 'inherit' })
@@ -41,9 +69,17 @@ try {
   let policy = csp
   server = createServer((req, res) => {
     res.setHeader('Content-Security-Policy', policy)
-    if (req.url === '/tiles.js') { res.setHeader('Content-Type','text/javascript'); res.end(tiles) }
-    else if (req.url === '/fixture.js') { res.setHeader('Content-Type','text/javascript'); res.end(fixture) }
-    else { res.setHeader('Content-Type','text/html'); res.end('<!doctype html><script type="module" src="/tiles.js"></script><script type="module" src="/fixture.js"></script>') }
+    const pathname = new URL(req.url, 'http://127.0.0.1').pathname
+    if (pathname === '/fixture.js') { res.setHeader('Content-Type','text/javascript'); res.end(fixture) }
+    else if (pathname === '/') { res.setHeader('Content-Type','text/html'); res.end('<!doctype html><script type="module" src="/tiles.js"></script><script type="module" src="/fixture.js"></script>') }
+    else {
+      const asset = join(assets, pathname.slice(1))
+      if (!asset.startsWith(`${assets}${sep}`)) { res.statusCode = 404; res.end(); return }
+      readFile(asset).then(data => {
+        res.setHeader('Content-Type', pathname.endsWith('.css') ? 'text/css' : 'text/javascript')
+        res.end(data)
+      }).catch(() => { res.statusCode = 404; res.end() })
+    }
   }).listen(0, '127.0.0.1')
   await once(server, 'listening')
   browser = spawn(executable, ['--headless=new', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',

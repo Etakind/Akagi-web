@@ -36,6 +36,16 @@ use that client.
 | [Tenhou](https://tenhou.net/4/) | 3p/4p parsing and local advice, history and PT statistics, Inspector, optional autoplay |
 
 Tenhou autoplay needs its client adapter. It is prepared only when autoplay is enabled.
+
+For Majsoul, automatic-action countdowns, steps and results appear in **Game → Events → Automatic actions**.
+The overlay shows the latest actions only while Majsoul autoplay is effectively enabled (default 4 rows, configurable from 1 to 10).
+Countdowns observe the existing plan's next mouse press, including waiting and hover; uncertain page/safety preparation is shown as “Preparing”.
+Success requires matching server feedback, or a correlated error-free response for passing. Sending an input request alone is not success.
+Insufficient feedback 5 seconds after the last input is “Unconfirmed”; this does not add retries, and late matching feedback on the same connection and round may confirm it.
+All text in an unconfirmed record is red; “Awaiting feedback” is not unconfirmed. The overlay base font size is configurable from 12–24px (default 14).
+All overlay text and row heights scale together without affecting the main window. Larger fonts and more records require more screen height; adjust either for your screen.
+In-memory records survive rounds, same-match reconnects and match completion, and clear when a new match is confirmed. Remaining turn time is not displayed.
+The protocol cannot fully distinguish simultaneous identical manual and automatic actions; records are not independent proof of input attribution.
 If attaching after the client script has loaded, re-enter or refresh **yourself when safe**.
 If the client changes or the current hand cannot be reconstructed, actions stop; wait
 for a complete next hand.
@@ -66,6 +76,18 @@ Do not disable browser TLS/sandboxing or globally remove OS quarantine protectio
 In a writable portable directory, data is normally next to the executable; read-only
 system installations use user configuration/data directories. Existing explicit paths
 remain respected.
+
+### First run: configure and save
+
+The initial configuration screen is **not a stripped-down application**. Select the game platform, browser and capture options,
+then click **Save** to enter the main interface with Overview, Game, Bots, History, Logs and Settings. A failed save leaves the setup screen open.
+Source builds and release packages use the same initialization flow.
+
+With capture enabled by default, Akagi automatically opens its controlled browser and the Majsoul page. Logging in there is useful:
+independent browser mode uses a persistent isolated profile (normally `chrome-profile` next to the executable), so reusing the **same directory**
+can preserve cookies and login state. The game server may expire or revoke the session; automatic login is not guaranteed.
+Changing the directory, moving only the executable without its profile, or attaching to another browser may not retain that login.
+Akagi does not add account/password storage or copy login databases from your regular browser.
 
 ## Connect a browser
 

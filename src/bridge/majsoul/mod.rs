@@ -69,6 +69,7 @@ const AN_GANG_ADD_GANG_ADD: u64 = 2;
 const TEHAI_SIZE: usize = 13;
 const TSUMO_TEHAI_SIZE: usize = 14;
 const UNKNOWN_TILE: &str = "?";
+static NEXT_FLOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Per-flow Majsoul state. Holds the liqi parser and the game state mirror
 /// needed to emit mjai events.
@@ -107,6 +108,8 @@ enum DoraTiming {
 }
 
 pub struct MajsoulBridge {
+    flow_id: u64,
+    autoplay_status: Option<Arc<crate::autoplay::status::AutoplayStatus>>,
     parser: LiqiParser,
     flow_log: Option<Arc<FlowLogger>>,
     session: Option<Arc<Session>>,
@@ -174,9 +177,19 @@ pub struct MajsoulBridge {
     input_watch: Option<crate::autoplay::verify::SharedInputWatch>,
 }
 
+impl Drop for MajsoulBridge {
+    fn drop(&mut self) {
+        if let Some(status) = &self.autoplay_status {
+            status.disconnect(self.flow_id);
+        }
+    }
+}
+
 impl MajsoulBridge {
     pub fn new(flow_log: Option<Arc<FlowLogger>>, session: Option<Arc<Session>>) -> Self {
         Self {
+            flow_id: NEXT_FLOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            autoplay_status: None,
             parser: LiqiParser::new(),
             flow_log,
             session,
@@ -202,6 +215,14 @@ impl MajsoulBridge {
     /// `bridge::for_platform`).
     pub fn with_time_budget(mut self, slot: Option<SharedTimeBudget>) -> Self {
         self.time_budget = slot;
+        self
+    }
+
+    pub fn with_autoplay_status(
+        mut self,
+        status: Option<Arc<crate::autoplay::status::AutoplayStatus>>,
+    ) -> Self {
+        self.autoplay_status = status;
         self
     }
 
@@ -279,13 +300,25 @@ impl MajsoulBridge {
                 // New game: whatever window the previous game left in the
                 // budget slot is stale.
                 self.store_budget(None);
-                self.handle_auth_game_response(&msg.payload)
+                let events = self.handle_auth_game_response(&msg.payload);
+                if events
+                    .iter()
+                    .any(|event| matches!(event, MjaiEvent::StartGame { .. }))
+                {
+                    if let (Some(status), Some(game)) = (&self.autoplay_status, self.game_id) {
+                        status.bind_game(self.flow_id, game);
+                    }
+                }
+                events
             }
             // The client only sends these once it has accepted an input,
             // so they are the proof an autoplay click landed. No mjai event
             // comes of them — the server's echo carries the game state.
             (MessageType::Request, METHOD_INPUT_OPERATION)
             | (MessageType::Request, METHOD_INPUT_CHI_PENG_GANG) => {
+                if let (Some(status), Some(id)) = (&self.autoplay_status, msg.msg_id) {
+                    status.request(self.flow_id, id, &msg.payload);
+                }
                 if let Some(watch) = &self.input_watch {
                     if is_client_initiated(&msg.payload) {
                         watch.note_sent(input_kind(msg.method_name.as_ref(), &msg.payload));
@@ -293,10 +326,18 @@ impl MajsoulBridge {
                 }
                 Vec::new()
             }
+            (MessageType::Response, METHOD_INPUT_OPERATION)
+            | (MessageType::Response, METHOD_INPUT_CHI_PENG_GANG) => {
+                if let (Some(status), Some(id)) = (&self.autoplay_status, msg.msg_id) {
+                    status.response(self.flow_id, id, &msg.payload);
+                }
+                Vec::new()
+            }
             (MessageType::Notify, METHOD_ACTION_PROTOTYPE) => self.handle_action_prototype(msg),
             (MessageType::Response, METHOD_SYNC_GAME)
             | (MessageType::Response, METHOD_ENTER_GAME) => self.handle_game_restore(&msg.payload),
             (MessageType::Notify, METHOD_NOTIFY_GAME_END_RESULT) => {
+                self.close_observed_window();
                 info!(
                     target: "akagi::bridge::majsoul",
                     "game ended: {}", msg.payload
@@ -309,6 +350,7 @@ impl MajsoulBridge {
                 vec![MjaiEvent::confirmed_game(final_scores, final_ranks)]
             }
             (MessageType::Notify, METHOD_NOTIFY_GAME_TERMINATE) => {
+                self.close_observed_window();
                 info!(
                     target: "akagi::bridge::majsoul",
                     "game terminated: {}", msg.payload
@@ -403,7 +445,7 @@ impl MajsoulBridge {
                 msg_type: MessageType::Notify,
                 msg_id: None,
                 method_name: Arc::from(METHOD_ACTION_PROTOTYPE),
-                payload: json!({ "name": name, "data": decoded }),
+                payload: json!({ "name": name, "data": decoded, "step": action.get("step").and_then(JsonValue::as_u64).unwrap_or(0) }),
             };
             events.extend(self.handle_action_prototype(&synthetic));
         }
@@ -426,6 +468,9 @@ impl MajsoulBridge {
             b
         });
         self.store_budget(committed);
+        if let Some(status) = &self.autoplay_status {
+            status.restore_elapsed(self.flow_id, Duration::from_secs(passed));
+        }
         events
     }
 
@@ -459,6 +504,12 @@ impl MajsoulBridge {
             if let Ok(mut guard) = slot.write() {
                 *guard = budget;
             }
+        }
+    }
+
+    fn close_observed_window(&self) {
+        if let (Some(status), Some(seat)) = (&self.autoplay_status, self.seat) {
+            status.window(self.flow_id, u64::MAX, None, None, seat);
         }
     }
 
@@ -551,6 +602,29 @@ impl MajsoulBridge {
                 Vec::new()
             }
         };
+
+        if let (Some(status), Some(seat)) = (&self.autoplay_status, self.seat) {
+            let step = msg.payload["step"].as_u64().unwrap_or(0);
+            if !self.replaying {
+                status.feedback(self.flow_id, step, action_name, action_data, &events);
+            }
+            // Restore may update the current round/window but is never evidence.
+            let round = (action_name == ACTION_NEW_ROUND).then(|| {
+                format!(
+                    "{}:{}:{}",
+                    action_data["chang"].as_u64().unwrap_or(0),
+                    action_data["ju"].as_u64().unwrap_or(0) + 1,
+                    action_data["ben"].as_u64().unwrap_or(0)
+                )
+            });
+            status.window(
+                self.flow_id,
+                step,
+                round,
+                action_data.get("operation"),
+                seat,
+            );
+        }
 
         match pending_reach {
             Some(actor) => {
@@ -1746,6 +1820,48 @@ mod tests {
         let mut bridge = MajsoulBridge::new(None, None);
         let events = bridge.dispatch(&req(METHOD_INPUT_OPERATION, json!({ "type": 1 })));
         assert!(events.is_empty());
+    }
+
+    /// The bridge must forward an actually pressed skip request to the
+    /// ledger, while a client-generated timeout request must not become a
+    /// successful operation merely because its response has no error.
+    #[test]
+    fn autoplay_status_routes_skip_and_rejects_timeout_response() {
+        let status = Arc::new(crate::autoplay::status::AutoplayStatus::default());
+        let mut bridge = MajsoulBridge::new(None, None).with_autoplay_status(Some(status.clone()));
+        let game = 7_301;
+        status.bind_game(bridge.flow_id, game);
+        status.set_enabled(true);
+        let operation = json!({ "seat": 0, "time_fixed": 5000, "time_add": 0 });
+        status.window(bridge.flow_id, 10, Some("E1:0".into()), Some(&operation), 0);
+
+        let skip = status.begin(&MjaiEvent::None, status.current_window(), 0);
+        skip.pressed();
+        skip.released();
+        skip.finish();
+        bridge.dispatch(&req(
+            METHOD_INPUT_OPERATION,
+            json!({ "cancel_operation": true, "type": 0, "timeuse": 3 }),
+        ));
+        bridge.dispatch(&resp(METHOD_INPUT_OPERATION, json!({})));
+        let records = serde_json::to_value(status.snapshot()).unwrap();
+        assert_eq!(records["records"][0]["phase"], "succeeded");
+
+        let timeout = status.begin(&MjaiEvent::None, status.current_window(), 0);
+        timeout.pressed();
+        timeout.released();
+        timeout.finish();
+        bridge.dispatch(&req(
+            METHOD_INPUT_OPERATION,
+            json!({
+                "cancel_operation": true,
+                "type": 0,
+                "timeuse": 1_000_000
+            }),
+        ));
+        bridge.dispatch(&resp(METHOD_INPUT_OPERATION, json!({})));
+        let records = serde_json::to_value(status.snapshot()).unwrap();
+        assert_eq!(records["records"][1]["phase"], "unconfirmed");
     }
 
     /// Full `.lq.FastTest.syncGame` response captured from a real mid-game

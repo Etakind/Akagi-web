@@ -30,6 +30,8 @@ jobs:
     needs: targets
     name: Rust (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
+    env:
+      RUSTFLAGS: '-D warnings'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
@@ -61,14 +63,28 @@ jobs:
       - name: rustfmt
         run: cargo fmt --all -- --check
 
+      # custom-protocol embeds frontendDist during all-feature checks.
+      - name: Setup Node for embedded frontend
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build embedded frontend
+        run: npm ci --prefix frontend && npm run build --prefix frontend
+
       - name: clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: test all targets
         run: cargo test --locked --all-targets
 
+      - name: test all features
+        run: cargo test --locked --all-targets --all-features
+
       - name: Native bot regression
-        run: cargo test --locked --manifest-path native_bot/Cargo.toml
+        run: cargo test --locked --all-targets --manifest-path native_bot/Cargo.toml
 
   tools:
     runs-on: ubuntu-latest

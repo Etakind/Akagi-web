@@ -21,6 +21,10 @@ pub struct OverlayConfig {
     pub enabled: bool,
     /// How many Bot Show rows to render.
     pub top_n: usize,
+    /// Visible automatic-operation records (history itself is not truncated).
+    pub event_count: usize,
+    /// Base overlay font size in logical pixels; all overlay text scales with it.
+    pub font_size: u16,
     /// Card opacity. The window itself is transparent; this fades the card
     /// drawn inside it so the table stays partly visible underneath.
     pub opacity: f64,
@@ -34,6 +38,8 @@ impl Default for OverlayConfig {
         Self {
             enabled: true,
             top_n: 3,
+            event_count: 4,
+            font_size: 14,
             opacity: 0.95,
             always_on_top: true,
         }
@@ -41,6 +47,18 @@ impl Default for OverlayConfig {
 }
 
 impl OverlayConfig {
+    pub fn clamped_font_size(&self) -> u16 {
+        self.font_size.clamp(12, 24)
+    }
+
+    pub fn font_scale(&self) -> f64 {
+        f64::from(self.clamped_font_size()) / 14.0
+    }
+
+    pub fn clamped_event_count(&self) -> usize {
+        self.event_count.clamp(1, 10)
+    }
+
     /// `top_n` clamped into [`TOP_N_MIN`, `TOP_N_MAX`].
     ///
     /// The frontend picks from a bounded control, but `config.toml` is a
@@ -69,8 +87,12 @@ mod tests {
         let c = OverlayConfig::default();
         assert!(c.enabled, "overlay is on out of the box");
         assert_eq!(c.top_n, 3);
+        assert_eq!(c.event_count, 4);
+        assert_eq!(c.font_size, 14);
         assert!(c.always_on_top);
         assert_eq!(c.clamped_top_n(), 3);
+        assert_eq!(c.clamped_event_count(), 4);
+        assert_eq!(c.clamped_font_size(), 14);
         assert_eq!(c.clamped_opacity(), 0.95);
     }
 
@@ -102,6 +124,28 @@ mod tests {
         };
         assert_eq!(huge.clamped_top_n(), TOP_N_MAX);
         assert_eq!(huge.clamped_opacity(), OPACITY_MAX);
+
+        let too_few = OverlayConfig {
+            event_count: 0,
+            ..Default::default()
+        };
+        assert_eq!(too_few.clamped_event_count(), 1);
+        let too_many = OverlayConfig {
+            event_count: 99,
+            ..Default::default()
+        };
+        assert_eq!(too_many.clamped_event_count(), 10);
+
+        let too_small_font = OverlayConfig {
+            font_size: 1,
+            ..Default::default()
+        };
+        assert_eq!(too_small_font.clamped_font_size(), 12);
+        let too_large_font = OverlayConfig {
+            font_size: 99,
+            ..Default::default()
+        };
+        assert_eq!(too_large_font.clamped_font_size(), 24);
     }
 
     #[test]

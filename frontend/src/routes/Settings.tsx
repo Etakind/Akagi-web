@@ -50,6 +50,8 @@ import {
   platformInfo, PLATFORMS,
 } from '@/lib/platforms'
 import {
+  OVERLAY_FONT_SIZE_MAX,
+  OVERLAY_FONT_SIZE_MIN,
   OVERLAY_OPACITY_MAX,
   OVERLAY_OPACITY_MIN,
   OVERLAY_TOP_N_MAX,
@@ -331,6 +333,42 @@ function OverlayCard({
             className="w-full accent-primary"
             aria-label={t('settings.overlay_top_n')}
           />
+        </div>
+
+        <div className="grid gap-1.5">
+          <div className="flex items-center justify-between">
+            <Label>{t('settings.overlay_event_count')}</Label>
+            <span className="w-12 text-right font-mono text-sm tabular-nums">{o.event_count ?? 4}</span>
+          </div>
+          <input
+            type="range"
+            min={1}
+            max={10}
+            step={1}
+            value={o.event_count ?? 4}
+            onChange={(e) => patch({ event_count: parseInt(e.target.value, 10) })}
+            className="w-full accent-primary"
+            aria-label={t('settings.overlay_event_count')}
+          />
+          <span className="text-xs text-muted-foreground">{t('settings.overlay_event_count_hint')}</span>
+        </div>
+
+        <div className="grid gap-1.5">
+          <div className="flex items-center justify-between">
+            <Label>{t('settings.overlay_font_size')}</Label>
+            <span className="w-12 text-right font-mono text-sm tabular-nums">{o.font_size ?? 14}px</span>
+          </div>
+          <input
+            type="range"
+            min={OVERLAY_FONT_SIZE_MIN}
+            max={OVERLAY_FONT_SIZE_MAX}
+            step={1}
+            value={o.font_size ?? 14}
+            onChange={(e) => patch({ font_size: parseInt(e.target.value, 10) })}
+            className="w-full accent-primary"
+            aria-label={t('settings.overlay_font_size')}
+          />
+          <span className="text-xs text-muted-foreground">{t('settings.overlay_font_size_hint')}</span>
         </div>
 
         <div className="grid gap-1.5">

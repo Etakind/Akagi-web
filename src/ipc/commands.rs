@@ -61,6 +61,22 @@ pub async fn get_config(state: State<'_, AppState>) -> CmdResult<AppConfig> {
     Ok(config)
 }
 
+#[tauri::command]
+pub async fn get_autoplay_status(
+    state: State<'_, AppState>,
+) -> CmdResult<crate::autoplay::status::StatusUpdate> {
+    let config = state.config.read().await;
+    state.autoplay_context.status.set_enabled(
+        config.platform.kind == crate::config::Platform::Majsoul
+            && config.autoplay.enabled
+            && state
+                .autoplay_context
+                .autoplay_enabled
+                .load(std::sync::atomic::Ordering::SeqCst),
+    );
+    Ok(state.autoplay_context.status.snapshot())
+}
+
 fn requires_capture_restart(previous: &AppConfig, next: &AppConfig) -> bool {
     previous.capture != next.capture || previous.platform.kind != next.platform.kind
 }
@@ -97,6 +113,9 @@ pub async fn update_config(
     state
         .autoplay_context
         .set_enabled(new_config.autoplay.enabled);
+    state.autoplay_context.status.set_enabled(
+        new_config.platform.kind == crate::config::Platform::Majsoul && new_config.autoplay.enabled,
+    );
     *state.history_platform.write().unwrap() = new_config.platform.kind.into();
     let capture_enabled = new_config.capture.enabled;
     let bot_now_enabled = new_config.bot.enabled;
@@ -1027,6 +1046,7 @@ macro_rules! ipc_handlers {
     () => {
         ::tauri::generate_handler![
             $crate::ipc::commands::get_config,
+            $crate::ipc::commands::get_autoplay_status,
             $crate::ipc::commands::update_config,
             $crate::ipc::commands::set_overlay_enabled,
             $crate::ipc::commands::list_bots,
@@ -1114,6 +1134,19 @@ mod tests {
         assert_eq!(back.bot.active_4p, "akagi-native");
         assert_eq!(back.bot.active_3p, "akagi-native3p");
         assert_eq!(back.capture.chromium.attach_port, 9999);
+    }
+
+    #[test]
+    fn persisted_overlay_font_size_is_normalized_when_read_back() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("config.toml");
+        let mut cfg = AppConfig::default();
+        cfg.overlay.font_size = 100;
+
+        persist_config(&cfg, &path).unwrap();
+
+        let back: AppConfig = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(back.overlay.font_size, 24);
     }
 
     /// Regression: a save used to serialise `AppConfig` over the whole file,

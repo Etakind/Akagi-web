@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { useAutoplayStatus } from '@/hooks/useAutoplayStatus'
 import { HAS_TAURI, invoke, listen } from '@/lib/tauri'
 import type {
   AnalysisResult,
@@ -35,6 +36,7 @@ const TOAST_SEVERITY: Record<Notification['level'], ToastSeverity> = {
 // One-shot bridge mounted from <App>. Subscribes to all Tauri events,
 // hydrates initial state, and unsubscribes on unmount.
 export function useTauriBridge() {
+  useAutoplayStatus()
   useEffect(() => {
     if (!HAS_TAURI) return
 

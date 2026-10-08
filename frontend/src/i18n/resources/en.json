@@ -1,4 +1,68 @@
 {
+  "autoplay_status": {
+    "title": "Automatic actions",
+    "game_events": "Game events",
+    "empty": "No automatic actions yet",
+    "round": "Round",
+    "retry": "Retry {{count}}",
+    "action": {
+      "dahai": "Discard",
+      "chi": "Chi",
+      "pon": "Pon",
+      "daiminkan": "Open kan",
+      "ankan": "Closed kan",
+      "kakan": "Added kan",
+      "reach": "Riichi",
+      "hora": "Win",
+      "kita": "Kita",
+      "ryukyoku": "Nine terminals",
+      "none": "Pass"
+    },
+    "step": {
+      "input": "Click",
+      "declare_reach": "Declare riichi",
+      "discard": "Discard tile",
+      "select_candidate": "Select candidate"
+    },
+    "phase": {
+      "preparing": "Preparing",
+      "scheduled": "Scheduled",
+      "executing": "Executing",
+      "awaiting_feedback": "Awaiting feedback",
+      "succeeded": "Succeeded",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "unconfirmed": "Unconfirmed"
+    },
+    "reason": {
+      "server_confirmed": "Server confirmed",
+      "autoplay_disabled": "Autoplay disabled",
+      "disconnected": "Disconnected",
+      "page_invalid": "Page unavailable",
+      "window_expired": "Decision window expired",
+      "manual_takeover": "Manual takeover detected",
+      "input_conflict": "Input conflicts with plan",
+      "feedback_conflict": "Feedback conflicts with plan",
+      "server_error": "Server rejected: {{code}}",
+      "cdp_failed": "CDP input failed",
+      "feedback_timeout": "No sufficient feedback within 5 seconds",
+      "operation_aborted": "Operation aborted",
+      "request_id_reused": "Reused request ID; correlation ambiguous"
+    },
+    "tile": {
+      "m": "{{number}}m",
+      "p": "{{number}}p",
+      "s": "{{number}}s",
+      "red": " (red)",
+      "E": "East",
+      "S": "South",
+      "W": "West",
+      "N": "North",
+      "P": "White",
+      "F": "Green",
+      "C": "Red"
+    }
+  },
   "nav": {
     "overview": "Overview",
     "game": "Game",
@@ -301,6 +365,10 @@
     "close": "Close"
   },
   "settings": {
+    "overlay_font_size": "Overlay base font size",
+    "overlay_font_size_hint": "12–24px (default 14). Scales all overlay text and row heights; does not change the main window.",
+    "overlay_event_count": "Automatic action rows",
+    "overlay_event_count_hint": "Show the latest 1–10 actions while Majsoul autoplay is enabled. The main window retains the whole match.",
     "title": "Settings",
     "general": "General",
     "language": "Language",

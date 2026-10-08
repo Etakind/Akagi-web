@@ -1,4 +1,68 @@
 {
+  "autoplay_status": {
+    "title": "自動操作",
+    "game_events": "対局イベント",
+    "empty": "自動操作の記録はありません",
+    "round": "局",
+    "retry": "再試行 {{count}}",
+    "action": {
+      "dahai": "打牌",
+      "chi": "チー",
+      "pon": "ポン",
+      "daiminkan": "大明槓",
+      "ankan": "暗槓",
+      "kakan": "加槓",
+      "reach": "立直",
+      "hora": "和了",
+      "kita": "抜き北",
+      "ryukyoku": "九種九牌",
+      "none": "スキップ"
+    },
+    "step": {
+      "input": "クリック",
+      "declare_reach": "立直宣言",
+      "discard": "打牌",
+      "select_candidate": "候補選択"
+    },
+    "phase": {
+      "preparing": "準備中",
+      "scheduled": "クリック待ち",
+      "executing": "実行中",
+      "awaiting_feedback": "応答待ち",
+      "succeeded": "成功",
+      "failed": "失敗",
+      "cancelled": "キャンセル",
+      "unconfirmed": "未確認"
+    },
+    "reason": {
+      "server_confirmed": "サーバー確認済み",
+      "autoplay_disabled": "自動打牌が無効",
+      "disconnected": "接続切断",
+      "page_invalid": "ページが無効",
+      "window_expired": "判断ウィンドウが失効",
+      "manual_takeover": "手動操作を検出",
+      "input_conflict": "入力と計画が不一致",
+      "feedback_conflict": "応答と計画が不一致",
+      "server_error": "サーバーが拒否：{{code}}",
+      "cdp_failed": "CDP 入力失敗",
+      "feedback_timeout": "5 秒以内に十分な応答なし",
+      "operation_aborted": "操作を中止",
+      "request_id_reused": "リクエスト ID 重複、関連付け不能"
+    },
+    "tile": {
+      "m": "{{number}}萬",
+      "p": "{{number}}筒",
+      "s": "{{number}}索",
+      "red": "（赤）",
+      "E": "東",
+      "S": "南",
+      "W": "西",
+      "N": "北",
+      "P": "白",
+      "F": "發",
+      "C": "中"
+    }
+  },
   "nav": {
     "overview": "概要",
     "game": "対局",
@@ -301,6 +365,10 @@
     "close": "閉じる"
   },
   "settings": {
+    "overlay_font_size": "オーバーレイの基準文字サイズ",
+    "overlay_font_size_hint": "12～24px（既定14）。すべての文字と行の高さを比例変更します。メイン画面には影響しません。",
+    "overlay_event_count": "自動操作の表示件数",
+    "overlay_event_count_hint": "雀魂の自動打牌が有効な間、直近の 1～10 件を表示します。メイン画面では対局全体の記録を閲覧できます。",
     "title": "設定",
     "general": "一般",
     "language": "言語",

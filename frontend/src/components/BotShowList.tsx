@@ -35,6 +35,7 @@ export function BotShowList({ items, containerRef, variant = 'tile', className }
     <ol
       ref={containerRef}
       className={cn('flex flex-col gap-1', overlay && 'h-full', className)}
+      style={overlay ? { gap: 'calc(4px * var(--overlay-scale, 1))' } : undefined}
     >
       {items.map((it, i) => {
         const seq = it.tiles ?? (it.pais ? mjaiToMahgen(it.pais) : '')
@@ -65,14 +66,34 @@ export function BotShowList({ items, containerRef, variant = 'tile', className }
             )}
             <div className="flex min-w-0 flex-1 flex-col">
               {it.label && (
-                <span className="truncate text-sm text-foreground">{it.label}</span>
+                <span
+                  className="truncate text-sm text-foreground"
+                  style={overlay ? {
+                    fontSize: 'calc(14px * var(--overlay-scale, 1))',
+                    lineHeight: 'calc(20px * var(--overlay-scale, 1))',
+                  } : undefined}
+                >
+                  {it.label}
+                </span>
               )}
               {it.note && (
-                <span className="truncate text-[10px] text-muted-foreground">{it.note}</span>
+                <span
+                  className="truncate text-[10px] text-muted-foreground"
+                  style={overlay ? {
+                    fontSize: 'calc(10px * var(--overlay-scale, 1))',
+                    lineHeight: 'calc(15px * var(--overlay-scale, 1))',
+                  } : undefined}
+                >
+                  {it.note}
+                </span>
               )}
             </div>
             {it.value && (
               <span
+                style={overlay ? {
+                  fontSize: 'calc(14px * var(--overlay-scale, 1))',
+                  lineHeight: 'calc(20px * var(--overlay-scale, 1))',
+                } : undefined}
                 className={cn(
                   'font-mono tabular-nums text-foreground/90',
                   overlay ? 'text-sm' : 'text-xs',

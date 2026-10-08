@@ -62,6 +62,38 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, state: AppState) -> Result<()> {
 }
 
 fn spawn_forwarders<R: Runtime>(app: AppHandle<R>, state: AppState) {
+    let status_state = state.clone();
+    let status_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut timer = tokio::time::interval(std::time::Duration::from_millis(100));
+        let mut geometry = None;
+        loop {
+            timer.tick().await;
+            let config = status_state.config.read().await;
+            let enabled = config.platform.kind == crate::config::Platform::Majsoul
+                && config.autoplay.enabled
+                && status_state
+                    .autoplay_context
+                    .autoplay_enabled
+                    .load(std::sync::atomic::Ordering::SeqCst);
+            let status = &status_state.autoplay_context.status;
+            status.set_enabled(enabled);
+            let dimensions = (
+                enabled,
+                config.overlay.clamped_top_n(),
+                config.overlay.clamped_event_count(),
+                config.overlay.clamped_font_size(),
+            );
+            if geometry != Some(dimensions) {
+                overlay::resize_for_status(&status_app, &config.overlay, enabled);
+                geometry = Some(dimensions);
+            }
+            drop(config);
+            if let Some(update) = status.poll() {
+                let _ = status_app.emit("autoplay-status", update);
+            }
+        }
+    });
     let mut autoplay_rx = state.autoplay_context.enabled_changes.subscribe();
     let autoplay_app = app.clone();
     tauri::async_runtime::spawn(async move {

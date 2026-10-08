@@ -52,8 +52,8 @@ const MIN_WIDTH: f64 = 190.0;
 // floor are derived from it rather than fixed.
 /// Title bar, card border, and the padding around the list.
 const CHROME_HEIGHT: f64 = 48.0;
-/// Below this a row can no longer fit a legible tile next to its label.
-const MIN_ROW_HEIGHT: f64 = 34.0;
+/// Leaves room for label + note, borders and the inter-row gaps at the floor.
+const MIN_ROW_HEIGHT: f64 = 42.0;
 /// Roomy enough that the tile is worth glancing at without leaning in.
 const DEFAULT_ROW_HEIGHT: f64 = 62.0;
 
@@ -72,21 +72,28 @@ pub fn get<R: Runtime>(app: &AppHandle<R>) -> Option<WebviewWindow<R>> {
 /// Open the overlay, or re-apply the live settings to the one already open.
 pub fn open<R: Runtime>(app: &AppHandle<R>, cfg: &OverlayConfig) -> tauri::Result<()> {
     let rows = cfg.clamped_top_n();
+    let enabled = app
+        .try_state::<crate::ipc::AppState>()
+        .is_some_and(|state| state.autoplay_context.status.snapshot().enabled);
+    let extra = event_height(cfg, enabled);
 
     if let Some(w) = get(app) {
         w.set_always_on_top(cfg.always_on_top)?;
         // Raising `top_n` in Settings adds rows to a window that may already be
         // at its old floor, so the floor has to move with it — otherwise the new
         // rows just squeeze the existing ones.
-        w.set_min_size(Some(LogicalSize::new(MIN_WIDTH, min_height(rows))))?;
+        fit_records(&w, cfg, enabled)?;
         w.show()?;
         return Ok(());
     }
 
     let w = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
         .title("Akagi Overlay")
-        .inner_size(DEFAULT_WIDTH, default_height(rows))
-        .min_inner_size(MIN_WIDTH, min_height(rows))
+        .inner_size(
+            DEFAULT_WIDTH,
+            default_height(rows) * cfg.font_scale() + extra,
+        )
+        .min_inner_size(MIN_WIDTH, min_height(rows) * cfg.font_scale() + extra)
         .decorations(false)
         .transparent(true)
         .always_on_top(cfg.always_on_top)
@@ -104,9 +111,47 @@ pub fn open<R: Runtime>(app: &AppHandle<R>, cfg: &OverlayConfig) -> tauri::Resul
     if let Err(e) = w.restore_state(RESTORE_FLAGS) {
         warn!("overlay: could not restore saved geometry: {e}");
     }
+    fit_records(&w, cfg, enabled)?;
 
     info!("overlay window opened");
     Ok(())
+}
+
+fn event_height(cfg: &OverlayConfig, enabled: bool) -> f64 {
+    if enabled {
+        (28.0 + cfg.clamped_event_count() as f64 * 40.0) * cfg.font_scale()
+    } else {
+        0.0
+    }
+}
+
+fn fit_records<R: Runtime>(
+    window: &WebviewWindow<R>,
+    cfg: &OverlayConfig,
+    enabled: bool,
+) -> tauri::Result<()> {
+    let floor = min_height(cfg.clamped_top_n()) * cfg.font_scale() + event_height(cfg, enabled);
+    window.set_min_size(Some(LogicalSize::new(MIN_WIDTH, floor)))?;
+    let size = window
+        .inner_size()?
+        .to_logical::<f64>(window.scale_factor()?);
+    if size.height < floor {
+        window.set_size(LogicalSize::new(size.width.max(MIN_WIDTH), floor))?;
+    }
+    Ok(())
+}
+
+/// Resize on the UI thread without moving or focusing the game/overlay.
+pub fn resize_for_status<R: Runtime>(app: &AppHandle<R>, cfg: &OverlayConfig, enabled: bool) {
+    let handle = app.clone();
+    let cfg = cfg.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = get(&handle) {
+            if let Err(error) = fit_records(&window, &cfg, enabled) {
+                warn!("overlay: status resize failed: {error}");
+            }
+        }
+    });
 }
 
 pub fn close<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -193,10 +238,46 @@ mod tests {
         }
     }
 
+    /// The browser list inserts a gap between rows. The window floor must
+    /// leave enough room after those gaps for the scaled two-line label/note
+    /// content and its borders at every supported font size.
+    #[test]
+    fn floor_budgets_for_overlay_row_gaps() {
+        const LIST_GAP: f64 = 4.0;
+        const LABEL_AND_NOTE_HEIGHT: f64 = 20.0 + 15.0;
+        const BORDER_HEIGHT: f64 = 2.0;
+
+        for scale in [12.0 / 14.0, 1.0, 24.0 / 14.0] {
+            for n in TOP_N_MIN..=TOP_N_MAX {
+                let gaps = n.saturating_sub(1) as f64 * LIST_GAP;
+                let list_height = min_height(n) - CHROME_HEIGHT;
+                let per_row = (list_height - gaps) / n as f64 * scale;
+                let content_height = LABEL_AND_NOTE_HEIGHT * scale + BORDER_HEIGHT;
+                assert!(
+                    per_row >= content_height,
+                    "font scale {scale}, {n} rows get {per_row}px after {gaps}px of list gaps, below the {content_height}px content minimum"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_starting_height_is_roomier_than_the_floor() {
         for n in TOP_N_MIN..=TOP_N_MAX {
             assert!(default_height(n) > min_height(n));
         }
+    }
+
+    #[test]
+    fn event_rows_scale_with_overlay_font_size_only() {
+        let normal = OverlayConfig::default();
+        assert_eq!(event_height(&normal, true), 188.0);
+        assert_eq!(event_height(&normal, false), 0.0);
+
+        let large = OverlayConfig {
+            font_size: 21,
+            ..normal.clone()
+        };
+        assert_eq!(event_height(&large, true), 282.0);
     }
 }

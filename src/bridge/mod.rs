@@ -70,6 +70,7 @@ pub struct BridgeHooks {
     /// Majsoul: counter bumped on every uplink input command, so autoplay can
     /// verify a click registered (see `autoplay::verify`).
     pub input_watch: Option<crate::autoplay::verify::SharedInputWatch>,
+    pub autoplay_status: Option<Arc<crate::autoplay::status::AutoplayStatus>>,
     pub notify: Option<crate::event_bus::NotifyBus>,
 }
 
@@ -94,7 +95,8 @@ pub fn for_platform(
         crate::config::Platform::Majsoul => Box::new(
             MajsoulBridge::new(flow_log, session)
                 .with_time_budget(hooks.time_budget)
-                .with_input_watch(hooks.input_watch),
+                .with_input_watch(hooks.input_watch)
+                .with_autoplay_status(hooks.autoplay_status),
         ),
     }
 }

@@ -115,6 +115,7 @@ impl<'de> Deserialize<'de> for AppConfig {
             autoplay: c.autoplay,
             overlay: c.overlay,
         };
+        config.overlay.font_size = config.overlay.clamped_font_size();
         if selected_tenhou && missing_start_url {
             config.capture.chromium.start_url = Platform::Tenhou.default_url().into();
         }
@@ -351,6 +352,21 @@ mod tests {
         assert_eq!(path, target);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn app_config_normalizes_overlay_font_size_at_the_read_boundary() {
+        let legacy: AppConfig = toml::from_str("[bot]\nenabled = true\n").unwrap();
+        assert_eq!(
+            legacy.overlay.font_size, 14,
+            "legacy config gets the new default"
+        );
+
+        let too_small: AppConfig = toml::from_str("[overlay]\nfont_size = 0\n").unwrap();
+        assert_eq!(too_small.overlay.font_size, 12);
+
+        let too_large: AppConfig = toml::from_str("[overlay]\nfont_size = 100\n").unwrap();
+        assert_eq!(too_large.overlay.font_size, 24);
     }
 
     #[test]

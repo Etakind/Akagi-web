@@ -49,8 +49,25 @@ pub async fn dispatch_click_shaped(
     click_hold_ms: u32,
     jiggle: bool,
 ) -> Result<()> {
+    dispatch_click_observed(page, x, y, hover_delay_ms, click_hold_ms, jiggle, None).await
+}
+
+/// The optional observer reports actual dispatch boundaries, not plan estimates.
+/// The non-observing path (including Tenhou) keeps exactly the same input shape.
+pub async fn dispatch_click_observed(
+    page: &Page,
+    x: f64,
+    y: f64,
+    hover_delay_ms: u32,
+    click_hold_ms: u32,
+    jiggle: bool,
+    observer: Option<&crate::autoplay::status::Observation>,
+) -> Result<()> {
     let pt = Point::new(x, y);
     page.move_mouse(pt).await.context("CDP move_mouse")?;
+    if let Some(observer) = observer {
+        observer.scheduled(Duration::from_millis(u64::from(hover_delay_ms)));
+    }
     if hover_delay_ms > 0 {
         tokio::time::sleep(Duration::from_millis(hover_delay_ms as u64)).await;
     }
@@ -63,6 +80,12 @@ pub async fn dispatch_click_shaped(
         .click_count(1)
         .build()
         .map_err(|e| anyhow!("build mousePressed: {e}"))?;
+    if observer.is_some_and(|observer| !observer.can_press()) {
+        return Err(anyhow!("autoplay decision cancelled before mousePressed"));
+    }
+    if let Some(observer) = observer {
+        observer.pressed();
+    }
     page.execute(press).await.context("CDP mousePressed")?;
 
     if jiggle {
@@ -97,6 +120,9 @@ pub async fn dispatch_click_shaped(
         .build()
         .map_err(|e| anyhow!("build mouseReleased: {e}"))?;
     page.execute(release).await.context("CDP mouseReleased")?;
+    if let Some(observer) = observer {
+        observer.released();
+    }
 
     Ok(())
 }
