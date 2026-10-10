@@ -197,10 +197,16 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = Vec::new();
-            tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut request))
-                .await
-                .unwrap()
-                .unwrap();
+            let read_result =
+                tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut request))
+                    .await
+                    .unwrap();
+            match read_result {
+                Ok(_) => {}
+                Err(error)
+                    if cfg!(windows) && error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                Err(error) => panic!("unexpected server read error: {error}"),
+            }
         });
         let (notify, _) = tokio::sync::broadcast::channel(8);
         let result =

@@ -1961,9 +1961,12 @@ impl Bridge for MajsoulBridge {
                                 }
                             }
                         }
-                    } else if is_action {
-                        // Superseded authenticated sockets must not feed a
-                        // legacy (unbound) event into the current game.
+                    } else if !recovery.owns(self.flow_id)
+                        && msg.method_name.as_ref() != METHOD_AUTH_GAME
+                    {
+                        // Only authentication may let another flow take over.
+                        // Stale notifications and input acknowledgements must
+                        // not mutate the current game or its shared input state.
                     } else {
                         events = self.dispatch(&msg);
                         if msg.msg_type == MessageType::Response
