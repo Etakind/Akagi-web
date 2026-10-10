@@ -141,6 +141,8 @@ enum ReconnectOutcome {
     Ambiguous,
 }
 
+// async-trait adds #[must_use] to methods returning already must-use futures.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 trait RecoveryDriver: Sync {
     fn begin(&self, method: RecoveryMethod);
