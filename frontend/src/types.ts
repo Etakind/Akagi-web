@@ -197,7 +197,7 @@ export const OVERLAY_OPACITY_MIN = 0.3
 export const OVERLAY_OPACITY_MAX = 1.0
 
 export type AppConfig = {
-  general: { first_run_completed: boolean }
+  general: { first_run_completed: boolean; overlay_defaults_revision?: number }
   logging: { dir: string; level: string; all_level: string }
   platform: { kind: PlatformKind }
   bot: {
@@ -446,6 +446,7 @@ export type MatchInfo =
     }
 
 export type GameRecord = {
+  partial?: boolean
   id: string
   /** RFC3339 timestamp. */
   started_at: string
@@ -646,4 +647,11 @@ export type ReadInspectorResponse = {
   entries: InspectorEntry[]
   has_more: boolean
   skipped_malformed: number
+}
+export interface GameRecoveryStatus {
+  phase: 'inactive' | 'missing' | 'recovering' | 'waiting_round' | 'ready' | 'error'
+  method: 'reconnect' | 'reload' | null
+  reason: string | null
+  epoch: number
+  can_recover: boolean
 }

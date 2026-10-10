@@ -1,4 +1,22 @@
 {
+  "recovery": {
+    "partial": "途中から記録",
+    "button": "復元して続行",
+    "description": "短時間の再接続を試み、失敗した場合は一度だけページを更新します。自動操作は現在の設定に従って再開します。",
+    "phase": {
+      "inactive": "対局未接続",
+      "missing": "初期局面がありません",
+      "recovering": "対局を復元中…",
+      "waiting_round": "座席を確認しました。次の局を待っています",
+      "ready": "局面を復元しました",
+      "error": "復元に失敗しました"
+    },
+    "failed": "復元に失敗しました。自動操作は停止中です。理由とログを確認してください。",
+    "reason": {
+      "ambiguous_game_connections": "複数の対局接続があります。対局を一つだけ開いてください。",
+      "reconnect_and_reload_failed": "再接続と一回の再読み込みでも復元できませんでした。自動操作は停止中です。"
+    }
+  },
   "autoplay_status": {
     "title": "自動操作",
     "game_events": "対局イベント",

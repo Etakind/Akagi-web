@@ -56,7 +56,19 @@ async fn run(
     info!("analysis runner subscribed to post-tracker bus");
     loop {
         match rx.recv().await {
-            Ok(_ev) => {
+            Ok(ev) => {
+                if ev
+                    .context
+                    .token
+                    .as_ref()
+                    .is_some_and(|token| !token.current())
+                {
+                    continue;
+                }
+                if ev.restore.as_ref().is_some_and(|batch| batch.is_empty()) {
+                    *cache.write().await = None;
+                    continue;
+                }
                 // Snapshot the game state. Tracker has already digested the
                 // event (post-tracker bus ordering) and captured our seat
                 // from any `start_game.id`.
@@ -96,6 +108,14 @@ async fn run(
                 }
 
                 let result = super::analyze(&info);
+                if ev
+                    .context
+                    .token
+                    .as_ref()
+                    .is_some_and(|token| !token.current())
+                {
+                    continue;
+                }
                 {
                     let mut c = cache.write().await;
                     *c = Some(result.clone());

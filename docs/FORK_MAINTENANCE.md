@@ -43,8 +43,21 @@ Tenhou script adaptation is active only with autoplay enabled. Interception is l
 recognized official client script URLs and supported source structures. Enabling it on an
 already-loaded client cannot retrofit its entry point: re-enter the page yourself when safe.
 Missing adapters, ambiguous pages and incomplete state stop input while observation remains
-available. Akagi never reloads a game to repair automation. The Lua delay environment has
-no filesystem, process or network access.
+available. Automatic-operation failures pause input. User-triggered Mahjong Soul recovery
+can refresh the selected page once; see the [recovery implementation and acceptance notes](MIDGAME_RECOVERY.zh-CN.md).
+The Lua delay environment has no filesystem, process or network access.
+
+## Automatic-action records
+
+For Majsoul, automatic-action countdowns, steps and results appear in **Game → Events → Automatic actions**.
+The overlay shows the latest actions only while Majsoul autoplay is effectively enabled (default 4 rows, configurable from 1 to 10).
+Countdowns observe the existing plan's next mouse press, including waiting and hover; uncertain page/safety preparation is shown as “Preparing”.
+Success requires matching server feedback, or a correlated error-free response for passing. Sending an input request alone is not success.
+Insufficient feedback 5 seconds after the last input is “Unconfirmed”; this does not add retries, and late matching feedback on the same connection and round may confirm it.
+All text in an unconfirmed record is red; “Awaiting feedback” is not unconfirmed. The overlay base font size is configurable from 12–24px (default 14).
+All overlay text and row heights scale together without affecting the main window. Larger fonts and more records require more screen height; adjust either for your screen.
+In-memory records survive rounds, same-match reconnects and match completion, and clear when a new match is confirmed. Remaining turn time is not displayed.
+The protocol cannot fully distinguish simultaneous identical manual and automatic actions; records are not independent proof of input attribution.
 
 ## Data, network and configuration
 

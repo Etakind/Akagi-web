@@ -173,6 +173,9 @@ pub struct GameStats {
 /// `log_path`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameRecord {
+    /// Only captured rounds are available; exclude from whole-game statistics.
+    #[serde(default)]
+    pub partial: bool,
     /// ULID; lexicographically sortable by start time. Doubles as
     /// filename stem under `games/`.
     pub id: String,
@@ -390,6 +393,7 @@ mod tests {
                 room_id: None,
                 contest_uid: None,
             }),
+            partial: false,
             log_path: "games/OLD.mjai.jsonl".into(),
         };
         let mut j = serde_json::to_value(&r).unwrap();
@@ -416,6 +420,7 @@ mod tests {
             our_delta: Some(5000),
             stats: GameStats::default(),
             match_info: None,
+            partial: false,
             log_path: "games/01ARZ.mjai.jsonl".into(),
         };
         assert!(HistoryFilter::default().matches(&r));
@@ -438,6 +443,7 @@ mod tests {
             our_delta: None,
             stats: GameStats::default(),
             match_info: None,
+            partial: false,
             log_path: "x".into(),
         };
         let f = HistoryFilter {
@@ -464,6 +470,7 @@ mod tests {
             our_delta: Some(0),
             stats: GameStats::default(),
             match_info: None,
+            partial: false,
             log_path: "games/rec1.mjai.jsonl".into(),
         };
         let ev = HistoryEvent::Recorded {

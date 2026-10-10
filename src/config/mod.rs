@@ -13,6 +13,7 @@ pub use autoplay::{
 pub use bot::BotConfig;
 pub use capture::{CaptureConfig, CaptureMode, ChromiumConfig, HttpCaptureConfig};
 pub use general::GeneralConfig;
+pub use general::OVERLAY_DEFAULTS_REVISION;
 pub use logging::LoggingConfig;
 pub use merge::merge_into;
 pub use overlay::{OverlayConfig, TOP_N_MAX, TOP_N_MIN};
@@ -257,7 +258,15 @@ pub fn load_config(cli_path: Option<&Path>) -> (AppConfig, PathBuf) {
 
     let mut cfg = match crate::util::private_fs::read_and_protect(&path) {
         Ok(content) => match toml::from_str::<AppConfig>(&content) {
-            Ok(config) => config,
+            Ok(mut config) => {
+                if let Err(error) = general::migrate_overlay_defaults(&mut config, &content, &path)
+                {
+                    let notice = format!("无法保存悬浮窗的一次性升级设置（{:?}）；已保留原设置。请检查配置文件写入权限后重启，或在设置中手动开启悬浮窗。", error.kind());
+                    eprintln!("{notice}");
+                    config.general.migration_notice = Some(notice);
+                }
+                config
+            }
             Err(_) => {
                 eprintln!("Failed to parse config; details omitted, using defaults");
                 let mut config = AppConfig::default();

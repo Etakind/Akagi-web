@@ -160,6 +160,14 @@ impl Engine {
         self.num_players
     }
 
+    /// Encoded model input, for comparing a reconstructed state with live play.
+    pub fn encoded_observation(&mut self) -> Vec<f32> {
+        match &mut self.backend {
+            Backend::Four { state, .. } => obs_and_legal_4p(state, self.seat).0,
+            Backend::Three { state, .. } => obs_and_legal_3p(state, self.seat).0,
+        }
+    }
+
     /// Drive one already-parsed mjai event through the engine.
     ///
     /// Sanma events are sanitized first: Tenhou sanma logs carry 4-element

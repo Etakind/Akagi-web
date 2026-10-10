@@ -26,7 +26,7 @@
 //! layer is intentionally not wired in this round — the tracker is
 //! ready to be exposed when the frontend needs it.
 
-use crate::event_bus::TrackedEvent;
+use crate::event_bus::{GameUpdate, TrackedEvent};
 use crate::game_state::convert;
 use crate::game_state::score::{evaluate_hora_3p, evaluate_hora_4p};
 use crate::game_state::snapshot::GameStateSnapshot;
@@ -410,7 +410,7 @@ pub fn new_handle() -> Arc<Mutex<GameTracker>> {
 ///
 /// The task ends cleanly when the broadcast channel closes (all
 /// `MjaiBus` senders dropped).
-pub fn spawn(rx: broadcast::Receiver<AkagiEvent>) -> Arc<Mutex<GameTracker>> {
+pub fn spawn(rx: broadcast::Receiver<GameUpdate>) -> Arc<Mutex<GameTracker>> {
     spawn_with_post(rx, None)
 }
 
@@ -420,7 +420,7 @@ pub fn spawn(rx: broadcast::Receiver<AkagiEvent>) -> Arc<Mutex<GameTracker>> {
 /// event, and on `can_act` describing *that* event rather than whatever the
 /// tracker has reached by the time they get round to it.
 pub fn spawn_with_post(
-    rx: broadcast::Receiver<AkagiEvent>,
+    rx: broadcast::Receiver<GameUpdate>,
     post: Option<broadcast::Sender<TrackedEvent>>,
 ) -> Arc<Mutex<GameTracker>> {
     let tracker = new_handle();
@@ -434,7 +434,7 @@ pub fn spawn_with_post(
 /// on a runtime that isn't accessible at construction time.
 pub async fn drive_loop(
     tracker: Arc<Mutex<GameTracker>>,
-    rx: broadcast::Receiver<AkagiEvent>,
+    rx: broadcast::Receiver<GameUpdate>,
     post: Option<broadcast::Sender<TrackedEvent>>,
 ) {
     run(tracker, rx, post).await
@@ -442,13 +442,36 @@ pub async fn drive_loop(
 
 async fn run(
     tracker: Arc<Mutex<GameTracker>>,
-    mut rx: broadcast::Receiver<AkagiEvent>,
+    mut rx: broadcast::Receiver<GameUpdate>,
     post: Option<broadcast::Sender<TrackedEvent>>,
 ) {
     info!("game tracker subscribed to MJAI bus");
+    let mut last_context = crate::event_bus::EventContext::default();
     loop {
         match rx.recv().await {
-            Ok(ev) => {
+            Ok(update) => {
+                let (events, context, restore) = match update {
+                    GameUpdate::Live(event, context) => {
+                        (std::sync::Arc::new(vec![event]), context, false)
+                    }
+                    GameUpdate::Restore(events, context) => (events, context, true),
+                    GameUpdate::Invalidated => {
+                        *tracker.lock().await = GameTracker::new();
+                        if let Some(p) = &post {
+                            let _ = p.send(TrackedEvent {
+                                event: AkagiEvent::None,
+                                can_act: None,
+                                context: Default::default(),
+                                restore: Some(std::sync::Arc::new(vec![])),
+                            });
+                        }
+                        continue;
+                    }
+                };
+                if context.token.as_ref().is_some_and(|token| !token.current()) {
+                    continue;
+                }
+                last_context = context.clone();
                 // Read `can_act` under the same lock that applied the event,
                 // so it describes the state this event produced and not a
                 // later one. A burst of events from one frame is applied in
@@ -456,18 +479,44 @@ async fn run(
                 // missed the state it meant to ask about.
                 let can_act = {
                     let mut t = tracker.lock().await;
-                    if let Err(e) = t.handle(&ev) {
-                        warn!("game tracker: handle error: {e:#}");
+                    let mut valid = true;
+                    for ev in events.iter() {
+                        if t.handle(ev).is_err() {
+                            valid = false;
+                            break;
+                        }
+                    }
+                    if !valid {
+                        *t = GameTracker::new();
+                        if let Some(token) = &context.token {
+                            token.fail("invalid_tracker_state");
+                        }
+                        continue;
                     }
                     t.our_seat_can_act()
                 };
+                if restore {
+                    if let Some(token) = &context.token {
+                        token.ack(crate::capture::recovery::TRACKER);
+                    }
+                }
                 if let Some(p) = &post {
                     // Receiver may have lagged or no-one subscribed yet — ignore.
-                    let _ = p.send(TrackedEvent { event: ev, can_act });
+                    let event = events.last().cloned().unwrap_or(AkagiEvent::None);
+                    let _ = p.send(TrackedEvent {
+                        event,
+                        can_act,
+                        context,
+                        restore: restore.then_some(events),
+                    });
                 }
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("game tracker lagged behind MJAI bus by {n} events");
+                *tracker.lock().await = GameTracker::new();
+                if let Some(token) = &last_context.token {
+                    token.fail("tracker_event_loss");
+                }
             }
             Err(broadcast::error::RecvError::Closed) => {
                 info!("MJAI bus closed; game tracker exiting");

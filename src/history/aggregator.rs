@@ -349,6 +349,7 @@ pub fn aggregate(input: AggregateInput<'_>) -> Option<GameRecord> {
         our_delta,
         stats,
         match_info: game_meta.and_then(|meta| meta.match_info),
+        partial: false,
         log_path: format!("games/{id}.mjai.jsonl"),
     })
 }

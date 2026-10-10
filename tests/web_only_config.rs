@@ -98,7 +98,7 @@ custom = 42
 fn reading_unsupported_config_does_not_rewrite_it() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("config.toml");
-    let source = "[capture]\nmode = 'mitm'\n[logging]\nlevel = 'warn'\n";
+    let source = "[general]\noverlay_defaults_revision = 1\n[capture]\nmode = 'mitm'\n[logging]\nlevel = 'warn'\n";
     std::fs::write(&path, source).unwrap();
     let (config, _) = akagi::config::load_config(Some(&path));
     assert!(!config.capture.enabled);

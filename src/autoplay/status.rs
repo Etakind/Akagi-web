@@ -60,6 +60,12 @@ pub struct Window {
     opened: Instant,
     expires: Option<Instant>,
 }
+impl Window {
+    pub fn unexpired(&self) -> bool {
+        self.expires
+            .is_none_or(|deadline| Instant::now() < deadline)
+    }
+}
 
 struct Entry {
     record: OperationRecord,

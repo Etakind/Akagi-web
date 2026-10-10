@@ -49,6 +49,7 @@ pub struct BotManager {
     /// the Logs → Inspector tab can replay "trigger event → bot action"
     /// pairings without grepping multiple files.
     inspector: InspectorWriter,
+    context: crate::event_bus::EventContext,
 }
 
 impl BotManager {
@@ -72,6 +73,7 @@ impl BotManager {
             status_tx,
             notify_tx,
             inspector,
+            context: Default::default(),
         }
     }
 
@@ -107,6 +109,11 @@ impl BotManager {
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!("bot manager lagged behind the post-tracker bus by {n} events");
+                    self.runner = None;
+                    self.pending.clear();
+                    if let Some(token) = &self.context.token {
+                        token.fail("bot_event_loss");
+                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     info!("post-tracker bus closed; bot manager exiting");
@@ -124,13 +131,63 @@ impl BotManager {
         self.handle_tracked(TrackedEvent {
             event,
             can_act: None,
+            context: Default::default(),
+            restore: None,
         })
         .await
     }
 
     /// Drive one tracked event through the manager.
     pub async fn handle_tracked(&mut self, tracked: TrackedEvent) -> Result<()> {
-        let TrackedEvent { event, can_act } = tracked;
+        let TrackedEvent {
+            event,
+            can_act,
+            context,
+            restore,
+        } = tracked;
+        if context.token.as_ref().is_some_and(|token| !token.current()) {
+            return Ok(());
+        }
+        self.context = context.clone();
+        if let Some(events) = restore {
+            self.pending.clear();
+            self.drop_next_own_reach = false;
+            if events.is_empty() {
+                self.runner = None;
+                self.actor_id = None;
+                return Ok(());
+            }
+            if let Some(MjaiEvent::StartGame {
+                id: Some(seat),
+                num_players,
+                ..
+            }) = events.first()
+            {
+                self.actor_id = Some(*seat);
+                self.game_num_players = *num_players;
+                self.active_name = self
+                    .config
+                    .read()
+                    .await
+                    .bot
+                    .active_for(*num_players)
+                    .to_string();
+                self.spawn_runner().await?;
+            }
+            let result = if let Some(runner) = &mut self.runner {
+                runner.restore(&events).await
+            } else {
+                Err(anyhow::anyhow!("No model available for restoration"))
+            };
+            if let Some(token) = &context.token {
+                if result.is_ok() {
+                    token.ack(crate::capture::recovery::BOT);
+                } else {
+                    token.fail("bot_restore_failed");
+                }
+            }
+            return result;
+        }
         // Kyoku/game boundaries clear the one-shot reach-echo drop: a lost
         // declaration never produces the echo it was waiting for, so the flag
         // must not survive into the next hand and eat a real reach there.
@@ -207,6 +264,9 @@ impl BotManager {
         if !self.is_decision_point(&event, can_act) {
             return Ok(());
         }
+        if !context.valid() {
+            return Ok(());
+        }
 
         // Read once, before borrowing the runner: whether autoplay is on
         // gates the reach follow-up below. Runtime-toggled — the same flag
@@ -234,6 +294,15 @@ impl BotManager {
             }
         };
         let reaction_ms = started.elapsed().as_millis() as u64;
+        if !context.valid() {
+            return Ok(());
+        }
+        if !context.permits(&resp.action) {
+            if let Some(token) = &context.token {
+                token.fail("model_operation_mismatch");
+            }
+            return Ok(());
+        }
 
         // Autoplay reach follow-up (#257). A bot that declares riichi as
         // plain mjai — `reach` with no `pai` — leaves the declaring discard
@@ -286,6 +355,16 @@ impl BotManager {
         if did_reach_followup {
             self.drop_next_own_reach = true;
         }
+        if !context.valid() {
+            if did_reach_followup {
+                self.runner = None;
+                self.pending.clear();
+                if let Some(token) = &context.token {
+                    token.fail("cancelled_reach_followup");
+                }
+            }
+            return Ok(());
+        }
 
         debug!(action = ?resp.action, meta = ?resp.meta, reaction_ms, "bot reacted");
         // Inspector record: pair the trigger event (the last item in the
@@ -312,6 +391,7 @@ impl BotManager {
         // MjaiEvent::None still goes on the bus — downstream consumers
         // decide whether to render. Centralizes the "skip" decision.
         resp.decision_started = Some(started);
+        resp.decision_context = context;
         let _ = self.out_tx.send(resp);
 
         if matches!(event, MjaiEvent::EndGame { .. }) {
@@ -497,6 +577,7 @@ mod tests {
             let mut q = self.next.lock().await;
             if q.is_empty() {
                 Ok(BotResponse {
+                    decision_context: Default::default(),
                     decision_started: None,
                     action: MjaiEvent::None,
                     meta: None,
@@ -615,7 +696,12 @@ mod tests {
     }
 
     fn tracked(event: MjaiEvent, can_act: Option<bool>) -> TrackedEvent {
-        TrackedEvent { event, can_act }
+        TrackedEvent {
+            event,
+            can_act,
+            context: Default::default(),
+            restore: None,
+        }
     }
 
     /// Regression (Hora answered with a pass press): an opponent's discard we
@@ -903,6 +989,7 @@ mod tests {
     #[tokio::test]
     async fn bot_response_broadcast_to_subscribers() {
         let scripted = BotResponse {
+            decision_context: Default::default(),
             decision_started: None,
             action: dahai(2),
             meta: None,
@@ -1043,6 +1130,7 @@ mod tests {
 
     fn reach_none(actor: u8) -> BotResponse {
         BotResponse {
+            decision_context: Default::default(),
             decision_started: None,
             action: MjaiEvent::Reach { actor, pai: None },
             meta: None,
@@ -1051,6 +1139,7 @@ mod tests {
 
     fn dahai_reply(actor: u8, pai: &str) -> BotResponse {
         BotResponse {
+            decision_context: Default::default(),
             decision_started: None,
             action: MjaiEvent::Dahai {
                 actor,
@@ -1170,6 +1259,7 @@ mod tests {
     #[tokio::test]
     async fn autoplay_prefilled_reach_pai_skips_followup() {
         let prefilled = BotResponse {
+            decision_context: Default::default(),
             decision_started: None,
             action: MjaiEvent::Reach {
                 actor: 2,

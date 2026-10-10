@@ -52,6 +52,34 @@ fn claim_autoplay_manager_spawn(
 type CmdResult<T> = Result<T, String>;
 
 #[tauri::command]
+pub async fn get_game_recovery_status(
+    state: State<'_, AppState>,
+) -> CmdResult<crate::capture::recovery::RecoveryStatus> {
+    Ok(state.autoplay_context.recovery.snapshot())
+}
+
+#[tauri::command]
+pub async fn recover_majsoul_game(state: State<'_, AppState>) -> CmdResult<()> {
+    if state.config.read().await.platform.kind != crate::config::Platform::Majsoul {
+        return Err("Recovery is available for Majsoul only".into());
+    }
+    let result = crate::capture::chromium::recovery::recover_game(
+        state.autoplay_context.clone(),
+        state.mjai_bus.clone(),
+    )
+    .await;
+    if let Err(error) = &result {
+        let _ = state.notify_bus.send(
+            Notification::error("Game recovery failed")
+                .body(error.to_string())
+                .sticky()
+                .id("majsoul-game-state"),
+        );
+    }
+    result.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_config(state: State<'_, AppState>) -> CmdResult<AppConfig> {
     let mut config = state.config.read().await.clone();
     config.autoplay.enabled &= state
@@ -91,10 +119,15 @@ fn requires_capture_restart(previous: &AppConfig, next: &AppConfig) -> bool {
 /// stop it).
 #[tauri::command]
 pub async fn update_config(
-    new_config: AppConfig,
+    mut new_config: AppConfig,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> CmdResult<()> {
+    new_config.general.overlay_defaults_revision = new_config
+        .general
+        .overlay_defaults_revision
+        .max(state.config.read().await.general.overlay_defaults_revision)
+        .max(crate::config::OVERLAY_DEFAULTS_REVISION);
     persist_config(&new_config, &state.config_path).map_err(|e| e.to_string())?;
 
     // Snapshot the *previous* capture-relevant fields before we overwrite,
@@ -159,6 +192,10 @@ pub async fn update_config(
     // toggles only spawn once. The manager runs forever; flipping back to
     // false still requires an Akagi relaunch to actually stop it.
     if claim_bot_manager_spawn(bot_now_enabled, &state.bot_manager_started) {
+        state
+            .autoplay_context
+            .recovery
+            .register(crate::capture::recovery::BOT);
         let cfg_for_bot = state.config.clone();
         let events = state.post_tracker_bus.clone();
         let resp = state.bot_response_bus.clone();
@@ -180,6 +217,10 @@ pub async fn update_config(
     }
 
     if claim_autoplay_manager_spawn(autoplay_now_enabled, &state.autoplay_manager_started) {
+        state
+            .autoplay_context
+            .recovery
+            .register(crate::capture::recovery::AUTOPLAY);
         let cfg_for_ap = state.config.clone();
         let ctx_for_ap = state.autoplay_context.clone();
         let tracker_for_ap = state.game_tracker.clone();
@@ -227,10 +268,16 @@ pub async fn set_overlay_enabled(
 ) -> CmdResult<()> {
     let cfg = {
         let mut cfg = state.config.write().await;
-        cfg.overlay.enabled = enabled;
-        cfg.clone()
+        let mut next = cfg.clone();
+        next.overlay.enabled = enabled;
+        next.general.overlay_defaults_revision = next
+            .general
+            .overlay_defaults_revision
+            .max(crate::config::OVERLAY_DEFAULTS_REVISION);
+        persist_config(&next, &state.config_path).map_err(|e| e.to_string())?;
+        *cfg = next.clone();
+        next
     };
-    persist_config(&cfg, &state.config_path).map_err(|e| e.to_string())?;
     overlay::reconcile(&app, &cfg.overlay);
     Ok(())
 }
@@ -330,6 +377,11 @@ pub async fn remove_chrome_for_testing(
 
 #[tauri::command]
 pub async fn stop_capture(state: State<'_, AppState>) -> CmdResult<()> {
+    state.autoplay_context.recovery.reset();
+    state.autoplay_context.invalidate_actions();
+    let _ = state
+        .mjai_bus
+        .send_update(crate::event_bus::GameUpdate::Invalidated);
     let stop = {
         let mut ctl = state.capture_control.lock().await;
         ctl.stop.take()
@@ -1046,6 +1098,8 @@ macro_rules! ipc_handlers {
     () => {
         ::tauri::generate_handler![
             $crate::ipc::commands::get_config,
+            $crate::ipc::commands::get_game_recovery_status,
+            $crate::ipc::commands::recover_majsoul_game,
             $crate::ipc::commands::get_autoplay_status,
             $crate::ipc::commands::update_config,
             $crate::ipc::commands::set_overlay_enabled,

@@ -16,7 +16,7 @@ use tokio::sync::broadcast::{error::RecvError, Receiver};
 use tracing::{info, warn};
 use ulid::Ulid;
 
-use crate::event_bus::HistoryBus;
+use crate::event_bus::{GameUpdate, HistoryBus};
 use crate::history::aggregator::{aggregate, AggregateInput};
 use crate::history::store::HistoryStore;
 use crate::schema::{GameEndReason, HistoryEvent, MjaiEvent, Platform};
@@ -44,12 +44,21 @@ pub async fn drive_loop(
     store: Arc<HistoryStore>,
     history_bus: HistoryBus,
     platform: SharedPlatform,
-    mut mjai_rx: Receiver<MjaiEvent>,
+    mut mjai_rx: Receiver<GameUpdate>,
 ) {
     let mut state = RecorderState::new(platform);
     loop {
         match mjai_rx.recv().await {
-            Ok(ev) => state.handle(ev, &store, &history_bus),
+            Ok(update) => {
+                let partial =
+                    matches!(update, GameUpdate::Restore(_, _)) && !state.awaiting_restore_start;
+                for ev in update.events() {
+                    state.handle(ev.clone(), &store, &history_bus);
+                }
+                if partial && state.buf.is_some() {
+                    state.partial = true;
+                }
+            }
             Err(RecvError::Lagged(n)) => {
                 // Lagged consumers must reset — we've lost events that
                 // belonged to the in-flight game.
@@ -88,6 +97,7 @@ struct RecorderState {
     /// A duplicate StartGame from reconnect was consumed; the next restored
     /// StartKyoku replaces the previous copy of that round.
     awaiting_restore_start: bool,
+    partial: bool,
 }
 
 impl RecorderState {
@@ -100,6 +110,7 @@ impl RecorderState {
             overflown: false,
             game_id: None,
             awaiting_restore_start: false,
+            partial: false,
         }
     }
 
@@ -110,6 +121,7 @@ impl RecorderState {
         self.overflown = false;
         self.game_id = None;
         self.awaiting_restore_start = false;
+        self.partial = false;
     }
 
     fn handle(&mut self, ev: MjaiEvent, store: &HistoryStore, bus: &HistoryBus) {
@@ -134,6 +146,7 @@ impl RecorderState {
                 self.overflown = false;
                 self.game_id = incoming_game_id;
                 self.awaiting_restore_start = false;
+                self.partial = false;
                 self.push(ev);
             }
             MjaiEvent::EndGame { reason, .. } => match reason {
@@ -203,7 +216,7 @@ impl RecorderState {
             .platform
             .read()
             .expect("history platform lock poisoned");
-        let Some(record) = aggregate(AggregateInput {
+        let Some(mut record) = aggregate(AggregateInput {
             events: &events,
             platform,
             started_at,
@@ -216,6 +229,7 @@ impl RecorderState {
             );
             return;
         };
+        record.partial = self.partial;
 
         if let Err(e) = store.append(&record, &events) {
             warn!(
@@ -256,7 +270,7 @@ fn round_key(event: &MjaiEvent) -> Option<(&str, u8, u8, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event_bus::{HistoryBus, DEFAULT_CAPACITY};
+    use crate::event_bus::HistoryBus;
     use crate::schema::{HistoryFilter, MjaiEvent};
     use tempfile::TempDir;
     use tokio::sync::broadcast;
@@ -316,7 +330,8 @@ mod tests {
     async fn complete_game_writes_record() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(HistoryStore::new(tmp.path().to_path_buf()).unwrap());
-        let (tx, rx) = broadcast::channel::<MjaiEvent>(DEFAULT_CAPACITY);
+        let tx = crate::event_bus::mjai_bus();
+        let rx = tx.subscribe();
         let (history_tx, _history_rx): (HistoryBus, _) = broadcast::channel(8);
 
         let store_clone = store.clone();
@@ -359,7 +374,8 @@ mod tests {
     async fn disconnect_without_end_game_drops_buffer() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(HistoryStore::new(tmp.path().to_path_buf()).unwrap());
-        let (tx, rx) = broadcast::channel::<MjaiEvent>(DEFAULT_CAPACITY);
+        let tx = crate::event_bus::mjai_bus();
+        let rx = tx.subscribe();
         let (history_tx, _history_rx): (HistoryBus, _) = broadcast::channel(8);
 
         let store_clone = store.clone();
@@ -395,7 +411,8 @@ mod tests {
     async fn second_start_game_resets_buffer() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(HistoryStore::new(tmp.path().to_path_buf()).unwrap());
-        let (tx, rx) = broadcast::channel::<MjaiEvent>(DEFAULT_CAPACITY);
+        let tx = crate::event_bus::mjai_bus();
+        let rx = tx.subscribe();
         let (history_tx, _history_rx): (HistoryBus, _) = broadcast::channel(8);
 
         let store_clone = store.clone();
@@ -506,6 +523,45 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn restored_history_marks_new_capture_but_preserves_complete_same_game() {
+        for previous_round in [false, true] {
+            let tmp = TempDir::new().unwrap();
+            let store = Arc::new(HistoryStore::new(tmp.path().to_path_buf()).unwrap());
+            let tx = crate::event_bus::mjai_bus();
+            let (history_tx, _) = broadcast::channel(8);
+            let task = tokio::spawn(drive_loop(
+                store.clone(),
+                history_tx,
+                shared_platform(Platform::Majsoul),
+                tx.subscribe(),
+            ));
+            let start = start_game_with_id(7);
+            tx.send(start.clone()).unwrap();
+            if previous_round {
+                tx.send(start_kyoku_at(1, vec![25000; 4])).unwrap();
+                tx.send(MjaiEvent::EndKyoku).unwrap();
+                tx.send(start.clone()).unwrap(); // authenticated reconnect
+            }
+            tx.send_update(GameUpdate::Restore(
+                Arc::new(vec![start, start_kyoku_at(2, vec![25000; 4])]),
+                Default::default(),
+            ))
+            .unwrap();
+            tx.send(MjaiEvent::confirmed_game(
+                Some(vec![25000; 4]),
+                Some(vec![1, 2, 3, 4]),
+            ))
+            .unwrap();
+            drop(tx);
+            task.await.unwrap();
+            let records = store.list(&HistoryFilter::default(), 100, 0).unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].partial, !previous_round);
+            assert_eq!(records[0].stats.round, if previous_round { 2 } else { 1 });
+        }
     }
 
     #[test]

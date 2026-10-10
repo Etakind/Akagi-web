@@ -37,6 +37,9 @@ impl Direction {
 pub struct ParseResult {
     pub events: Vec<MjaiEvent>,
     pub parsed: Option<ParsedFrame>,
+    pub context: crate::event_bus::EventContext,
+    pub is_restore: bool,
+    pub invalidated: bool,
 }
 
 impl ParseResult {
@@ -47,6 +50,7 @@ impl ParseResult {
         Self {
             events,
             parsed: None,
+            ..Default::default()
         }
     }
 }
@@ -63,6 +67,7 @@ pub trait Bridge: Send {
 
 #[derive(Clone, Default)]
 pub struct BridgeHooks {
+    pub recovery: Option<Arc<crate::capture::recovery::RecoveryState>>,
     pub tenhou_state: Option<crate::autoplay::tenhou_state::SharedTenhouState>,
     /// Majsoul: the server's per-decision-window time budget, taken from
     /// `OptionalOperationList` (see `autoplay::budget`).
@@ -94,6 +99,7 @@ pub fn for_platform(
         ),
         crate::config::Platform::Majsoul => Box::new(
             MajsoulBridge::new(flow_log, session)
+                .with_recovery(hooks.recovery)
                 .with_time_budget(hooks.time_budget)
                 .with_input_watch(hooks.input_watch)
                 .with_autoplay_status(hooks.autoplay_status),

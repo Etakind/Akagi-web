@@ -1,159 +1,450 @@
-# Akagi Web — 本地网页维护版
+# Akagi Web
 
 [English](README.md) | **简体中文**
 
-本仓库是 [shinkuan/Akagi v3](https://github.com/shinkuan/Akagi/tree/v3) 的维护分支，
-仅通过 **Majsoul、Tenhou 官方网页端**采集，使用内置本地模型。
+Akagi Web 是用于雀魂和天凤网页端的麻将助手，使用内置模型在本机分析牌局。
 
-Akagi Web 从 **0.1.0** 开始独立编号，与 upstream 版本序列分开。
+- 支持三麻和四麻，提供出牌与鸣牌建议。
+- 默认开启悬浮窗，可在游戏旁查看建议并调整字号和透明度。
+- 可在设置中开启自动打牌。
+- 对局结束后可在历史页面查看记录。
 
-## 相较 upstream 的区别
+## 与上游的差异
 
-| 范围 | 本维护版 |
+本项目基于 [Akagi v3](https://github.com/shinkuan/Akagi/tree/v3)，面向本地网页对局使用。
+
+| 项目 | 本维护版的调整 |
 |---|---|
-| 采集 | 仅 Chromium CDP：附加常用 Edge/Chrome，或启动独立浏览器；无 MITM、根证书或系统代理。 |
-| 推理 | 仅内置四麻/三麻模型；删除云推理、云复盘/分享、API 密钥、订阅支付及外部 Python 机器人。 |
-| 诊断 | 协议/HTTP 元数据脱敏，保留本地分析、历史和 Inspector；不保存登录原始帧、敏感头及正文。 |
-| 自动打牌 | 主动开启，绑定唯一官方页面与当前决策状态；失败不会自动刷新游戏。 |
-| 更新 | 查询个人维护仓库，手动安装；不允许上游安装包覆盖本构建。 |
-| 分发 | 下列五种目标配置；不含 Python/uv，不提供 AppImage 或移动客户端。 |
+| 游戏与采集 | 聚焦雀魂、天凤官方网页，通过 Edge/Chrome 读取牌局，省去代理和证书配置。 |
+| AI 与服务 | 内置三麻、四麻模型，本机运行；云推理、云复盘、订阅和外部机器人已移除。 |
+| 诊断与隐私 | 诊断日志脱敏，保留本地分析、历史和日志查看。 |
+| 安装与更新 | 提供 Windows、macOS、Linux 安装包，更新使用本仓库发布页。 |
 
-这些调整减少凭据落盘，删除远端推理/上传路径，避免依赖拦截 CA 或下载的可执行机器人。
-CDP 仍具有较高的浏览器访问权限。实现边界、迁移、残余风险和上游合并规则见
-[维护指南](docs/FORK_MAINTENANCE.zh-CN.md)。
+## 安全与隐私
 
-Akagi 不向远端上传账号、牌局、历史、日志或推理数据；推理全部在本地完成。
-保留更新检查和用户主动下载。游戏网页仍正常连接游戏服务器，自动操作也通过游戏客户端执行。
+AI 在本机推理，历史记录本地保存，Akagi 不上传账号、牌局或日志；诊断日志会对敏感信息脱敏。
+网络访问用于游戏连接、更新检查和用户主动下载浏览器。浏览器调试连接仅使用本机地址，并遵循浏览器授权。
+启用自动打牌前，请了解所用游戏平台的规则。更多说明见[维护指南](docs/FORK_MAINTENANCE.zh-CN.md)。
 
+## 下载安装
 
-## 游戏与功能
+从[发布页](https://github.com/Etakind/Akagi-web/releases)下载适合系统和处理器的安装包。
 
-| 官方网页 | 功能 |
-|---|---|
-| [Majsoul](https://game.maj-soul.com/1/) | 三麻/四麻解析、本地建议、悬浮窗、历史、Inspector、可选自动打牌 |
-| [Tenhou](https://tenhou.net/4/) | 三麻/四麻解析、本地建议、历史及 PT 统计、Inspector、可选自动打牌 |
-
-Tenhou 自动打牌需要客户端适配入口，仅开启自动打牌时准备脚本适配。
-
-雀魂自动打牌的等待、点击步骤及确认结果可在「对局 → 事件记录 → 自动操作」查看。
-悬浮窗仅在雀魂自动打牌有效开启时显示最近的操作，数量由悬浮窗设置控制（默认 4，范围 1～10）。
-倒计时对应已生成计划的下一次鼠标按下，包含等待及悬停；页面或安全检查尚未就绪时显示「准备中」。
-成功需要匹配的服务端反馈（跳过需要关联请求的无错误响应），发出输入请求不等于成功。
-最后一次输入结束后 5 秒未收到充分反馈显示「未确认」，不会因此增加重试；同一连接、同一局的迟到反馈仍可补充确认。
-「未确认」记录的全部文字显示为红色；「等待反馈」不属于未确认。悬浮窗基准字号可设为 12～24px（默认 14），
-全部悬浮窗文字与行高按比例缩放，不影响主界面。较大字号和较多记录需要更多屏幕高度，可按屏幕调整字号或条数。
-记录仅存于内存，跨小局、同场重连及整场结束保留，确认开始新一场后清空；当前不显示剩余出牌时间。
-协议无法完全区分同时发生的相同手动操作与自动点击，因此请勿将记录当作独立的操作归属证明。
-附加已加载页面而缺少入口时，请在安全时机自行重新进入或刷新，Akagi 不代为操作。
-客户端结构变化或当前局状态不完整时停止操作，等待下一完整局。
-历史记录在整场结束后完成落盘，不是每一小局结束后立即出现。
-
-## 安装包和运行
-
-| 系统 | CPU | 安装包格式 |
+| 系统 | 处理器 | 下载文件 |
 |---|---|---|
-| Windows | x86_64 | `windows-x64.zip` |
-| macOS | x86_64 | `macos-x64.zip` |
-| macOS | ARM64 | `macos-arm64.zip` |
-| Linux | x86_64 | `linux-x64.zip`、DEB、RPM |
-| Linux | ARM64 | `linux-arm64.zip`、DEB、RPM |
+| Windows | x64 | `windows-x64.zip` |
+| macOS | Intel | `macos-x64.zip` |
+| macOS | Apple Silicon | `macos-arm64.zip` |
+| Linux | x64 / ARM64 | 对应的 ZIP、DEB 或 RPM |
 
-从[个人维护版发布页](https://github.com/Etakind/Akagi-web/releases) 获取产物。
-核对 SHA256；附带 minisign 签名时使用相应公钥核验。
+ZIP 解压后，Windows 双击 `akagi.exe`，macOS/Linux 运行 `./akagi`。
+Windows 需要安装 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。
+macOS 首次打开时，如出现安全提示，可在“系统设置 → 隐私与安全性”中允许打开。
 
-ZIP 解压到当前用户拥有的目录：Windows 运行 `akagi.exe`（需要 WebView2），macOS/Linux 运行 `./akagi`。
-Linux 还需 GTK/WebKitGTK 系统库，ZIP 不包含完整系统环境。DEB 面向 Ubuntu 22.04/24.04、Debian 12/13，
-RPM 安装说明面向 Fedora；分别执行 `sudo apt install ./akagi-*.deb` 或 `sudo dnf install ./akagi-*.rpm`。
-Arch 采用源码构建。安装包兼容性取决于系统库版本。
-
-程序可能未签名/未公证，允许系统执行前核对来源；不要关闭浏览器 TLS、沙箱或全局移除系统隔离保护。
-可写便携目录通常在程序旁保存数据；只读系统安装使用用户配置/数据目录。保留显式配置路径。
-
-### 首次运行：配置后保存
-
-首次运行显示的是初始化配置页，**不是精简版运行界面**。选择游戏平台、浏览器和采集方式等设置，点击
-**保存** 后才会进入包含首页、对局、Bot、历史、日志及设置的主界面；保存失败时仍停留在配置页。
-源码构建的程序与发布包使用同一初始化流程。
-
-默认采集开启时会自动打开受控浏览器及雀魂页面。在这个浏览器里登录有实际好处：独立浏览器使用持久化隔离目录
-（默认 `chrome-profile`，通常在程序旁），再次使用**同一目录**时浏览器可以保留 Cookie 和登录状态。
-雀魂会话可能过期或被撤销，因此不保证始终自动登录；更换数据目录、仅移动程序而未保留目录，或改为附加其他浏览器，
-不保证沿用原登录。Akagi 不新增账号密码保存功能，也不会复制常用浏览器的登录数据库。
-
-## 浏览器接入
-
-**常用 Edge：** 开启本地远程调试服务，确认回环端口（如 `127.0.0.1:9222`）。在 Akagi 设置中选择游戏，
-附加端口填写 `9222`，重启采集，允许浏览器这一次的调试连接。保留所选游戏唯一的官方页面，尽量在进入一局之前启动 Akagi。
-
-用户数据目录可以留空。标准 `/json/version` 不可用时（例如 Edge 界面开启的调试服务），
-Akagi 只检查已知目录中的 `DevToolsActivePort`。指定浏览器程序后，自动发现仅限该浏览器家族。
-端口不符、文件不安全或候选不唯一时不会随意选取。自定义目录请填**用户数据根目录**，不是 `Default`
-等单个配置子目录。不会读取或复制 Cookie、登录数据库及会话内容；重连会重新发现地址。
-
-**独立浏览器：** 附加端口设为 `0`。目录留空使用 Akagi 隔离目录，或指定单独目录，不要使用常用浏览器目录。
-优先选择已安装浏览器；缺失时可在设置中主动下载官方 Chrome for Testing，采集和推理启动时不会自动下载。
-
-端口/定位文件缺失、授权拒绝/超时、缺少游戏页面、缺少当前局状态分别处理。每次连接可能需要重新授权。
-Akagi 不反复重试 403，不绕过 Origin 检查，也不自动刷新进行中的游戏。
-
-## 源码构建
-
-准备 Git、稳定版 Rust、Node.js **22+**、npm、工具所需 Python **3.11+**、Protocol Buffers `protoc`。
-Python 不作为应用运行时。系统工具链参见 [Tauri 前置依赖](https://v2.tauri.app/start/prerequisites/)。
-
-macOS 在对应 Intel/Apple Silicon 主机原生构建：
+Ubuntu/Debian 安装 DEB，Fedora 安装 RPM，系统会同时安装所需依赖：
 
 ```sh
-xcode-select --install
-brew install node protobuf
+sudo apt install ./akagi-*.deb
 ```
-
-Windows 安装 Visual Studio Build Tools 的“使用 C++ 的桌面开发”和 Windows SDK、WebView2、Rust MSVC
-工具链、Node.js，将 `protoc` 加入 PATH。在 PowerShell 中：
-
-```powershell
-npm ci --prefix frontend
-npm run build --prefix frontend
-cargo build --locked --release --features custom-protocol
-.\target\release\akagi.exe
-```
-
-Ubuntu/Debian：
 
 ```sh
-sudo apt update
-sudo apt install build-essential pkg-config libssl-dev libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev protobuf-compiler patchelf
+sudo dnf install ./akagi-*.rpm
 ```
 
-Fedora 安装 GCC/C++、`pkgconf-pkg-config`、`openssl-devel`、`webkit2gtk4.1-devel`、`gtk3-devel`、
-`libappindicator-gtk3-devel`、`librsvg2-devel`、`libxdo-devel`、`protobuf-compiler`。
-Arch 安装 `base-devel`、`pkgconf`、`openssl`、`webkit2gtk-4.1`、`gtk3`、`libappindicator-gtk3`、
-`librsvg`、`xdotool`、`protobuf`，以及 Rust 和 Node.js/npm。随后 macOS/Linux 运行：
+Linux ZIP 用户需先安装对应系统的 GTK/WebKitGTK 依赖，参见下方源码安装说明。
+
+## 首次使用
+
+1. 打开 Akagi，在设置向导中选择游戏、浏览器和采集方式，点击“保存”。
+2. 在游戏浏览器中登录雀魂或天凤，保持该游戏的一个标签页打开。
+3. 开始对局，在“对局”页面或悬浮窗中查看建议。自动打牌可在“设置”中开启。
+
+独立浏览器可沿用登录状态，会话过期时重新登录；移动程序时，一并保留 `chrome-profile` 目录。
+悬浮窗和浏览器选项都可以在“设置”中调整，设置向导也可重新运行。
+
+雀魂对局中才启动 Akagi 时，启动采集并点击“恢复并继续”，按界面提示完成恢复。
+
+## 浏览器配置
+
+**独立浏览器（默认）：** “常用浏览器调试端口”设为 `0`，选择已安装的 Edge 或 Chrome，用户数据目录留空即可。
+也可通过设置下载 Chrome for Testing。Akagi 会打开独立的游戏窗口。
+
+**使用已有浏览器：** 在 Edge/Chrome 中开启本地远程调试，记下端口；
+在 Akagi 设置中填入“常用浏览器调试端口”（例如 `9222`），重新启动采集，并允许浏览器弹出的调试连接请求。
+使用自定义浏览器目录时，填写用户数据根目录。
+
+## 源码安装
+
+编译需要 Git、最新 stable Rust、Node.js/npm、`protoc` 和 C/C++ 工具链。
+推荐 Node.js **24 LTS**，最低 **22.12**。展开对应系统，先检查已有环境，再补齐缺少的工具。检查命令有版本输出表示工具可用；提示找不到命令时先检查 PATH。
+首次运行后按上方“首次使用”完成设置，浏览器配置入口位于“设置”。
+
+<details>
+<summary>macOS（Intel / Apple Silicon）</summary>
+
+Intel 与 Apple Silicon 均使用本机原生终端。每项先检查，仅补齐缺少的工具。
+
+**1. 编译工具：** 先查看 Xcode 工具目录和编译器版本。均正常时继续下一项；工具缺失时执行 `xcode-select --install`，等待安装完成。
 
 ```sh
+xcode-select -p
+clang --version
+```
+
+**2. Homebrew：** 下面会检查当前 PATH 和两个常见安装位置。有版本输出即已安装，可以跳过安装器；位于常见目录的已有安装会同时加载到当前终端。
+
+```sh
+if command -v brew >/dev/null 2>&1; then
+  brew --version
+elif [ -x /opt/homebrew/bin/brew ]; then
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+  brew --version
+elif [ -x /usr/local/bin/brew ]; then
+  eval "$(/usr/local/bin/brew shellenv)"
+  brew --version
+else
+  echo "Homebrew not found in PATH or standard locations"
+fi
+```
+
+显示 `Homebrew not found` 时，如曾安装到自定义位置，先按实际路径加载 `brew shellenv`；确认未安装后才运行 [Homebrew 安装器](https://docs.brew.sh/Installation)：
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+完成后按安装器的 **Next steps** 配置终端，重新执行上面的检查。
+
+**3. Git、Node.js/npm、protoc、CMake：** 查看版本。Node.js 达到 22.12 且 npm 可用时，可以沿用；推荐 24 LTS。
+
+```sh
+git --version
+node -v
+npm -v
+protoc --version
+cmake --version
+```
+
+如果 `node` 找不到，先确认是否已安装 `node@24`；有版本输出时加载 PATH，再检查 `node -v`、`npm -v`：
+
+```sh
+brew list --versions node@24
+export PATH="$(brew --prefix node@24)/bin:$PATH"
+```
+
+仅安装缺少的包：`git`、`node@24`（含 npm）、`protobuf`（提供 protoc）、`cmake`。以下命令包含全部包，可按检查结果保留需要的包名：
+
+```sh
+brew install git node@24 protobuf cmake
+```
+
+将 Homebrew 的 `shellenv` 和需要的 Node.js PATH 配置加入 `~/.zprofile`（bash 使用 `~/.bash_profile`），供新终端加载。
+
+**4. Rust：** 先加载已有环境并检查。`rustc`、`cargo` 均可用时沿用现有安装；使用 rustup 管理的旧版可执行 `rustup update stable` 和 `rustup default stable`。
+
+```sh
+if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
+rustup --version
+rustc --version
+cargo --version
+```
+
+加载后仍找不到 Rust 时，才运行 [Rust 安装器](https://rust-lang.org/tools/install/)：
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+. "$HOME/.cargo/env"
+```
+
+环境准备好后，获取源码、编译并运行：
+
+```sh
+git clone https://github.com/Etakind/Akagi-web.git
+cd Akagi-web
 npm ci --prefix frontend
 npm run build --prefix frontend
 cargo build --locked --release --features custom-protocol
 ./target/release/akagi
 ```
 
-`custom-protocol` 用于嵌入生产前端；缺失时普通 Cargo release 构建仍指向开发服务器。
-准确目标三元组见 [build/targets.json](build/targets.json)。在对应主机打包，例如：
+</details>
 
-```sh
-npm exec --prefix frontend -- tauri build --no-bundle --target aarch64-apple-darwin
-python3 scripts/package.py --target aarch64-apple-darwin
+<details>
+<summary>Windows x64（PowerShell）</summary>
+
+**1. 检查已有工具。** 已安装 Visual Studio/Build Tools 时，从开始菜单打开 **Developer PowerShell**；先执行：
+
+```powershell
+git --version
+node -v
+npm.cmd -v
+rustup --version
+rustc -vV
+cargo --version
+protoc --version
+cmake --version
+nasm -v
+where.exe cl
 ```
 
-Linux 使用 `tauri build --target <三元组> --bundles deb,rpm` 后运行相同打包脚本。
-工作流采用 Ubuntu 22.04 [Tauri 较旧构建基线](https://v2.tauri.app/distribute/appimage/)，不生成 AppImage。
-这些原生构建命令不承诺自动完成跨系统交叉编译。
+有版本或路径输出的工具可沿用。Node.js 至少 22.12，推荐 24 LTS；Rust 的 host 应为 `x86_64-pc-windows-msvc`。找不到 `cl` 时，先确认当前使用的是 Developer PowerShell。
 
-## 风险
+如果仅 Rust 命令找不到，检查默认安装目录；返回 `True` 时先补入当前终端的 PATH，再重试 Rust 检查：
 
-CDP 可访问浏览器会话，只开放回环地址，不再使用时关闭。自动打牌可能违反游戏规则并带来账号处罚；
-网页变化也可能使适配失效。本地历史/日志仍需保护，未签名程序和依赖/系统库问题也须审查。
-Linux glib 的已有公告需继续处理，详见[风险与改进方向](docs/FORK_MAINTENANCE.zh-CN.md)。
+```powershell
+Test-Path "$env:USERPROFILE\.cargo\bin\rustc.exe"
+$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+```
 
+**2. 补齐缺少的工具。** 安装时保留 PATH 选项；安装完成或修改 PATH 后重新打开终端，再执行上面的检查。
 
-许可证与归属：[LICENSE.txt](LICENSE.txt)、[NOTICE](NOTICE)。
+- [Git](https://git-scm.com/install/windows) 和 [Node.js 24 LTS](https://nodejs.org/en/download)，保留 npm 和 PATH 选项。
+- [C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)：勾选“使用 C++ 的桌面开发”、MSVC x64/x86 工具及 Windows SDK。
+- [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 和 [CMake](https://cmake.org/download/)。
+- [NASM](https://www.nasm.us/pub/nasm/releasebuilds/)，将可执行文件目录加入 PATH。从 [protobuf 发布页](https://github.com/protocolbuffers/protobuf/releases)下载 win64 ZIP，解压到 `C:\Tools\protobuf`，将 `C:\Tools\protobuf\bin` 加入 PATH。
+- [Rust](https://rust-lang.org/tools/install/)：运行 `rustup-init.exe`，选择 stable MSVC。
+
+WebView2 可在 Windows 的“已安装的应用”中查看；已具备运行环境时可跳过。已有 Visual Studio 时，在其 Installer 中核对 C++ 工作负载和 Windows SDK。已有 rustup 时可用 `rustup update stable-msvc`、`rustup default stable-msvc` 更新工具链。
+
+环境准备好后，在同一 PowerShell 中获取源码、编译并运行：
+
+```powershell
+git clone https://github.com/Etakind/Akagi-web.git
+cd Akagi-web
+npm.cmd ci --prefix frontend
+npm.cmd run build --prefix frontend
+cargo build --locked --release --features custom-protocol
+.\target\release\akagi.exe
+```
+
+</details>
+
+<details>
+<summary>Ubuntu / Debian</summary>
+
+在桌面环境中打开终端。
+
+**1. 检查系统工具和图形库：**
+
+```sh
+git --version
+curl --version
+cc --version
+c++ --version
+make --version
+cmake --version
+pkg-config --version
+protoc --version
+pkg-config --modversion gtk+-3.0 webkit2gtk-4.1 openssl
+```
+
+下面的包管理命令用于补齐完整系统依赖，已安装的包由包管理器检查，无需卸载重装：
+
+```sh
+sudo apt update
+sudo apt install -y git curl ca-certificates xz-utils file build-essential cmake pkg-config \
+  libssl-dev libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+  librsvg2-dev libxdo-dev protobuf-compiler
+```
+
+**2. 检查 Rust：** 先加载已有安装；`rustc`、`cargo` 正常时可跳过安装器。已有 rustup 可用 `rustup update stable`、`rustup default stable` 更新工具链。
+
+```sh
+if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
+rustup --version
+rustc --version
+cargo --version
+```
+
+仅在加载后仍缺少 Rust 时安装：
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+. "$HOME/.cargo/env"
+```
+
+**3. 检查 Node.js/npm 和 nvm：** 已有 Node.js 22.12+ 且 npm 可用时，跳过这一项的安装命令。下面也会加载已有 nvm：
+
+```sh
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+if [ -s "$NVM_DIR/nvm.sh" ]; then . "$NVM_DIR/nvm.sh"; fi
+node -v
+npm -v
+command -v nvm
+```
+
+缺少 Node.js 或版本过旧时使用 [nvm](https://github.com/nvm-sh/nvm#installing-and-updating) 安装 24 LTS。`command -v nvm` 输出 `nvm` 时，跳过下面第一行：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
+. "$NVM_DIR/nvm.sh"
+nvm install 24
+nvm alias default 24
+```
+
+重新执行 `node -v`、`npm -v` 确认环境，然后获取源码、编译并运行：
+
+```sh
+git clone https://github.com/Etakind/Akagi-web.git
+cd Akagi-web
+npm ci --prefix frontend
+npm run build --prefix frontend
+cargo build --locked --release --features custom-protocol
+./target/release/akagi
+```
+
+</details>
+
+<details>
+<summary>Fedora</summary>
+
+在桌面环境中打开终端。
+
+**1. 检查系统工具和图形库：**
+
+```sh
+git --version
+curl --version
+cc --version
+c++ --version
+make --version
+cmake --version
+pkg-config --version
+protoc --version
+pkg-config --modversion gtk+-3.0 webkit2gtk-4.1 openssl
+```
+
+下面的包管理命令用于补齐完整系统依赖，已安装的包由包管理器检查，无需卸载重装：
+
+```sh
+sudo dnf install -y git curl ca-certificates xz file gcc gcc-c++ make cmake \
+  pkgconf-pkg-config openssl-devel webkit2gtk4.1-devel gtk3-devel \
+  libappindicator-gtk3-devel librsvg2-devel libxdo-devel protobuf-compiler
+```
+
+**2. 检查 Rust：** 先加载已有安装；`rustc`、`cargo` 正常时可跳过安装器。已有 rustup 可用 `rustup update stable`、`rustup default stable` 更新工具链。
+
+```sh
+if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
+rustup --version
+rustc --version
+cargo --version
+```
+
+仅在加载后仍缺少 Rust 时安装：
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+. "$HOME/.cargo/env"
+```
+
+**3. 检查 Node.js/npm 和 nvm：** 已有 Node.js 22.12+ 且 npm 可用时，跳过这一项的安装命令。下面也会加载已有 nvm：
+
+```sh
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+if [ -s "$NVM_DIR/nvm.sh" ]; then . "$NVM_DIR/nvm.sh"; fi
+node -v
+npm -v
+command -v nvm
+```
+
+缺少 Node.js 或版本过旧时使用 [nvm](https://github.com/nvm-sh/nvm#installing-and-updating) 安装 24 LTS。`command -v nvm` 输出 `nvm` 时，跳过下面第一行：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
+. "$NVM_DIR/nvm.sh"
+nvm install 24
+nvm alias default 24
+```
+
+重新执行 `node -v`、`npm -v` 确认环境，然后获取源码、编译并运行：
+
+```sh
+git clone https://github.com/Etakind/Akagi-web.git
+cd Akagi-web
+npm ci --prefix frontend
+npm run build --prefix frontend
+cargo build --locked --release --features custom-protocol
+./target/release/akagi
+```
+
+</details>
+
+<details>
+<summary>Arch Linux</summary>
+
+在桌面环境中打开终端。
+
+**1. 检查系统工具和图形库：**
+
+```sh
+git --version
+curl --version
+cc --version
+c++ --version
+make --version
+cmake --version
+pkg-config --version
+protoc --version
+pkg-config --modversion gtk+-3.0 webkit2gtk-4.1 openssl
+```
+
+下面的包管理命令用于补齐完整系统依赖，已安装的包由包管理器检查，无需卸载重装：
+
+```sh
+sudo pacman -Syu --needed git curl ca-certificates xz file base-devel cmake pkgconf \
+  openssl webkit2gtk-4.1 gtk3 appmenu-gtk-module libappindicator-gtk3 \
+  librsvg xdotool protobuf
+```
+
+**2. 检查 Rust：** 先加载已有安装；`rustc`、`cargo` 正常时可跳过安装器。已有 rustup 可用 `rustup update stable`、`rustup default stable` 更新工具链。
+
+```sh
+if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
+rustup --version
+rustc --version
+cargo --version
+```
+
+仅在加载后仍缺少 Rust 时安装：
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+. "$HOME/.cargo/env"
+```
+
+**3. 检查 Node.js/npm 和 nvm：** 已有 Node.js 22.12+ 且 npm 可用时，跳过这一项的安装命令。下面也会加载已有 nvm：
+
+```sh
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+if [ -s "$NVM_DIR/nvm.sh" ]; then . "$NVM_DIR/nvm.sh"; fi
+node -v
+npm -v
+command -v nvm
+```
+
+缺少 Node.js 或版本过旧时使用 [nvm](https://github.com/nvm-sh/nvm#installing-and-updating) 安装 24 LTS。`command -v nvm` 输出 `nvm` 时，跳过下面第一行：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
+. "$NVM_DIR/nvm.sh"
+nvm install 24
+nvm alias default 24
+```
+
+重新执行 `node -v`、`npm -v` 确认环境，然后获取源码、编译并运行：
+
+```sh
+git clone https://github.com/Etakind/Akagi-web.git
+cd Akagi-web
+npm ci --prefix frontend
+npm run build --prefix frontend
+cargo build --locked --release --features custom-protocol
+./target/release/akagi
+```
+
+</details>
+
+开发模式和打包参见[开发指南](docs/BUILDING.zh-CN.md)。
+
+基于 [shinkuan/Akagi](https://github.com/shinkuan/Akagi/tree/v3)。许可证与第三方声明：[LICENSE.txt](LICENSE.txt)、[NOTICE](NOTICE)。

@@ -64,6 +64,10 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, state: AppState) -> Result<()> {
 fn spawn_forwarders<R: Runtime>(app: AppHandle<R>, state: AppState) {
     let status_state = state.clone();
     let status_app = app.clone();
+    let action_log = state
+        .log_session
+        .flow_logger("majsoul", "autoplay.log", "validated autoplay lifecycle")
+        .ok();
     tauri::async_runtime::spawn(async move {
         let mut timer = tokio::time::interval(std::time::Duration::from_millis(100));
         let mut geometry = None;
@@ -90,6 +94,9 @@ fn spawn_forwarders<R: Runtime>(app: AppHandle<R>, state: AppState) {
             }
             drop(config);
             if let Some(update) = status.poll() {
+                if let Some(log) = &action_log {
+                    log.writeln(&serde_json::json!({"ts_ms": chrono::Utc::now().timestamp_millis(), "status": &update}).to_string());
+                }
                 let _ = status_app.emit("autoplay-status", update);
             }
         }
@@ -102,12 +109,66 @@ fn spawn_forwarders<R: Runtime>(app: AppHandle<R>, state: AppState) {
             let _ = autoplay_app.emit("autoplay-enabled", enabled);
         }
     });
-    forward(app.clone(), state.mjai_bus.subscribe(), "mjai-event");
-    forward(
-        app.clone(),
-        state.bot_response_bus.subscribe(),
-        "bot-response",
-    );
+    {
+        let game_app = app.clone();
+        let mut rx = state.mjai_bus.subscribe();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let update = match rx.recv().await {
+                    Ok(update) => update,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        let _ = game_app.emit("game-invalidated", ());
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+                match update {
+                    crate::event_bus::GameUpdate::Live(event, _) => {
+                        let _ = game_app.emit("mjai-event", event);
+                    }
+                    crate::event_bus::GameUpdate::Restore(_, _) => {
+                        let _ = game_app.emit("game-restored", ());
+                    }
+                    crate::event_bus::GameUpdate::Invalidated => {
+                        let _ = game_app.emit("game-invalidated", ());
+                    }
+                }
+            }
+        });
+        let recovery_app = app.clone();
+        let mut changes = state.autoplay_context.recovery.changes.subscribe();
+        let recovery_log = state
+            .log_session
+            .flow_logger("majsoul", "recovery.log", "game recovery lifecycle")
+            .ok();
+        tauri::async_runtime::spawn(async move {
+            while changes.changed().await.is_ok() {
+                let status = changes.borrow_and_update().clone();
+                if let Some(log) = &recovery_log {
+                    log.writeln(&serde_json::json!({"ts_ms": chrono::Utc::now().timestamp_millis(), "status": &status}).to_string());
+                }
+                if status.phase == crate::capture::recovery::RecoveryPhase::Ready {
+                    let _ = recovery_app.emit("notify", crate::schema::Notification::success("Majsoul game state ready").body("State reconstruction completed. Decisions and enabled automatic actions can resume on live windows.").id("majsoul-game-state"));
+                }
+                let _ = recovery_app.emit("game-recovery-status", status);
+            }
+        });
+    }
+    {
+        let response_app = app.clone();
+        let mut rx = state.bot_response_bus.subscribe();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(response) if response.decision_context.valid() => {
+                        let _ = response_app.emit("bot-response", response);
+                    }
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+    }
     forward(app.clone(), state.notify_bus.subscribe(), "notify");
     forward(
         app.clone(),

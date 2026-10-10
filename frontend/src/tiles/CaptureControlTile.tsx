@@ -17,13 +17,14 @@ const STATE_COLOR: Record<string, string> = {
 export function CaptureControlTile({ bp }: { bp: Breakpoint }) {
   const { t } = useTranslation()
   const status = useCaptureStore((s) => s.status)
+  const recovery = useCaptureStore((s) => s.recovery)
   const [busy, setBusy] = useState(false)
 
   const dot = STATE_COLOR[status.state] ?? 'bg-zinc-500'
   const descriptor = 'descriptor' in status && status.descriptor ? status.descriptor : '—'
   const title = t('overview.capture_chromium')
 
-  const call = async (cmd: 'start_capture' | 'stop_capture' | 'restart_capture') => {
+  const call = async (cmd: 'start_capture' | 'stop_capture' | 'restart_capture' | 'recover_majsoul_game') => {
     setBusy(true)
     try {
       await invoke(cmd)
@@ -43,6 +44,20 @@ export function CaptureControlTile({ bp }: { bp: Breakpoint }) {
           {descriptor}
         </span>
       </div>
+
+      {status.state === 'running' && (recovery.phase !== 'inactive' || recovery.can_recover) && (
+        <div className="flex flex-col gap-1.5 text-xs">
+          <span role="status">{t(`recovery.phase.${recovery.phase}`)}</span>
+          {(recovery.can_recover || recovery.phase === 'recovering') && <>
+            <Button size="sm" variant="outline" onPointerDown={e => e.stopPropagation()}
+              onClick={() => call('recover_majsoul_game')} disabled={busy || !recovery.can_recover}>
+              <RotateCw className="h-3.5 w-3.5" />{t('recovery.button')}
+            </Button>
+            <span className="text-muted-foreground">{t('recovery.description')}</span>
+          </>}
+          {recovery.phase === 'error' && <span>{t(`recovery.reason.${recovery.reason}`, { defaultValue: t('recovery.failed') })}</span>}
+        </div>
+      )}
 
       <div className="flex gap-1.5">
         <Button

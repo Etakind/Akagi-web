@@ -11,6 +11,7 @@ type NotifyStore = {
   pushResponse: (r: BotResponse) => void
   pushToast: (n: Notification) => void
   clearToasts: () => void
+  clearGame: () => void
 }
 
 const MAX_EVENTS = 100
@@ -43,4 +44,5 @@ export const useNotifyStore = create<NotifyStore>((set) => ({
     }),
 
   clearToasts: () => set({ notifications: [] }),
+  clearGame: () => set({ events: [], responses: [] }),
 }))

@@ -108,6 +108,12 @@ enum DoraTiming {
 }
 
 pub struct MajsoulBridge {
+    recovery: Option<Arc<crate::capture::recovery::RecoveryState>>,
+    last_step: Option<u64>,
+    round_ready: bool,
+    round_key: Option<(u64, u64, u64)>,
+    own_riichi: bool,
+    start_event: Option<MjaiEvent>,
     flow_id: u64,
     autoplay_status: Option<Arc<crate::autoplay::status::AutoplayStatus>>,
     parser: LiqiParser,
@@ -179,6 +185,14 @@ pub struct MajsoulBridge {
 
 impl Drop for MajsoulBridge {
     fn drop(&mut self) {
+        if let Some(recovery) = &self.recovery {
+            if recovery.owns(self.flow_id) {
+                recovery.invalidate(
+                    crate::capture::recovery::RecoveryPhase::Missing,
+                    Some("game_disconnected"),
+                );
+            }
+        }
         if let Some(status) = &self.autoplay_status {
             status.disconnect(self.flow_id);
         }
@@ -188,6 +202,12 @@ impl Drop for MajsoulBridge {
 impl MajsoulBridge {
     pub fn new(flow_log: Option<Arc<FlowLogger>>, session: Option<Arc<Session>>) -> Self {
         Self {
+            recovery: None,
+            last_step: None,
+            round_ready: false,
+            round_key: None,
+            own_riichi: false,
+            start_event: None,
             flow_id: NEXT_FLOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             autoplay_status: None,
             parser: LiqiParser::new(),
@@ -209,6 +229,14 @@ impl MajsoulBridge {
             restore_budget: None,
             input_watch: None,
         }
+    }
+
+    pub fn with_recovery(
+        mut self,
+        recovery: Option<Arc<crate::capture::recovery::RecoveryState>>,
+    ) -> Self {
+        self.recovery = recovery;
+        self
     }
 
     /// Install the shared time-budget slot (builder-style; used by
@@ -451,12 +479,24 @@ impl MajsoulBridge {
         }
         self.replaying = false;
 
+        // Production restoration cannot reuse a historical operation until
+        // passed_waiting_time's unit and meaning are verified. Clear both
+        // timing stores and resume only on a fresh live operation.
+        if self.recovery.is_some() {
+            self.restore_budget = None;
+            self.store_budget(None);
+            if let Some(status) = &self.autoplay_status {
+                status.invalidate();
+            }
+            return events;
+        }
+        // Legacy conversion-only replay utilities retain their timing view.
         // Commit the decision window left open at the end of the replay
         // (if any), backdating `opened_at` by the server-reported time
         // already consumed in that window. The unit of
         // `passed_waiting_time` is not confirmed (observed values 13–60);
         // seconds is assumed. Over-estimating elapsed time only makes the
-        // delay model act sooner — it can never cause an overtime.
+        // delay model act sooner; production never executes this window.
         let passed = payload
             .pointer("/game_restore/passed_waiting_time")
             .and_then(JsonValue::as_u64)
@@ -580,6 +620,9 @@ impl MajsoulBridge {
             self.pending_reach_accepted.take()
         };
 
+        if pending_reach == self.seat && pending_reach.is_some() {
+            self.own_riichi = true;
+        }
         let result = match action_name {
             ACTION_NEW_ROUND => self.build_start_kyoku(action_data),
             ACTION_DEAL_TILE => self.build_tsumo(action_data),
@@ -1207,6 +1250,7 @@ impl MajsoulBridge {
         self.deferred_doras.clear();
         self.last_revealed_tile_actor = None;
         self.pending_reach_accepted = None;
+        self.own_riichi = false;
 
         Ok(vec![
             MjaiEvent::StartKyoku {
@@ -1276,6 +1320,14 @@ impl MajsoulBridge {
     }
 
     fn handle_auth_game_response(&mut self, payload: &JsonValue) -> Vec<MjaiEvent> {
+        if payload
+            .pointer("/error/code")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0)
+            != 0
+        {
+            return Vec::new();
+        }
         let Some(account_id) = self.account_id else {
             warn!(
                 target: "akagi::bridge::majsoul",
@@ -1290,6 +1342,9 @@ impl MajsoulBridge {
             );
             return Vec::new();
         };
+        if !matches!(seat_list.len(), 3 | 4) {
+            return Vec::new();
+        }
         let position = seat_list
             .iter()
             .position(|v| v.as_u64() == Some(account_id));
@@ -1352,6 +1407,159 @@ impl MajsoulBridge {
             }),
         }]
     }
+}
+
+fn validate_restore(payload: &JsonValue, seat: Option<Actor>, num_players: u8) -> Result<()> {
+    let seat = seat.context("identity missing")?;
+    anyhow::ensure!(
+        matches!(num_players, 3 | 4) && seat < num_players,
+        "invalid identity"
+    );
+    anyhow::ensure!(
+        payload
+            .pointer("/error/code")
+            .and_then(JsonValue::as_u64)
+            .unwrap_or(0)
+            == 0,
+        "sync error"
+    );
+    let actions = payload
+        .pointer("/game_restore/actions")
+        .and_then(JsonValue::as_array)
+        .context("missing actions")?;
+    let mut last: Option<u64> = None;
+    let mut rounds = 0;
+    for action in actions {
+        let step = action["step"].as_u64().context("missing action step")?;
+        if let Some(prev) = last {
+            anyhow::ensure!(prev.checked_add(1) == Some(step), "action sequence gap");
+        }
+        last = Some(step);
+        let name = action["name"].as_str().context("missing action name")?;
+        anyhow::ensure!(
+            matches!(
+                name,
+                "ActionMJStart"
+                    | ACTION_NEW_ROUND
+                    | ACTION_DEAL_TILE
+                    | ACTION_DISCARD_TILE
+                    | ACTION_CHI_PENG_GANG
+                    | ACTION_AN_GANG_ADD_GANG
+                    | ACTION_HULE
+                    | ACTION_NO_TILE
+                    | ACTION_LIU_JU
+                    | ACTION_BA_BEI
+            ),
+            "unsupported action"
+        );
+        let data = parser::decode_restore_action(
+            name,
+            action["data"].as_str().context("missing action data")?,
+        )?;
+        if name == ACTION_NEW_ROUND {
+            rounds += 1;
+        } else {
+            anyhow::ensure!(
+                name == "ActionMJStart" || rounds == 1,
+                "missing starting hand"
+            );
+        }
+        for key in ["seat", "ju"] {
+            if let Some(actor) = data.get(key).and_then(JsonValue::as_u64) {
+                anyhow::ensure!(actor < u64::from(num_players), "invalid seat");
+            }
+        }
+    }
+    anyhow::ensure!(
+        rounds == 1 && last.and_then(|s| s.checked_add(1)) == payload["step"].as_u64(),
+        "incomplete action log"
+    );
+    Ok(())
+}
+
+fn round_key(data: &JsonValue) -> (u64, u64, u64) {
+    (
+        data["chang"].as_u64().unwrap_or(0),
+        data["ju"].as_u64().unwrap_or(0),
+        data["ben"].as_u64().unwrap_or(0),
+    )
+}
+
+fn validate_rebuilt_events(events: &[MjaiEvent], seat: Actor, num_players: u8) -> Result<()> {
+    use std::collections::BTreeMap;
+    let mut hand = BTreeMap::<String, usize>::new();
+    let mut started = false;
+    for event in events {
+        let value = serde_json::to_value(event)?;
+        for key in ["actor", "target", "oya"] {
+            if let Some(actor) = value[key].as_u64() {
+                anyhow::ensure!(actor < u64::from(num_players), "invalid event seat");
+            }
+        }
+        let mut removed: Vec<&String> = Vec::new();
+        match event {
+            MjaiEvent::StartKyoku {
+                tehais,
+                scores,
+                num_players: n,
+                dora_marker,
+                ..
+            } => {
+                anyhow::ensure!(
+                    !started
+                        && *n == num_players
+                        && tehais.len() == usize::from(num_players)
+                        && scores.len() == usize::from(num_players),
+                    "invalid round shape"
+                );
+                anyhow::ensure!(
+                    tehais[usize::from(seat)].len() == 13 && dora_marker != "?",
+                    "missing starting hand or dora"
+                );
+                for tile in &tehais[usize::from(seat)] {
+                    anyhow::ensure!(tile != "?", "unknown own tile");
+                    *hand.entry(tile.clone()).or_default() += 1;
+                }
+                started = true;
+            }
+            MjaiEvent::Tsumo { actor, pai } if *actor == seat => {
+                anyhow::ensure!(pai != "?", "unknown own draw");
+                *hand.entry(pai.clone()).or_default() += 1;
+            }
+            MjaiEvent::Dahai { actor, pai, .. } | MjaiEvent::Kakan { actor, pai, .. }
+                if *actor == seat =>
+            {
+                removed.push(pai)
+            }
+            MjaiEvent::Kita { actor, .. } if *actor == seat => {
+                let count = hand.get_mut("N").context("kita missing north")?;
+                anyhow::ensure!(*count > 0, "kita missing north");
+                *count -= 1;
+            }
+            MjaiEvent::Chi {
+                actor, consumed, ..
+            }
+            | MjaiEvent::Pon {
+                actor, consumed, ..
+            } if *actor == seat => removed.extend(consumed),
+            MjaiEvent::Daiminkan {
+                actor, consumed, ..
+            } if *actor == seat => removed.extend(consumed),
+            MjaiEvent::Ankan { actor, consumed } if *actor == seat => removed.extend(consumed),
+            _ => {}
+        }
+        for tile in removed {
+            let count = hand.get_mut(tile).context("consumed tile missing")?;
+            anyhow::ensure!(*count > 0, "consumed tile missing");
+            *count -= 1;
+        }
+        anyhow::ensure!(
+            hand.values().sum::<usize>() <= 14 && hand.values().all(|n| *n <= 4),
+            "invalid hand counts"
+        );
+    }
+    anyhow::ensure!(started, "starting round missing");
+    Ok(())
 }
 
 fn stable_game_id(game_uuid: &str) -> u64 {
@@ -1620,7 +1828,196 @@ impl Bridge for MajsoulBridge {
                         "payload": msg.payload.clone(),
                     }),
                 });
-                let events = self.dispatch(&msg);
+                let mut is_restore = false;
+                let mut invalidated = false;
+                let mut events = Vec::new();
+                let is_action = msg.msg_type == MessageType::Notify
+                    && msg.method_name.as_ref() == METHOD_ACTION_PROTOTYPE;
+                let is_sync = msg.msg_type == MessageType::Response
+                    && matches!(
+                        msg.method_name.as_ref(),
+                        METHOD_SYNC_GAME | METHOD_ENTER_GAME
+                    );
+                // Production captures have a lifecycle controller. Direct
+                // bridge callers retain the ordinary conversion interface.
+                if let Some(recovery) = self.recovery.clone() {
+                    use crate::capture::recovery::RecoveryPhase;
+                    let action = msg.payload["name"].as_str().unwrap_or("");
+                    if is_action && self.seat.is_none() {
+                        if !recovery.owns(self.flow_id)
+                            && self.start_event.is_none()
+                            && recovery.snapshot().phase == RecoveryPhase::Inactive
+                        {
+                            recovery
+                                .invalidate(RecoveryPhase::Missing, Some("initial_state_missing"));
+                            invalidated = true;
+                        }
+                    } else if is_sync
+                        && msg
+                            .payload
+                            .pointer("/game_restore/actions")
+                            .and_then(JsonValue::as_array)
+                            .is_some_and(|a| !a.is_empty())
+                    {
+                        let valid =
+                            validate_restore(&msg.payload, self.seat, self.num_players).is_ok();
+                        if valid && recovery.owns(self.flow_id) {
+                            recovery.invalidate(RecoveryPhase::Recovering, None);
+                            events = self.dispatch(&msg);
+                            if validate_rebuilt_events(
+                                &events,
+                                self.seat.unwrap(),
+                                self.num_players,
+                            )
+                            .is_ok()
+                            {
+                                // Authentication and sync can arrive in one
+                                // burst; the auth event may already have an
+                                // obsolete epoch. Seed every consumer inside
+                                // the replay transaction itself.
+                                if let Some(start) = &self.start_event {
+                                    events.insert(0, start.clone());
+                                }
+                                self.round_key = msg
+                                    .payload
+                                    .pointer("/game_restore/actions")
+                                    .and_then(JsonValue::as_array)
+                                    .and_then(|actions| {
+                                        actions.iter().find(|a| a["name"] == ACTION_NEW_ROUND)
+                                    })
+                                    .and_then(|action| {
+                                        parser::decode_restore_action(
+                                            ACTION_NEW_ROUND,
+                                            action["data"].as_str()?,
+                                        )
+                                        .ok()
+                                    })
+                                    .map(|data| round_key(&data));
+                                recovery.batch(
+                                    events.len(),
+                                    msg.payload
+                                        .pointer("/game_restore/actions/0/step")
+                                        .and_then(JsonValue::as_u64),
+                                    msg.payload["step"].as_u64().and_then(|s| s.checked_sub(1)),
+                                );
+                                is_restore = true;
+                                self.round_ready = true;
+                                self.last_step =
+                                    msg.payload["step"].as_u64().and_then(|s| s.checked_sub(1));
+                                recovery.window(None); // elapsed-time unit is unverified; await a live window
+                            } else {
+                                events.clear();
+                                recovery.invalidate(
+                                    RecoveryPhase::Error,
+                                    Some("invalid_rebuilt_state"),
+                                );
+                                invalidated = true;
+                            }
+                        } else if recovery.owns(self.flow_id) {
+                            recovery.invalidate(RecoveryPhase::Error, Some("incomplete_restore"));
+                            invalidated = true;
+                        }
+                    } else if is_action && recovery.owns(self.flow_id) {
+                        let step = msg.payload["step"].as_u64();
+                        let new_round = action == ACTION_NEW_ROUND;
+                        let key = new_round.then(|| round_key(&msg.payload["data"]));
+                        let duplicate = (new_round && key == self.round_key)
+                            || (!new_round
+                                && step.zip(self.last_step).is_some_and(|(s, last)| s <= last));
+                        let gap = !new_round
+                            && step
+                                .zip(self.last_step)
+                                .is_some_and(|(s, last)| last.checked_add(1) != Some(s));
+                        if !duplicate {
+                            if step.is_none()
+                                || gap
+                                || (!self.round_ready && !new_round && action != "ActionMJStart")
+                            {
+                                recovery
+                                    .invalidate(RecoveryPhase::Error, Some("action_sequence_gap"));
+                                invalidated = true;
+                            } else if action == "ActionMJStart" {
+                                self.last_step = step;
+                            } else {
+                                events = self.dispatch(&msg);
+                                self.last_step = step;
+                                if new_round && !events.is_empty() {
+                                    self.round_ready = true;
+                                    self.round_key = key;
+                                    recovery.set(RecoveryPhase::Ready, None);
+                                }
+                                if events.is_empty() {
+                                    recovery.invalidate(
+                                        RecoveryPhase::Error,
+                                        Some("action_conversion_failed"),
+                                    );
+                                    invalidated = true;
+                                } else {
+                                    recovery.window(
+                                        self.autoplay_status
+                                            .as_ref()
+                                            .and_then(|s| s.current_window()),
+                                    );
+                                }
+                            }
+                        }
+                    } else if is_action {
+                        // Superseded authenticated sockets must not feed a
+                        // legacy (unbound) event into the current game.
+                    } else {
+                        events = self.dispatch(&msg);
+                        if msg.msg_type == MessageType::Response
+                            && msg.method_name.as_ref() == METHOD_AUTH_GAME
+                            && !events.is_empty()
+                        {
+                            recovery.invalidate(RecoveryPhase::WaitingRound, None);
+                            recovery.bind(self.flow_id);
+                            self.start_event = events.first().cloned();
+                            self.last_step = None;
+                            self.round_ready = false;
+                            self.round_key = None;
+                            self.own_riichi = false;
+                        }
+                        if msg.msg_type == MessageType::Request
+                            && matches!(
+                                msg.method_name.as_ref(),
+                                METHOD_INPUT_OPERATION | METHOD_INPUT_CHI_PENG_GANG
+                            )
+                            && recovery.owns(self.flow_id)
+                        {
+                            recovery.window(None);
+                        }
+                    }
+                } else {
+                    events = self.dispatch(&msg);
+                }
+                let context = crate::event_bus::EventContext {
+                    window: if is_restore {
+                        None
+                    } else {
+                        self.autoplay_status
+                            .as_ref()
+                            .and_then(|s| s.current_window())
+                    },
+                    token: self
+                        .recovery
+                        .as_ref()
+                        .filter(|r| r.owns(self.flow_id))
+                        .map(|r| if is_restore { r.token() } else { r.stamp() }),
+                    forced_tsumogiri: self.own_riichi,
+                    offered: msg
+                        .payload
+                        .pointer("/data/operation/operation_list")
+                        .and_then(JsonValue::as_array)
+                        .map(|list| {
+                            list.iter()
+                                .filter_map(|op| {
+                                    op["type"].as_u64().and_then(|k| u32::try_from(k).ok())
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                };
                 // Rotate before writing so the StartGame event itself lands
                 // in the freshly-opened file, not the previous game's file.
                 if events
@@ -1630,7 +2027,13 @@ impl Bridge for MajsoulBridge {
                     self.rotate_mjai_log();
                 }
                 self.write_mjai(&events);
-                ParseResult { events, parsed }
+                ParseResult {
+                    events,
+                    parsed,
+                    context,
+                    is_restore,
+                    invalidated,
+                }
             }
             Err(e) => {
                 warn!(
@@ -1649,7 +2052,19 @@ impl Bridge for MajsoulBridge {
                     });
                     log.writeln(&line.to_string());
                 }
-                ParseResult::empty()
+                let mut result = ParseResult::empty();
+                if direction == Direction::Down
+                    && self.recovery.as_ref().is_some_and(|r| r.owns(self.flow_id))
+                {
+                    if let Some(recovery) = &self.recovery {
+                        recovery.invalidate(
+                            crate::capture::recovery::RecoveryPhase::Error,
+                            Some("protocol_decode_failed"),
+                        );
+                    }
+                    result.invalidated = true;
+                }
+                result
             }
         }
     }
@@ -4516,5 +4931,140 @@ mod tests {
             payload: json!({ "result": {} }),
         });
         assert!(slot.read().unwrap().is_none());
+    }
+    fn recovery_wire(kind: u8, name: &str, message: &str, value: JsonValue) -> Vec<u8> {
+        use prost::Message;
+        #[derive(prost::Message)]
+        struct Wrapper {
+            #[prost(string, tag = "1")]
+            name: String,
+            #[prost(bytes = "vec", tag = "2")]
+            data: Vec<u8>,
+        }
+        let descriptor = parser::POOL.get_message_by_name(message).unwrap();
+        let inner = prost_reflect::DynamicMessage::deserialize(descriptor, value).unwrap();
+        let wrapper = Wrapper {
+            name: name.into(),
+            data: inner.encode_to_vec(),
+        };
+        let mut frame = vec![kind, 1, 0];
+        frame.extend(wrapper.encode_to_vec());
+        frame
+    }
+
+    fn recovery_bridge() -> (MajsoulBridge, Arc<crate::capture::recovery::RecoveryState>) {
+        let state = Arc::new(crate::capture::recovery::RecoveryState::default());
+        let mut bridge = MajsoulBridge::default().with_recovery(Some(state.clone()));
+        bridge.parse(
+            Direction::Up,
+            &recovery_wire(
+                2,
+                METHOD_AUTH_GAME,
+                "lq.ReqAuthGame",
+                json!({"account_id":100,"game_uuid":"fake-recovery-game"}),
+            ),
+        );
+        bridge.parse(
+            Direction::Down,
+            &recovery_wire(3, "", "lq.ResAuthGame", json!({"seat_list":[1,2,3,100]})),
+        );
+        (bridge, state)
+    }
+
+    #[tokio::test]
+    async fn capture_burst_restores_identity_atomically_without_historical_decisions() {
+        use crate::event_bus::{mjai_bus, post_tracker_bus, GameUpdate};
+        let (mut bridge, state) = recovery_bridge();
+        state.register(crate::capture::recovery::BOT);
+        bridge.parse(
+            Direction::Up,
+            &recovery_wire(2, METHOD_SYNC_GAME, "lq.ReqSyncGame", json!({})),
+        );
+        let payload: JsonValue = serde_json::from_str(SYNC_GAME_SAMPLE).unwrap();
+        let result = bridge.parse(
+            Direction::Down,
+            &recovery_wire(3, "", "lq.ResSyncGame", payload),
+        );
+        assert!(result.is_restore);
+        assert!(!result.invalidated);
+        assert!(matches!(
+            result.events.first(),
+            Some(MjaiEvent::StartGame { id: Some(3), .. })
+        ));
+        let tmp = tempfile::tempdir().unwrap();
+        let (inspector, _) =
+            crate::inspector::InspectorWriter::open(&tmp.path().join("inspector.jsonl"), 32)
+                .unwrap();
+        let bus = mjai_bus();
+        let post = post_tracker_bus();
+        let tracker = crate::game_state::spawn_with_post(bus.subscribe(), Some(post.clone()));
+        let response = crate::event_bus::bot_response_bus();
+        let mut responses = response.subscribe();
+        let manager = crate::bot::BotManager::new(
+            Arc::new(tokio::sync::RwLock::new(crate::config::AppConfig::default())),
+            response,
+            crate::event_bus::bot_status_bus(),
+            crate::event_bus::notify_bus(),
+            inspector,
+        );
+        let task = tokio::spawn(manager.run(post.subscribe()));
+        let mut ready = state.changes.subscribe();
+        bus.send_update(GameUpdate::Restore(Arc::new(result.events), result.context))
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while ready.borrow_and_update().phase != crate::capture::recovery::RecoveryPhase::Ready
+            {
+                ready.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(tracker.lock().await.our_seat(), Some(3));
+        assert!(
+            responses.try_recv().is_err(),
+            "historical decisions must never be emitted"
+        );
+        task.abort();
+    }
+
+    #[test]
+    fn incomplete_or_corrupt_restore_cannot_commit() {
+        let original: JsonValue = serde_json::from_str(SYNC_GAME_SAMPLE).unwrap();
+        assert!(validate_restore(&original, Some(3), 4).is_ok());
+        for mode in 0..3 {
+            let mut payload = original.clone();
+            let actions = payload
+                .pointer_mut("/game_restore/actions")
+                .unwrap()
+                .as_array_mut()
+                .unwrap();
+            match mode {
+                0 => {
+                    actions.remove(1);
+                }
+                1 => {
+                    actions[4]["step"] = json!(50);
+                }
+                _ => {
+                    actions[4]["data"] = json!("////");
+                }
+            }
+            assert!(validate_restore(&payload, Some(3), 4).is_err());
+            let (mut bridge, state) = recovery_bridge();
+            bridge.parse(
+                Direction::Up,
+                &recovery_wire(2, METHOD_SYNC_GAME, "lq.ReqSyncGame", json!({})),
+            );
+            let result = bridge.parse(
+                Direction::Down,
+                &recovery_wire(3, "", "lq.ResSyncGame", payload),
+            );
+            assert!(result.events.is_empty());
+            assert!(result.invalidated);
+            assert_eq!(
+                state.snapshot().phase,
+                crate::capture::recovery::RecoveryPhase::Error
+            );
+        }
     }
 }

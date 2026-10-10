@@ -1,4 +1,22 @@
 {
+  "recovery": {
+    "partial": "中途采集",
+    "button": "恢复并继续",
+    "description": "先尝试短暂重连；失败时刷新本页一次。自动操作按当前开关恢复。",
+    "phase": {
+      "inactive": "未接入对局",
+      "missing": "缺少初始局面",
+      "recovering": "正在恢复对局…",
+      "waiting_round": "已确认座位，等待下一局开始",
+      "ready": "局面已恢复",
+      "error": "恢复失败"
+    },
+    "failed": "恢复失败，自动操作已阻断；请查看失败原因和日志。",
+    "reason": {
+      "ambiguous_game_connections": "检测到多个游戏连接，请只保留一场对局。",
+      "reconnect_and_reload_failed": "重连和一次刷新后仍无法恢复；自动操作已阻断。"
+    }
+  },
   "autoplay_status": {
     "title": "自动操作",
     "game_events": "牌局事件",

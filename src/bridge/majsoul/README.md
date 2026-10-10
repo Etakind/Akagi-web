@@ -1,9 +1,15 @@
 # Majsoul Bridge
 
 Decodes Majsoul's `lq.*` protobuf-over-WebSocket protocol. Parses and logs
-every frame, and currently emits the first mjai event — `start_game` with
-the bot's own seat (`id`). Remaining mjai state-machine phases (kyoku, draws,
-discards, calls, agari/ryukyoku) are still TODO.
+every frame, and translates authentication, round starts, draws, discards,
+calls, kans, kita, wins, exhaustive draws and game endings into MJAI.
+
+Production capture validates `syncGame` / `enterGame` replays and emits them
+as one internal restoration transaction, seeded with authenticated identity.
+Historical actions rebuild consumers without generating decisions or input.
+Replay timing is deliberately discarded until `passed_waiting_time` is verified;
+only fresh live operation windows can drive decisions. See the
+[recovery guide](../../../docs/MIDGAME_RECOVERY.zh-CN.md).
 
 ## Seat resolution & names
 
@@ -15,7 +21,7 @@ discards, calls, agari/ryukyoku) are still TODO.
     0..=2 for 3p).
   - **`num_players`**: `seat_list.len()`. Stored on `MajsoulBridge` and
     threaded through every subsequent emission. Anything other than 3 or
-    4 falls back to 4 with a warn.
+    4 is rejected, as are failed authentication responses.
   - Names: build `account_id → nickname` map from `payload.players[]`,
     then walk `seat_list` to produce a length-`num_players` Vec. Robot
     seats live under `payload.robots[]` without a nickname, so they get

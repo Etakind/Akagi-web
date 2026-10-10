@@ -29,7 +29,10 @@ A `RecorderState` machine buffers events between `StartGame` and a confirmed
 `EndGame`. On a Mahjong Soul reconnect to the same table it retains completed
 rounds and replaces the server-restored copy of the current round. A different
 next game, explicit server termination, or shutdown drops the incomplete
-buffer, so the History tab still contains only complete games.
+buffer. A first mid-game restoration can persist the rounds actually obtained
+once the game ends; its record has `partial: true`, appears as a partial capture
+in the UI, and is excluded from complete-game placement and PT statistics. Old
+records without this field default to complete.
 
 ## Modules
 

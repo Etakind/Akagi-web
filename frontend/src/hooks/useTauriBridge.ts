@@ -6,6 +6,7 @@ import type {
   BotResponse,
   BotStatus,
   CaptureStatus,
+  GameRecoveryStatus,
   GameRecord,
   GameStateSnapshot,
   HistoryEvent,
@@ -44,12 +45,14 @@ export function useTauriBridge() {
     let cancelled = false
 
     const refreshGame = async () => {
+      const { epoch, phase } = useCaptureStore.getState().recovery
+      if (phase !== 'ready' && phase !== 'inactive') return
       try {
         const [snap, view] = await Promise.all([
           invoke<GameStateSnapshot | null>('get_game_snapshot'),
           invoke<MahgenView | null>('get_mahgen_view'),
         ])
-        if (cancelled) return
+        if (cancelled || epoch !== useCaptureStore.getState().recovery.epoch) return
         useGameStore.getState().setGame(snap)
         useGameStore.getState().setView(view)
       } catch {
@@ -95,13 +98,29 @@ export function useTauriBridge() {
       }
     })()
 
+    const clearGame = () => {
+      useGameStore.getState().setGame(null)
+      useGameStore.getState().setView(null)
+      useAnalysisStore.getState().set(null)
+      useNotifyStore.getState().clearGame()
+    }
+    const recoveryStatus = (s: GameRecoveryStatus) => {
+      useCaptureStore.getState().setRecovery(s)
+      if (s.phase === 'ready') void refreshGame()
+      else if (s.phase !== 'inactive') clearGame()
+    }
+    invoke<GameRecoveryStatus>('get_game_recovery_status').then(s => { if (!cancelled) recoveryStatus(s) }).catch(() => {})
+    listen<GameRecoveryStatus>('game-recovery-status', recoveryStatus).then(u => unlistens.push(u))
+    listen('game-invalidated', clearGame).then(u => unlistens.push(u))
+
     listen<MjaiEvent>('mjai-event', (e) => {
       useNotifyStore.getState().pushEvent(e)
       void refreshGame()
     }).then((u) => unlistens.push(u))
 
     listen<AnalysisResult>('analysis-result', (a) => {
-      useAnalysisStore.getState().set(a)
+      const phase = useCaptureStore.getState().recovery.phase
+      if (phase === 'ready' || phase === 'inactive') useAnalysisStore.getState().set(a)
     }).then((u) => unlistens.push(u))
 
     listen<BotStatus>('bot-status', (s) => {
@@ -113,7 +132,8 @@ export function useTauriBridge() {
     }).then((u) => unlistens.push(u))
 
     listen<BotResponse>('bot-response', (r) => {
-      useNotifyStore.getState().pushResponse(r)
+      const phase = useCaptureStore.getState().recovery.phase
+      if (phase === 'ready' || phase === 'inactive') useNotifyStore.getState().pushResponse(r)
     }).then((u) => unlistens.push(u))
 
     // The overlay window can turn itself off (its × button). Mirror that back

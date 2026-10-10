@@ -140,10 +140,10 @@ export function Settings() {
   }
 
   return (
-    <div className="p-6 w-full flex flex-col gap-6">
-      <header className="flex items-center justify-between">
+    <div className="px-6 pb-6 w-full flex flex-col gap-6">
+      <header className="sticky top-0 z-10 -mx-6 flex flex-wrap items-center gap-3 border-b bg-background px-6 py-4">
         <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
-        <div className="flex gap-2">
+        <div className="ml-auto flex flex-wrap gap-2">
           <Button variant="ghost" asChild>
             <Link to="/setup?rerun=1">{t('settings.rerun_setup')}</Link>
           </Button>

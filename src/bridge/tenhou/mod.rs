@@ -999,6 +999,7 @@ impl Bridge for TenhouBridge {
                     method: "<heartbeat>".into(),
                     args: serde_json::Value::Null,
                 }),
+                ..Default::default()
             };
         }
         let msg: JsonValue = match serde_json::from_slice(content) {
@@ -1029,7 +1030,11 @@ impl Bridge for TenhouBridge {
         // dispatched frame, not just the ones that produced mjai events: a
         // frame that only closes the decision window still has to be seen.
         self.publish();
-        ParseResult { events, parsed }
+        ParseResult {
+            events,
+            parsed,
+            ..Default::default()
+        }
     }
 
     /// Encode a bot action as the Tenhou client frame that performs it.

@@ -38,6 +38,7 @@ use chromiumoxide::cdp::browser_protocol::network::{
     EventWebSocketClosed, EventWebSocketCreated, EventWebSocketFrameReceived,
     EventWebSocketFrameSent, Headers, ResourceType,
 };
+use chromiumoxide::cdp::browser_protocol::page::EventFrameNavigated;
 use chromiumoxide::page::Page;
 use chrono::Local;
 use futures_util::StreamExt;
@@ -132,6 +133,7 @@ pub async fn run(
     let official_pages_only = true;
     let platform = bridges.platform();
     if let Some(ctx) = &autoplay {
+        ctx.recovery.reset();
         *ctx.platform.write().unwrap() = platform;
         ctx.invalidate_actions();
         *ctx.tenhou_state.write().unwrap() = None;
@@ -323,6 +325,10 @@ pub async fn run(
                     if bound.as_ref().map(|p| p.session_id())
                         != desired.as_ref().map(|p| p.session_id())
                     {
+                        if bound.is_some() {
+                            ctx.recovery.reset();
+                            let _ = mjai_bus.send_update(crate::event_bus::GameUpdate::Invalidated);
+                        }
                         ctx.invalidate_actions();
                         *ctx.tenhou_state.write().unwrap() = None;
                         *ctx.time_budget.write().unwrap() = None;
@@ -333,6 +339,9 @@ pub async fn run(
                             "Official game input target updated"
                         );
                     }
+                    ctx.recovery.page_available(
+                        platform == crate::config::Platform::Majsoul && bound.is_some(),
+                    );
                 }
             }
 
@@ -365,6 +374,7 @@ pub async fn run(
         h.0.abort();
     }
     if let Some(ctx) = &autoplay {
+        ctx.recovery.reset();
         *ctx.page.write().await = None;
         *ctx.canvas_rect.write().await = None;
     }
@@ -441,6 +451,19 @@ struct GameReadiness {
     ready: bool,
     warned: bool,
 }
+fn publish_game_result(bus: &MjaiBus, result: crate::bridge::ParseResult) {
+    use crate::event_bus::GameUpdate;
+    if result.invalidated {
+        let _ = bus.send_update(GameUpdate::Invalidated);
+    }
+    if result.is_restore {
+        let _ = bus.send_update(GameUpdate::Restore(Arc::new(result.events), result.context));
+    } else {
+        for event in result.events {
+            let _ = bus.send_update(GameUpdate::Live(event, result.context.clone()));
+        }
+    }
+}
 impl GameReadiness {
     fn observe(&mut self, result: &crate::bridge::ParseResult) -> Option<Notification> {
         use crate::schema::MjaiEvent;
@@ -457,7 +480,9 @@ impl GameReadiness {
                     self.started = true;
                     self.ready = false;
                 }
-                MjaiEvent::StartKyoku { .. } if self.started && !self.ready => {
+                MjaiEvent::StartKyoku { .. }
+                    if self.started && !self.ready && !result.is_restore && !result.invalidated =>
+                {
                     self.ready = true;
                     return Some(
                         Notification::success("Majsoul game state ready")
@@ -479,7 +504,7 @@ impl GameReadiness {
         {
             self.warned = true;
             return Some(Notification::warn("Majsoul connected; game state missing")
-                .body("Capture started after game entry. Keep Akagi running and refresh the game page when a brief reconnect is safe, so the game can restore your seat and hand.")
+                .body("Capture started after game entry. Use Recover and continue in the capture panel to reconnect this game; if needed, the same page will be refreshed once.")
                 .sticky().id("majsoul-game-state"));
         }
         None
@@ -512,6 +537,10 @@ async fn attach_page(
     http_cfg: HttpCaptureConfig,
     notify: NotifyBus,
 ) -> Result<JoinHandle<()>> {
+    let mut on_navigation = page
+        .event_listener::<EventFrameNavigated>()
+        .await
+        .context("subscribe frameNavigated")?;
     let mut on_created = page
         .event_listener::<EventWebSocketCreated>()
         .await
@@ -560,11 +589,21 @@ async fn attach_page(
     page.execute(NetworkEnableParams::default())
         .await
         .context("Network.enable")?;
+    if bridges.platform() == crate::config::Platform::Majsoul {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            super::recovery::prepare_probe(&page),
+        )
+        .await;
+    }
+    let probe_lease = RecoveryProbeLease(page.clone());
 
     let handle = tokio::spawn(async move {
+        let _probe_lease = probe_lease;
         let mut readiness: HashMap<String, GameReadiness> = HashMap::new();
         loop {
             tokio::select! {
+                biased;
                 changed = async { autoplay_changes.as_mut().unwrap().changed().await }, if autoplay_changes.is_some() && tenhou => {
                     if changed.is_err() { break; }
                     let enabled = autoplay.as_ref().is_some_and(|ctx| ctx.autoplay_enabled.load(std::sync::atomic::Ordering::SeqCst));
@@ -577,7 +616,21 @@ async fn attach_page(
                 Some(ev) = on_paused.next() => {
                     rewrite_tenhou_script(&page, &notify, &autoplay, &ev).await;
                 }
+                Some(ev) = on_navigation.next() => {
+                    if ev.frame.parent_id.is_none() && bridges.platform() == crate::config::Platform::Majsoul {
+                        if let Some(ctx) = &autoplay {
+                            if ctx.recovery.page_navigated() {
+                                ctx.invalidate_actions();
+                                *ctx.canvas_rect.write().await = None;
+                                let _ = mjai_bus.send_update(crate::event_bus::GameUpdate::Invalidated);
+                            }
+                        }
+                    }
+                }
                 Some(ev) = on_created.next() => {
+                    if bridges.platform() == crate::config::Platform::Majsoul {
+                        let _ = tokio::time::timeout(Duration::from_secs(2), super::recovery::prepare_probe(&page)).await;
+                    }
                     let key = FlowKey {
                         target: target_id.clone(),
                         request: ev.request_id.inner().clone(),
@@ -587,6 +640,37 @@ async fn attach_page(
                     let _ = bridges.acquire(key, slug, &label);
                     debug!("ws created (target {target_id} request {})", ev.request_id.inner());
 
+                }
+                Some(ev) = on_sent.next() => {
+                    let opcode = ev.response.opcode as i64;
+                    let payload = match decode_frame_payload(opcode, &ev.response.payload_data) {
+                        FrameDecode::Bytes(b) => b,
+                        FrameDecode::BadBase64 => {
+                            warn!("base64 decode failed for outbound WS frame");
+                            continue;
+                        }
+                        FrameDecode::Skip => continue,
+                    };
+                    let key = FlowKey {
+                        target: target_id.clone(),
+                        request: ev.request_id.inner().clone(),
+                    };
+                    let flow_id = format_flow_id(&key);
+                    let bridge = bridges.acquire(key, "ws", "ws frame");
+                    let result = {
+                        let mut b = bridge.lock().expect("bridge mutex poisoned");
+                        b.parse(Direction::Up, &payload)
+                    };
+                    record_frame(
+                        &inspector,
+                        FrameDirection::Up,
+                        flow_id,
+                        opcode,
+                        &payload,
+                        &ev.response.payload_data,
+                        &result,
+                    );
+                    publish_game_result(&mjai_bus, result);
                 }
                 Some(ev) = on_recv.next() => {
                     let opcode = ev.response.opcode as i64;
@@ -620,42 +704,7 @@ async fn attach_page(
                         &ev.response.payload_data,
                         &result,
                     );
-                    for e in result.events {
-                        let _ = mjai_bus.send(e);
-                    }
-                }
-                Some(ev) = on_sent.next() => {
-                    let opcode = ev.response.opcode as i64;
-                    let payload = match decode_frame_payload(opcode, &ev.response.payload_data) {
-                        FrameDecode::Bytes(b) => b,
-                        FrameDecode::BadBase64 => {
-                            warn!("base64 decode failed for outbound WS frame");
-                            continue;
-                        }
-                        FrameDecode::Skip => continue,
-                    };
-                    let key = FlowKey {
-                        target: target_id.clone(),
-                        request: ev.request_id.inner().clone(),
-                    };
-                    let flow_id = format_flow_id(&key);
-                    let bridge = bridges.acquire(key, "ws", "ws frame");
-                    let result = {
-                        let mut b = bridge.lock().expect("bridge mutex poisoned");
-                        b.parse(Direction::Up, &payload)
-                    };
-                    record_frame(
-                        &inspector,
-                        FrameDirection::Up,
-                        flow_id,
-                        opcode,
-                        &payload,
-                        &ev.response.payload_data,
-                        &result,
-                    );
-                    for e in result.events {
-                        let _ = mjai_bus.send(e);
-                    }
+                    publish_game_result(&mjai_bus, result);
                 }
                 Some(ev) = on_closed.next() => {
                     readiness.remove(ev.request_id.inner());
@@ -749,6 +798,18 @@ async fn attach_page(
         }
     });
     Ok(handle)
+}
+
+struct RecoveryProbeLease(Page);
+impl Drop for RecoveryProbeLease {
+    fn drop(&mut self) {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let page = self.0.clone();
+            runtime.spawn(async move {
+                super::recovery::cleanup_probe(&page).await;
+            });
+        }
+    }
 }
 
 fn is_static_asset(kind: Option<&ResourceType>) -> bool {
@@ -962,6 +1023,7 @@ mod attached_browser_tests {
                 method: ".lq.ActionPrototype".into(),
                 args: serde_json::json!({}),
             }),
+            ..Default::default()
         };
         assert!(state.observe(&result).unwrap().sticky);
         assert!(state.observe(&result).is_none());

@@ -109,24 +109,50 @@ impl AutoplayManager {
     pub async fn run(mut self, response_bus: BotResponseBus) -> anyhow::Result<()> {
         let mut bot_rx = response_bus.subscribe();
         let mut mjai_rx = self.mjai_bus.subscribe();
+        let mut cancellations = self.ctx.action_changes.subscribe();
         info!("autoplay manager started");
         loop {
             tokio::select! {
-                msg = bot_rx.recv() => match msg {
-                    Ok(resp) => self.handle_bot_response(resp).await,
-                    Err(RecvError::Lagged(n)) => warn!("autoplay: bot bus lagged {n}"),
+                biased;
+                msg = mjai_rx.recv() => match msg {
+                    Ok(update) => {
+                        match update {
+                            crate::event_bus::GameUpdate::Live(ev, context) => {
+                                if context.token.as_ref().is_none_or(|t| t.current()) { self.handle_mjai_event(&ev); }
+                            }
+                            crate::event_bus::GameUpdate::Restore(events, context) => {
+                                if context.token.as_ref().is_none_or(|t| t.current()) {
+                                    for event in events.iter() { self.handle_mjai_event(event); }
+                                    self.state.canvas_rect_at = None;
+                                    *self.ctx.canvas_rect.write().await = None;
+                                    if let Some(token) = &context.token { token.ack(crate::capture::recovery::AUTOPLAY); }
+                                }
+                            }
+                            crate::event_bus::GameUpdate::Invalidated => { self.state = ManagerState::default(); }
+                        }
+                    }
+                    Err(RecvError::Lagged(n)) => {
+                        warn!("autoplay: mjai bus lagged {n}");
+                        self.ctx.recovery.invalidate(crate::capture::recovery::RecoveryPhase::Error, Some("autoplay_event_loss"));
+                        self.ctx.invalidate_actions();
+                    }
                     Err(RecvError::Closed) => {
-                        info!("autoplay: bot bus closed; exiting");
+                        info!("autoplay: mjai bus closed; exiting");
                         return Ok(());
                     }
                 },
-                msg = mjai_rx.recv() => match msg {
-                    Ok(ev) => {
-                        self.handle_mjai_event(&ev);
-                    }
-                    Err(RecvError::Lagged(n)) => warn!("autoplay: mjai bus lagged {n}"),
+                msg = bot_rx.recv() => match msg {
+                    Ok(resp) => {
+                        cancellations.borrow_and_update();
+                        tokio::select! {
+                            biased;
+                            _ = cancellations.changed() => {},
+                            _ = self.handle_bot_response(resp) => {},
+                        }
+                    },
+                    Err(RecvError::Lagged(n)) => warn!("autoplay: bot bus lagged {n}"),
                     Err(RecvError::Closed) => {
-                        info!("autoplay: mjai bus closed; exiting");
+                        info!("autoplay: bot bus closed; exiting");
                         return Ok(());
                     }
                 },
@@ -138,7 +164,11 @@ impl AutoplayManager {
         // Re-read config every iteration so `cfg.autoplay.enabled` can be
         // toggled at runtime via the Settings UI without restarting.
         let cfg_guard = self.cfg.read().await;
-        if !cfg_guard.autoplay.enabled || !self.ctx.accepts_decision(resp.decision_started) {
+        if !cfg_guard.autoplay.enabled
+            || !self.ctx.accepts_decision(resp.decision_started)
+            || !resp.decision_context.valid()
+            || !resp.decision_context.permits(&resp.action)
+        {
             return;
         }
         let cfg = cfg_guard.autoplay.majsoul.clone();
@@ -158,7 +188,14 @@ impl AutoplayManager {
         // model — neither can alter the chosen action. `opened_at` is kept
         // as the window's identity for the post-sleep staleness check.
         let planned_budget = self.ctx.time_budget.read().ok().and_then(|g| *g);
-        let observed_window = self.ctx.status.current_window();
+        let observed_window = if resp.decision_context.token.is_some() {
+            if self.ctx.status.current_window() != resp.decision_context.window {
+                return;
+            }
+            resp.decision_context.window
+        } else {
+            self.ctx.status.current_window()
+        };
         let budget = planned_budget.map(|b| crate::autoplay::delay::BudgetSnapshot {
             fixed_ms: b.fixed_ms,
             add_ms: b.add_ms,

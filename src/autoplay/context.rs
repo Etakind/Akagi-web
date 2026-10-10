@@ -8,10 +8,12 @@ use tokio::sync::RwLock;
 
 #[derive(Default)]
 pub struct AutoplayContext {
+    pub recovery: Arc<crate::capture::recovery::RecoveryState>,
     pub platform: std::sync::RwLock<crate::config::Platform>,
     pub generation: AtomicU64,
     pub autoplay_enabled: AtomicBool,
     pub enabled_changes: tokio::sync::watch::Sender<bool>,
+    pub action_changes: tokio::sync::watch::Sender<u64>,
     action_cutoff: std::sync::RwLock<Option<std::time::Instant>>,
     pub tenhou_state: crate::autoplay::tenhou_state::SharedTenhouState,
     pub page: Arc<RwLock<Option<Page>>>,
@@ -38,8 +40,11 @@ impl AutoplayContext {
     pub fn invalidate_actions(&self) {
         self.status.invalidate();
         *self.action_cutoff.write().unwrap() = Some(std::time::Instant::now());
-        self.generation
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let generation = self
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        self.action_changes.send_replace(generation);
     }
 
     pub fn set_enabled(&self, enabled: bool) {
@@ -52,8 +57,11 @@ impl AutoplayContext {
             != enabled
         {
             *cutoff = Some(std::time::Instant::now());
-            self.generation
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let generation = self
+                .generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            self.action_changes.send_replace(generation);
             self.autoplay_enabled
                 .store(enabled, std::sync::atomic::Ordering::SeqCst);
             self.enabled_changes.send_replace(enabled);
@@ -64,8 +72,10 @@ impl AutoplayContext {
     }
 
     pub fn accepts_decision(&self, started: Option<std::time::Instant>) -> bool {
-        self.autoplay_enabled
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.recovery.allows_input()
+            && self
+                .autoplay_enabled
+                .load(std::sync::atomic::Ordering::SeqCst)
             && started.is_some_and(|started| {
                 self.action_cutoff
                     .read()
@@ -119,6 +129,17 @@ impl CanvasRect {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn capture_invalidation_wakes_a_pending_action() {
+        let ctx = AutoplayContext::new();
+        let mut changes = ctx.action_changes.subscribe();
+        ctx.invalidate_actions();
+        changes.changed().await.unwrap();
+        assert_eq!(
+            *changes.borrow(),
+            ctx.generation.load(std::sync::atomic::Ordering::SeqCst)
+        );
+    }
     #[test]
     fn toggle_cancels_old_decisions_without_clearing_observation() {
         let ctx = AutoplayContext::new();

@@ -251,6 +251,7 @@ mod tests {
             our_delta: Some(5000),
             stats: GameStats::default(),
             match_info: None,
+            partial: false,
             log_path: format!("games/{id}.mjai.jsonl"),
         }
     }

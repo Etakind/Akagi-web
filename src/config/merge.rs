@@ -31,6 +31,20 @@ const OPAQUE_TABLES: [&[&str]; 1] = [&["autoplay", "delay", "lognormal"]];
 /// Fails only when `existing` is not valid TOML — there is nothing to merge
 /// into then, and the caller decides whether to rewrite the file.
 pub fn merge_into<T: serde::Serialize>(config: &T, existing: &str) -> Result<String, String> {
+    let mut doc = merged_document(config, existing)?;
+    // Remove only retired known settings; retain unknown user keys/comments.
+    clean_retired_fields(&mut doc);
+    Ok(doc.to_string())
+}
+
+pub(super) fn merge_fields_into<T: serde::Serialize>(
+    config: &T,
+    existing: &str,
+) -> Result<String, String> {
+    Ok(merged_document(config, existing)?.to_string())
+}
+
+fn merged_document<T: serde::Serialize>(config: &T, existing: &str) -> Result<DocumentMut, String> {
     let mut doc: DocumentMut = existing
         .parse()
         .map_err(|_| "invalid existing configuration; details omitted".to_string())?;
@@ -39,6 +53,10 @@ pub fn merge_into<T: serde::Serialize>(config: &T, existing: &str) -> Result<Str
         .parse()
         .map_err(|e| format!("{e}"))?;
     merge_table(doc.as_table_mut(), fresh.as_table(), &mut Vec::new());
+    Ok(doc)
+}
+
+fn clean_retired_fields(doc: &mut DocumentMut) {
     // Remove only retired known settings; retain unknown user keys/comments.
     if let Some(table) = doc.get_mut("proxy").and_then(Item::as_table_like_mut) {
         for key in [
@@ -75,7 +93,6 @@ pub fn merge_into<T: serde::Serialize>(config: &T, existing: &str) -> Result<Str
     if let Some(table) = doc.get_mut("general").and_then(Item::as_table_like_mut) {
         table.remove("developer_mode");
     }
-    Ok(doc.to_string())
 }
 
 /// Copy every key of `fresh` into `target`, recursing into sub-tables so

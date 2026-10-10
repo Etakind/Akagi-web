@@ -98,6 +98,7 @@ export function GameList({
                   >
                     <TableCell className="font-mono text-xs">
                       {new Date(r.started_at).toLocaleString()}
+                      {r.partial && <span className="ml-1 text-xs text-muted-foreground">{t('recovery.partial')}</span>}
                     </TableCell>
                     <TableCell>
                       {t(`platform.${r.platform}`)}
@@ -120,7 +121,7 @@ export function GameList({
                             : '')
                       }
                     >
-                      {r.our_rank == null ? '—' : pt.toFixed(1)}
+                      {r.partial || r.our_rank == null ? '—' : pt.toFixed(1)}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="inline-flex gap-0.5">

@@ -1,4 +1,22 @@
 {
+  "recovery": {
+    "partial": "中途擷取",
+    "button": "恢復並繼續",
+    "description": "先嘗試短暫重連；失敗時重新整理本頁一次。自動操作依目前開關恢復。",
+    "phase": {
+      "inactive": "尚未接入對局",
+      "missing": "缺少初始局面",
+      "recovering": "正在恢復對局…",
+      "waiting_round": "已確認座位，等待下一局開始",
+      "ready": "局面已恢復",
+      "error": "恢復失敗"
+    },
+    "failed": "恢復失敗，自動操作已阻擋；請查看原因與日誌。",
+    "reason": {
+      "ambiguous_game_connections": "偵測到多個遊戲連線，請只保留一場對局。",
+      "reconnect_and_reload_failed": "重連及一次重新整理後仍無法恢復；自動操作已阻擋。"
+    }
+  },
   "autoplay_status": {
     "title": "自動操作",
     "game_events": "牌局事件",

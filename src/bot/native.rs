@@ -45,6 +45,9 @@ pub struct NativeBot {
     seat: u8,
 }
 impl NativeBot {
+    pub fn encoded_observation(&mut self) -> Vec<f32> {
+        self.engine.encoded_observation()
+    }
     pub fn new(
         actor_id: u8,
         num_players: u8,
@@ -59,7 +62,20 @@ impl NativeBot {
 }
 #[async_trait]
 impl BotRunner for NativeBot {
+    async fn restore(&mut self, events: &[MjaiEvent]) -> Result<()> {
+        self.feed_events(events)
+    }
     async fn react(&mut self, events: &[MjaiEvent]) -> Result<BotResponse> {
+        self.feed_events(events)?;
+        self.decide(events)
+    }
+    async fn reset(&mut self) -> Result<()> {
+        self.engine.reset();
+        Ok(())
+    }
+}
+impl NativeBot {
+    fn feed_events(&mut self, events: &[MjaiEvent]) -> Result<()> {
         for ev in events {
             // Keep our seat current if a start_game tags a (possibly new) seat.
             if let MjaiEvent::StartGame { id: Some(seat), .. } = ev {
@@ -70,7 +86,9 @@ impl BotRunner for NativeBot {
                 self.engine.feed(ri);
             }
         }
-
+        Ok(())
+    }
+    fn decide(&mut self, events: &[MjaiEvent]) -> Result<BotResponse> {
         // These events close or postpone a decision; they do not open one.
         // BotManager normally buffers them, but guard direct BotRunner users as
         // well because riichienv may retain the preceding legal-action set.
@@ -84,6 +102,7 @@ impl BotRunner for NativeBot {
         );
         if matches!(events.last(), Some(MjaiEvent::ReachAccepted { .. })) || waits_for_rinshan {
             return Ok(BotResponse {
+                decision_context: Default::default(),
                 decision_started: None,
                 action: MjaiEvent::None,
                 meta: None,
@@ -96,6 +115,7 @@ impl BotRunner for NativeBot {
             Some(d) if is_decision_point(&d.candidates) => d,
             _ => {
                 return Ok(BotResponse {
+                    decision_context: Default::default(),
                     decision_started: None,
                     action: MjaiEvent::None,
                     meta: None,
@@ -107,13 +127,9 @@ impl BotRunner for NativeBot {
         Ok(BotResponse {
             action,
             meta,
+            decision_context: Default::default(),
             decision_started: None,
         })
-    }
-
-    async fn reset(&mut self) -> Result<()> {
-        self.engine.reset();
-        Ok(())
     }
 }
 fn is_decision_point(candidates: &[(BotAction, f32)]) -> bool {

@@ -112,8 +112,8 @@ pub fn run() {
     let bot_enabled = cfg.bot.enabled;
     let capture_enabled = cfg.capture.enabled;
     let migration_notice = cfg.bot.migration_notice.clone();
+    let overlay_migration_notice = cfg.general.migration_notice.clone();
     let capture_unavailable = cfg.capture.unavailable_reason.clone();
-    let autoplay_enabled = cfg.autoplay.enabled;
     let overlay_cfg = cfg.overlay.clone();
 
     // Game-state tracker handle is built up front so AppState can carry
@@ -169,6 +169,10 @@ pub fn run() {
                 );
 
                 ipc::install(app.handle(), state.clone())?;
+                if let Some(notice) = &overlay_migration_notice {
+                    let _ = notify_bus
+                        .send(schema::Notification::warn("悬浮窗升级设置未保存").body(notice));
+                }
                 if let Some(notice) = &migration_notice {
                     let _ = notify_bus.send(
                         schema::Notification::warn("Local model migration")
@@ -234,6 +238,10 @@ pub fn run() {
                 ));
 
                 if bot_enabled {
+                    state
+                        .autoplay_context
+                        .recovery
+                        .register(capture::recovery::BOT);
                     let cfg_for_bot = state.config.clone();
                     let events_for_bot = post_tracker_bus.clone();
                     let resp = bot_response_bus.clone();
@@ -259,7 +267,13 @@ pub fn run() {
                     });
                 }
 
-                if autoplay_enabled {
+                // Observe state even while input is disabled, so enabling
+                // autoplay after restoration has riichi/draw/meld context.
+                {
+                    state
+                        .autoplay_context
+                        .recovery
+                        .register(capture::recovery::AUTOPLAY);
                     let cfg_for_ap = state.config.clone();
                     let ctx_for_ap = state.autoplay_context.clone();
                     let tracker_for_ap = state.game_tracker.clone();
@@ -304,11 +318,15 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         loop {
                             match rx.recv().await {
-                                Ok(event) => {
-                                    inspector.record(crate::schema::InspectorEntry::MjaiEvent {
-                                        ts_ms: chrono::Local::now().timestamp_millis(),
-                                        event,
-                                    });
+                                Ok(update) => {
+                                    for event in update.events() {
+                                        inspector.record(
+                                            crate::schema::InspectorEntry::MjaiEvent {
+                                                ts_ms: chrono::Local::now().timestamp_millis(),
+                                                event: event.clone(),
+                                            },
+                                        );
+                                    }
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                                     // Lossy — the inspector file already

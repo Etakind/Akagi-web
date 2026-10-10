@@ -7,6 +7,7 @@ pub mod detect;
 mod discovery;
 pub mod launch;
 pub mod profile;
+pub mod recovery;
 
 use super::{CaptureBackend, CaptureCtx, CaptureDescriptor, CaptureKind, ShutdownToken};
 use crate::capture::flow::FlowBridges;
@@ -86,6 +87,7 @@ impl CaptureBackend for ChromiumBackend {
                         ctx.session.clone(),
                         ctx.platform,
                         crate::bridge::BridgeHooks {
+                            recovery: ctx.autoplay.as_ref().map(|a| a.recovery.clone()),
                             tenhou_state: ctx.autoplay.as_ref().map(|a| a.tenhou_state.clone()),
                             notify: Some(ctx.notify_bus.clone()),
                             time_budget: ctx.autoplay.as_ref().map(|a| a.time_budget.clone()),
@@ -196,6 +198,7 @@ impl CaptureBackend for ChromiumBackend {
             .autoplay
             .as_ref()
             .map(|a| crate::bridge::BridgeHooks {
+                recovery: Some(a.recovery.clone()),
                 time_budget: Some(a.time_budget.clone()),
                 input_watch: Some(a.input_watch.clone()),
                 autoplay_status: Some(a.status.clone()),

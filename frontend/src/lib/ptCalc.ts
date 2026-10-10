@@ -166,6 +166,7 @@ export function cumulativePtSeries(
   let acc = 0
   let i = 0
   for (const r of sorted) {
+    if (r.partial) continue
     if (r.our_rank == null) continue
     const delta = computePt(r, rule)
     acc += delta
@@ -185,6 +186,7 @@ export function rankDistribution(
 ): number[] {
   const counts = new Array<number>(np).fill(0)
   for (const r of records) {
+    if (r.partial) continue
     if (r.num_players !== np) continue
     if (r.our_rank == null) continue
     if (r.our_rank >= 1 && r.our_rank <= np) {

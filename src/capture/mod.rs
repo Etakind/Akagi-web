@@ -2,6 +2,7 @@
 
 pub mod chromium;
 pub mod flow;
+pub mod recovery;
 
 use crate::autoplay::AutoplayContext;
 use crate::config::Platform;

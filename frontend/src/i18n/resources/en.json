@@ -1,4 +1,22 @@
 {
+  "recovery": {
+    "partial": "Partial capture",
+    "button": "Recover and continue",
+    "description": "Reconnect briefly; refresh this page once if needed. Autoplay resumes according to its current switch.",
+    "phase": {
+      "inactive": "No game connected",
+      "missing": "Initial game state missing",
+      "recovering": "Recovering game…",
+      "waiting_round": "Seat identified; waiting for the next round",
+      "ready": "Game state restored",
+      "error": "Recovery failed"
+    },
+    "failed": "Recovery failed; automatic input is blocked. Check the reason and logs.",
+    "reason": {
+      "ambiguous_game_connections": "Multiple game connections detected. Keep only one game open.",
+      "reconnect_and_reload_failed": "Reconnect and one refresh could not restore this game. Automatic input remains blocked."
+    }
+  },
   "autoplay_status": {
     "title": "Automatic actions",
     "game_events": "Game events",

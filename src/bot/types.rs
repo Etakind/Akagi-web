@@ -27,6 +27,8 @@ use serde::{Deserialize, Serialize};
 /// it wants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BotResponse {
+    #[serde(skip)]
+    pub decision_context: crate::event_bus::EventContext,
     /// Local inference start time. Never serialized or restored from history.
     #[serde(skip)]
     pub decision_started: Option<std::time::Instant>,
@@ -80,6 +82,7 @@ mod tests {
     #[test]
     fn dahai_without_meta_skips_field() {
         let resp = BotResponse {
+            decision_context: Default::default(),
             decision_started: None,
             action: MjaiEvent::Dahai {
                 actor: 1,

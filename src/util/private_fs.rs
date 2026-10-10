@@ -80,6 +80,40 @@ pub fn write(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
     f.write_all(bytes.as_ref())
 }
 
+/// Replace an existing private file only after its new contents are durable.
+/// A failed migration must never truncate the original configuration.
+pub fn replace(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+    replace_with(path, |file| file.write_all(bytes.as_ref()))
+}
+
+fn replace_with(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
+    drop(checked_open(path, false, false)?);
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    struct Temporary(std::path::PathBuf);
+    impl Drop for Temporary {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let temporary = Temporary(parent.join(format!(".akagi-config-{}.tmp", ulid::Ulid::new())));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(&temporary.0)?;
+    write(&mut file)?;
+    file.sync_all()?;
+    drop(file);
+    drop(checked_open(path, false, false)?);
+    fs::rename(&temporary.0, path)
+}
+
 pub fn read_and_protect(path: &Path) -> io::Result<String> {
     let mut f = checked_open(path, false, false)?;
     let mut s = String::new();
@@ -117,9 +151,27 @@ mod tests {
         let link = root.path().join("link");
         symlink(&real, &link).unwrap();
         assert!(write(&link, "replacement").is_err());
+        assert!(replace(&link, "replacement").is_err());
         fs::remove_file(&link).unwrap();
         fs::hard_link(&real, &link).unwrap();
         assert!(write(&link, "replacement").is_err());
+        assert!(replace(&link, "replacement").is_err());
         assert_eq!(fs::read_to_string(real).unwrap(), "unchanged");
+    }
+
+    #[test]
+    fn failed_replacement_keeps_original_and_removes_temporary_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.toml");
+        fs::write(&path, "original").unwrap();
+        assert!(replace_with(&path, |file| {
+            file.write_all(b"partial")?;
+            Err(io::Error::other("simulated disk failure"))
+        })
+        .is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        replace(&path, "replacement").unwrap();
+        assert_eq!(read_and_protect(&path).unwrap(), "replacement");
     }
 }

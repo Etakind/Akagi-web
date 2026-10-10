@@ -21,6 +21,11 @@ fn schema_kind(k: RtCaptureKind) -> CaptureKind {
 /// supervisor task to flip status to `Stopped` before returning. Used by
 /// `restart_capture` so the spawn that follows starts on a clean slate.
 pub async fn stop_and_wait(state: &AppState, max_wait: Duration) {
+    state.autoplay_context.recovery.reset();
+    state.autoplay_context.invalidate_actions();
+    let _ = state
+        .mjai_bus
+        .send_update(crate::event_bus::GameUpdate::Invalidated);
     // Subscribe *before* signalling shutdown so we can't lose the
     // resulting status emission to a race.
     let mut rx = state.capture_status_bus.subscribe();

@@ -120,6 +120,7 @@ export function aggregateStats(records: GameRecord[]): AggregateStats {
   let tobi_count = 0
 
   for (const r of records) {
+    if (r.partial) continue
     games += 1
     addStats(acc, r.stats)
     oya += r.stats.oya
@@ -199,6 +200,7 @@ export function avgRank(stats: AggregateStats): number | null {
 export function totalDelta(records: GameRecord[]): number {
   let total = 0
   for (const r of records) {
+    if (r.partial) continue
     if (r.our_seat == null) continue
     const start = r.num_players === 3 ? STARTING_3P : STARTING_4P
     total += (r.final_scores[r.our_seat] ?? start) - start
