@@ -2,7 +2,8 @@
   "recovery": {
     "partial": "中途擷取",
     "button": "恢復並繼續",
-    "description": "先嘗試短暫重連；失敗時重新整理本頁一次。自動操作依目前開關恢復。",
+    "advisory_only": "恢復建議 · 請手動操作",
+    "description": "點擊後重新整理本頁一次以恢復對局。自動操作依目前開關恢復。",
     "phase": {
       "inactive": "尚未接入對局",
       "missing": "缺少初始局面",
@@ -14,7 +15,9 @@
     "failed": "恢復失敗，自動操作已阻擋；請查看原因與日誌。",
     "reason": {
       "ambiguous_game_connections": "偵測到多個遊戲連線，請只保留一場對局。",
-      "reconnect_and_reload_failed": "重連及一次重新整理後仍無法恢復；自動操作已阻擋。"
+      "reconnect_and_reload_failed": "重連及一次重新整理後仍無法恢復；自動操作已阻擋。",
+      "reload_failed": "無法重新整理本頁；自動操作已阻擋。",
+      "reload_restore_timeout": "重新整理一次後仍未能恢復對局；自動操作已阻擋。"
     }
   },
   "autoplay_status": {
@@ -494,6 +497,7 @@
     "overlay_always_on_top_hint": "如果想把懸浮視窗放到第二個螢幕，可以關掉這個選項。另外請注意：遊戲若使用「獨佔全螢幕」，會蓋住所有置頂視窗，請改用無邊框或視窗模式。",
     "capture_enabled": "啟動瀏覽器擷取",
     "attach_port": "常用瀏覽器偵錯連接埠",
+    "attach_port_invalid": "儲存失敗：連接埠不正確。請輸入 0–65535 的整數；0 表示啟動獨立瀏覽器。",
     "attach_port_hint": "0：啟動獨立瀏覽器；非零：連接已開啟偵錯的瀏覽器，僅使用 127.0.0.1。"
   },
   "setup": {

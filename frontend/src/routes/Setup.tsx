@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Toaster } from '@/components/ui/sonner'
 import { invoke } from '@/lib/tauri'
+import { parseAttachPort } from '@/lib/chromiumPort'
 import { useTauriBridge } from '@/hooks/useTauriBridge'
 import { useConfigStore } from '@/stores/configStore'
 import { platformInfo, PLATFORMS } from '@/lib/platforms'
@@ -17,14 +18,24 @@ export function Setup() {
   const navigate = useNavigate()
   const setStored = useConfigStore(s => s.setConfig)
   const [draft, setDraft] = useState<AppConfig | null>(null)
+  const [attachPort, setAttachPort] = useState('0')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  useEffect(() => { invoke<AppConfig>('get_config').then(setDraft).catch(() => setError('Configuration unavailable')) }, [])
+  useEffect(() => { invoke<AppConfig>('get_config').then(c => {
+    setDraft(c)
+    setAttachPort(String(c.capture.chromium.attach_port ?? 0))
+  }).catch(() => setError('Configuration unavailable')) }, [])
   const save = async () => {
     if (!draft) return
+    const port = parseAttachPort(attachPort)
+    if (port === null) {
+      setError(t('settings.attach_port_invalid'))
+      return
+    }
     setBusy(true)
+    setError('')
     try {
-      const next = { ...draft, general: { ...draft.general, first_run_completed: true } }
+      const next = { ...draft, general: { ...draft.general, first_run_completed: true }, capture: { ...draft.capture, chromium: { ...draft.capture.chromium, attach_port: port } } }
       await invoke('update_config', { newConfig: next })
       setStored(next)
       navigate('/')
@@ -33,13 +44,16 @@ export function Setup() {
   return <div className="max-w-2xl mx-auto p-6 grid gap-4">
     <h1 className="text-xl font-bold">Akagi</h1>
     <p>{t('bots.local_only')}</p>
-    {error && <p role="alert">{error}</p>}
+    {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
     {draft && <>
       <Field label={t('settings.platform_card_title')}><Select value={draft.platform.kind} onValueChange={v => {
         const kind = v as PlatformKind
         setDraft({ ...draft, platform: { kind }, autoplay: { ...draft.autoplay, enabled: false }, capture: { ...draft.capture, chromium: { ...draft.capture.chromium, start_url: platformInfo(kind).defaultStartUrl } } })
       }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{PLATFORMS.map(p => <SelectItem key={p.kind} value={p.kind}>{t(p.labelKey)}</SelectItem>)}</SelectContent></Select></Field>
-      <ChromiumConfigStep draft={draft} setDraft={setDraft} />
+      <ChromiumConfigStep draft={draft} setDraft={setDraft} attachPort={attachPort} setAttachPort={value => {
+        setAttachPort(value)
+        setError('')
+      }} />
       <Button disabled={busy} onClick={save}>{t('common.save')}</Button>
     </>}
     <Toaster />
@@ -48,9 +62,13 @@ export function Setup() {
 function ChromiumConfigStep({
   draft,
   setDraft,
+  attachPort,
+  setAttachPort,
 }: {
   draft: AppConfig
   setDraft: (c: AppConfig) => void
+  attachPort: string
+  setAttachPort: (value: string) => void
 }) {
   const { t } = useTranslation()
   const chromium = draft.capture.chromium
@@ -120,10 +138,10 @@ function ChromiumConfigStep({
         </Select>
       </Field>
       <Field label={t('settings.attach_port')} hint={t('settings.attach_port_hint')}>
-        <Input type="number" min={0} max={65535} step={1} value={chromium.attach_port ?? 0}
-          onChange={(e) => setChromium({ attach_port: Math.max(0, Math.min(65535, Math.trunc(Number(e.target.value) || 0))) })} />
+        <Input type="text" inputMode="numeric" aria-label={t('settings.attach_port')}
+          value={attachPort} onChange={(e) => setAttachPort(e.target.value)} />
       </Field>
-      <Field label={t('settings.user_data_dir')} hint={t(chromium.attach_port ? 'settings.user_data_dir_attach_hint' : 'settings.user_data_dir_hint')}>
+      <Field label={t('settings.user_data_dir')} hint={t(parseAttachPort(attachPort) ? 'settings.user_data_dir_attach_hint' : 'settings.user_data_dir_hint')}>
         <Input value={chromium.user_data_dir} onChange={(e) => setChromium({ user_data_dir: e.target.value })} placeholder={t('common.default')} />
       </Field>
       <Field label={t('settings.browser_executable')} hint={t('setup.chromium.exec_hint')}>

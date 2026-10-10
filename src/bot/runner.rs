@@ -9,6 +9,11 @@ pub trait BotRunner: Send {
     async fn restore(&mut self, _events: &[MjaiEvent]) -> Result<()> {
         anyhow::bail!("Runner does not support state-only restoration")
     }
+    /// Infer once from the restored state without feeding history again or
+    /// applying the suggested action. This is not an automatic-input request.
+    async fn suggest_restored(&mut self) -> Result<BotResponse> {
+        anyhow::bail!("Runner does not support a read-only restored suggestion")
+    }
     /// Push a batch of events; return the bot's reaction.
     ///
     /// Mjai contract: bot sees every event but only "reacts" at decision

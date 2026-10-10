@@ -31,6 +31,15 @@ function headerButton(name: string) {
   return [...header.querySelectorAll('button')].find(b => b.textContent === name)!
 }
 
+async function findAttachPortInput() {
+  return await waitFor(() => {
+    const label = screen.getByText('settings.attach_port', { selector: 'label' })
+    const input = label.parentElement?.querySelector('input')
+    if (!input) throw new Error('attach port input is not mounted')
+    return input as HTMLInputElement
+  })
+}
+
 beforeEach(() => {
   config = appConfigFixture()
   useConfigStore.setState({ config })
@@ -73,6 +82,62 @@ describe('Settings actions', () => {
     expect(router.state.location.pathname).toBe('/settings')
     expect(screen.getByText('settings.unsaved_title')).toBeTruthy()
   })
+
+  it('keeps the port draft editable while entering a valid debug port', async () => {
+    config.capture.chromium.attach_port = 0
+    mount()
+    const port = await findAttachPortInput()
+    expect(port.type).toBe('text')
+    expect(port.inputMode).toBe('numeric')
+
+    fireEvent.change(port, { target: { value: '' } })
+    expect(port.value).toBe('')
+    fireEvent.change(port, { target: { value: '9222' } })
+    expect(port.value).toBe('9222')
+
+    fireEvent.click(headerButton('common.save'))
+    await waitFor(() => expect(config.capture.chromium.attach_port).toBe(9222))
+  })
+
+  it('loads and resets the attach port without losing the stored value', async () => {
+    config.capture.chromium.attach_port = 9222
+    mount()
+    const port = await findAttachPortInput()
+    expect(port.value).toBe('9222')
+
+    fireEvent.change(port, { target: { value: '65535' } })
+    fireEvent.click(headerButton('common.reset'))
+    expect(port.value).toBe('9222')
+    expect(headerButton('common.save').disabled).toBe(true)
+  })
+
+  it.each(['', '-1', '65536', '1.5', '1e3', 'abc'])('rejects an invalid attach port draft %j without saving', async (value) => {
+    config.capture.chromium.attach_port = 0
+    mount()
+    const port = await findAttachPortInput()
+    fireEvent.change(port, { target: { value } })
+
+    fireEvent.click(headerButton('common.save'))
+    const error = await screen.findByRole('alert')
+    expect(error.textContent).toContain('settings.attach_port_invalid')
+    expect(error.className).toMatch(/text-red/)
+    expect(port.value).toBe(value)
+    expect(backend.invoke.mock.calls.some(([command]) => command === 'update_config')).toBe(false)
+  })
+
+  it('does not leave Settings when save-and-leave receives an invalid port', async () => {
+    config.capture.chromium.attach_port = 0
+    const router = mount()
+    const port = await findAttachPortInput()
+    fireEvent.change(port, { target: { value: '65536' } })
+    fireEvent.click(screen.getByRole('link', { name: 'settings.rerun_setup' }))
+    await screen.findByRole('dialog')
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.save_and_leave' }))
+    await screen.findByRole('alert')
+    expect(router.state.location.pathname).toBe('/settings')
+    expect(backend.invoke.mock.calls.some(([command]) => command === 'update_config')).toBe(false)
+  })
 })
 
 describe('Setup overlay defaults', () => {
@@ -85,5 +150,38 @@ describe('Setup overlay defaults', () => {
     expect(config.overlay.enabled).toBe(true)
     expect(config.general.first_run_completed).toBe(true)
     expect(config.general.overlay_defaults_revision).toBe(1)
+  })
+
+  it('keeps the port draft editable while entering a valid debug port', async () => {
+    config.general.first_run_completed = false
+    config.capture.chromium.attach_port = 0
+    mount('/setup')
+    const port = await findAttachPortInput()
+    expect(port.type).toBe('text')
+    expect(port.inputMode).toBe('numeric')
+
+    fireEvent.change(port, { target: { value: '' } })
+    expect(port.value).toBe('')
+    fireEvent.change(port, { target: { value: '9222' } })
+    expect(port.value).toBe('9222')
+    fireEvent.click(await screen.findByRole('button', { name: 'common.save' }))
+
+    await screen.findByText('dashboard')
+    expect(config.capture.chromium.attach_port).toBe(9222)
+  })
+
+  it.each(['', '-1', '65536', '1.5', '1e3', 'abc'])('rejects an invalid setup port draft %j without saving', async (value) => {
+    config.general.first_run_completed = false
+    config.capture.chromium.attach_port = 0
+    mount('/setup')
+    const port = await findAttachPortInput()
+    fireEvent.change(port, { target: { value } })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'common.save' }))
+    const error = await screen.findByRole('alert')
+    expect(error.textContent).toContain('settings.attach_port_invalid')
+    expect(error.className).toMatch(/text-red/)
+    expect(port.value).toBe(value)
+    expect(backend.invoke.mock.calls.some(([command]) => command === 'update_config')).toBe(false)
   })
 })

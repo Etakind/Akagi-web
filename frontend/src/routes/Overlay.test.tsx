@@ -154,4 +154,108 @@ describe('Overlay autoplay records', () => {
     expect(document.documentElement.style.fontSize).toBe('')
     expect(document.body.style.fontSize).toBe('')
   })
+
+  it('clears a restored advisory when the next live MJAI event arrives', async () => {
+    const listeners = new Map<string, (payload: unknown) => void>()
+    tauri.listen.mockImplementation(async (event: string, callback: (payload: unknown) => void) => {
+      listeners.set(event, callback)
+      return () => listeners.delete(event)
+    })
+    render(<Overlay />)
+
+    await waitFor(() => expect(listeners.has('bot-response')).toBe(true))
+    listeners.get('bot-response')?.({
+      type: 'dahai',
+      actor: 2,
+      pai: '5m',
+      tsumogiri: false,
+      meta: {
+        advisory_only: true,
+        recovery_epoch: 7,
+        show: { title: 'Restored', items: [{ label: 'Manual discard', value: '90%' }] },
+      },
+    })
+    listeners.get('game-recovery-status')?.({
+      phase: 'ready',
+      method: 'reload',
+      reason: null,
+      epoch: 7,
+      can_recover: false,
+    })
+    await waitFor(() => expect(screen.getByText('Manual discard')).toBeTruthy())
+
+    listeners.get('mjai-event')?.({ type: 'tsumo', actor: 2, pai: '9p' })
+
+    await waitFor(() => expect(screen.queryByText('Manual discard')).toBeNull())
+  })
+
+  it('shows a restored advisory when Ready arrives before the response', async () => {
+    const listeners = new Map<string, (payload: unknown) => void>()
+    tauri.listen.mockImplementation(async (event: string, callback: (payload: unknown) => void) => {
+      listeners.set(event, callback)
+      return () => listeners.delete(event)
+    })
+    render(<Overlay />)
+
+    await waitFor(() => expect(listeners.has('game-recovery-status')).toBe(true))
+    listeners.get('game-recovery-status')?.({
+      phase: 'ready',
+      method: 'reload',
+      reason: null,
+      epoch: 12,
+      can_recover: false,
+    })
+    listeners.get('bot-response')?.({
+      type: 'dahai',
+      actor: 2,
+      pai: '5m',
+      tsumogiri: false,
+      meta: {
+        advisory_only: true,
+        recovery_epoch: 12,
+        show: { title: 'Restored', items: [{ label: 'Manual discard', value: '90%' }] },
+      },
+    })
+
+    await waitFor(() => expect(screen.getByText('Manual discard')).toBeTruthy())
+  })
+
+  it('clears a restored advisory on a newer epoch or recovery error', async () => {
+    const listeners = new Map<string, (payload: unknown) => void>()
+    tauri.listen.mockImplementation(async (event: string, callback: (payload: unknown) => void) => {
+      listeners.set(event, callback)
+      return () => listeners.delete(event)
+    })
+    render(<Overlay />)
+
+    await waitFor(() => expect(listeners.has('bot-response')).toBe(true))
+    listeners.get('game-recovery-status')?.({
+      phase: 'ready',
+      method: 'reload',
+      reason: null,
+      epoch: 20,
+      can_recover: false,
+    })
+    listeners.get('bot-response')?.({
+      type: 'dahai',
+      actor: 2,
+      pai: '5m',
+      tsumogiri: false,
+      meta: {
+        advisory_only: true,
+        recovery_epoch: 20,
+        show: { title: 'Restored', items: [{ label: 'Manual discard', value: '90%' }] },
+      },
+    })
+    await waitFor(() => expect(screen.getByText('Manual discard')).toBeTruthy())
+
+    listeners.get('game-recovery-status')?.({
+      phase: 'error',
+      method: 'reload',
+      reason: 'reload_restore_timeout',
+      epoch: 21,
+      can_recover: true,
+    })
+    await waitFor(() => expect(screen.queryByText('Manual discard')).toBeNull())
+  })
 })

@@ -26,6 +26,7 @@
 
 use crate::analysis::result::AnalysisResult;
 use crate::bot::BotResponse;
+use crate::capture::recovery::RecoveryPhase;
 use crate::schema::{BotStatus, CaptureStatus, HistoryEvent, MjaiEvent, Notification};
 use tokio::sync::broadcast;
 
@@ -37,12 +38,28 @@ pub struct EventContext {
     pub token: Option<std::sync::Arc<crate::capture::recovery::RestoreToken>>,
     pub offered: Vec<u32>,
     pub forced_tsumogiri: bool,
+    /// A synchronized operation can support a manual-only recommendation,
+    /// but its unverified elapsed time must never authorize automatic input.
+    pub advisory_revision: Option<u64>,
 }
 impl EventContext {
     pub fn valid(&self) -> bool {
+        if self.advisory_revision.is_some() {
+            return false;
+        }
         self.token.as_ref().is_none_or(|token| {
             token.current() && token.state.allows_input() && token.state.window_valid(self.window)
         })
+    }
+    pub fn valid_for_display(&self) -> bool {
+        match self.advisory_revision {
+            Some(revision) => self.token.as_ref().is_some_and(|token| {
+                token.current()
+                    && token.state.snapshot().phase == RecoveryPhase::Ready
+                    && token.state.window_revision() == revision
+            }),
+            None => self.valid(),
+        }
     }
     pub fn permits(&self, event: &MjaiEvent) -> bool {
         if self.token.is_none() {
@@ -301,5 +318,48 @@ mod recovery_tests {
         }));
         context.offered = vec![3];
         assert!(context.permits(&MjaiEvent::None));
+    }
+
+    #[test]
+    fn restored_advisory_is_display_only_and_expires_with_window_revision() {
+        let state = Arc::new(RecoveryState::default());
+        state.set(RecoveryPhase::Ready, None);
+        let token = state.stamp();
+        token.ack(crate::capture::recovery::TRACKER);
+        let revision = state.window_revision();
+        let context = EventContext {
+            token: Some(token.clone()),
+            offered: vec![1],
+            advisory_revision: Some(revision),
+            ..Default::default()
+        };
+
+        assert!(!context.valid(), "an advisory must never authorize input");
+        assert!(context.valid_for_display());
+
+        state.window(None);
+        assert!(
+            !context.valid_for_display(),
+            "a new window revision expires the card"
+        );
+        assert!(token.current());
+    }
+
+    #[test]
+    fn restored_advisory_expires_when_recovery_epoch_is_cancelled() {
+        let state = Arc::new(RecoveryState::default());
+        state.set(RecoveryPhase::Ready, None);
+        let token = state.stamp();
+        token.ack(crate::capture::recovery::TRACKER);
+        let context = EventContext {
+            token: Some(token.clone()),
+            advisory_revision: Some(state.window_revision()),
+            ..Default::default()
+        };
+        assert!(context.valid_for_display());
+
+        state.invalidate(RecoveryPhase::Error, Some("manual_cancel"));
+        assert!(!token.current());
+        assert!(!context.valid_for_display());
     }
 }

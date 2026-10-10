@@ -7,12 +7,12 @@ import { useAutoplayStatus } from '@/hooks/useAutoplayStatus'
 import { useAutoplayStatusStore } from '@/stores/autoplayStatusStore'
 import { pickShow, visibleItems } from '@/lib/botShow'
 import { invoke, listen } from '@/lib/tauri'
-import type { AppConfig, BotResponse, OverlayConfig, ShowMeta } from '@/types'
+import type { AppConfig, BotResponse, GameRecoveryStatus, OverlayConfig, ShowMeta } from '@/types'
 
 // The always-on-top overlay window's entire UI. Mounted by main.tsx instead of
 // the router when the window label is `overlay` — no sidebar, no statusbar, no
-// route tree, and deliberately no `useTauriBridge`: this window wants one event
-// (`bot-response`), not the whole app's state.
+// route tree, and deliberately no `useTauriBridge`: this window subscribes only
+// to suggestions, their invalidation, and overlay configuration.
 //
 // The window itself is transparent; the rounded card below is the only thing
 // that gets drawn. Everything inside the card is `pointer-events: none` so that
@@ -35,11 +35,22 @@ export function Overlay() {
   const autoplay = useAutoplayStatusStore()
   const { t } = useTranslation()
   const [show, setShow] = useState<ShowMeta | null>(null)
+  const [advisory, setAdvisory] = useState(false)
   const [cfg, setCfg] = useState<OverlayConfig>(FALLBACK)
 
   useEffect(() => {
     const unlistens: Array<() => void> = []
     let cancelled = false
+    let showingAdvisory = false
+    let recovery: GameRecoveryStatus | null = null
+    let pendingAdvisory: BotResponse | null = null
+    const clearAdvisory = () => {
+      pendingAdvisory = null
+      if (!showingAdvisory) return
+      showingAdvisory = false
+      setAdvisory(false)
+      setShow(null)
+    }
 
     // The window is opened by the backend, so config is already on disk;
     // `overlay-config` keeps us in step with later edits in Settings.
@@ -51,12 +62,47 @@ export function Overlay() {
         /* keep the fallback — a blank overlay would be worse than a default one */
       })
 
-    listen<BotResponse>('bot-response', (r) => {
+    const showResponse = (r: BotResponse) => {
       const s = pickShow(r.meta)
       // Responses without a `show` block (e.g. a bare `none`) must not wipe
       // the last real suggestion off the screen.
-      if (s) setShow(s)
+      if (s) {
+        showingAdvisory = r.meta?.advisory_only === true
+        setAdvisory(showingAdvisory)
+        setShow(s)
+      }
+    }
+    const recoveryStatus = (s: GameRecoveryStatus) => {
+      recovery = s
+      const pending = pendingAdvisory
+      if (s.phase !== 'ready') clearAdvisory()
+      pendingAdvisory = null
+      if (!pending) return
+      const epoch = pending.meta?.recovery_epoch
+      if (epoch === s.epoch && s.phase === 'ready') showResponse(pending)
+      else if (typeof epoch === 'number' && (
+        epoch > s.epoch || (epoch === s.epoch && (
+          s.phase === 'recovering' || s.phase === 'waiting_round'
+        ))
+      )) pendingAdvisory = pending
+    }
+    invoke<GameRecoveryStatus>('get_game_recovery_status')
+      .then(s => { if (!cancelled) recoveryStatus(s) }).catch(() => {})
+    listen<BotResponse>('bot-response', (r) => {
+      if (r.meta?.advisory_only !== true) {
+        showResponse(r)
+        return
+      }
+      const epoch = r.meta.recovery_epoch
+      if (typeof epoch !== 'number' || (recovery && epoch < recovery.epoch)) return
+      if (recovery && epoch === recovery.epoch && recovery.phase === 'ready') showResponse(r)
+      else if (!recovery || epoch > recovery.epoch ||
+        recovery.phase === 'recovering' || recovery.phase === 'waiting_round') pendingAdvisory = r
     }).then((u) => unlistens.push(u))
+
+    listen('mjai-event', clearAdvisory).then((u) => unlistens.push(u))
+    listen('game-invalidated', clearAdvisory).then((u) => unlistens.push(u))
+    listen<GameRecoveryStatus>('game-recovery-status', recoveryStatus).then((u) => unlistens.push(u))
 
     listen<OverlayConfig>('overlay-config', (c) => setCfg(c)).then((u) => unlistens.push(u))
 
@@ -112,6 +158,12 @@ export function Overlay() {
             <X className="size-3.5" style={{ width: 14 * scale, height: 14 * scale }} />
           </button>
         </header>
+
+        {advisory && (
+          <p className="shrink-0 px-2 text-amber-500" style={smallText}>
+            {t('recovery.advisory_only')}
+          </p>
+        )}
 
         {/* min-h-0 is what gives this a definite height to hand down: without it
             a flex child refuses to shrink below its content, the rows never get

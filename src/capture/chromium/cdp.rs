@@ -589,17 +589,7 @@ async fn attach_page(
     page.execute(NetworkEnableParams::default())
         .await
         .context("Network.enable")?;
-    if bridges.platform() == crate::config::Platform::Majsoul {
-        let _ = tokio::time::timeout(
-            Duration::from_secs(2),
-            super::recovery::prepare_probe(&page),
-        )
-        .await;
-    }
-    let probe_lease = RecoveryProbeLease(page.clone());
-
     let handle = tokio::spawn(async move {
-        let _probe_lease = probe_lease;
         let mut readiness: HashMap<String, GameReadiness> = HashMap::new();
         loop {
             tokio::select! {
@@ -628,9 +618,6 @@ async fn attach_page(
                     }
                 }
                 Some(ev) = on_created.next() => {
-                    if bridges.platform() == crate::config::Platform::Majsoul {
-                        let _ = tokio::time::timeout(Duration::from_secs(2), super::recovery::prepare_probe(&page)).await;
-                    }
                     let key = FlowKey {
                         target: target_id.clone(),
                         request: ev.request_id.inner().clone(),
@@ -798,18 +785,6 @@ async fn attach_page(
         }
     });
     Ok(handle)
-}
-
-struct RecoveryProbeLease(Page);
-impl Drop for RecoveryProbeLease {
-    fn drop(&mut self) {
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let page = self.0.clone();
-            runtime.spawn(async move {
-                super::recovery::cleanup_probe(&page).await;
-            });
-        }
-    }
 }
 
 fn is_static_asset(kind: Option<&ResourceType>) -> bool {

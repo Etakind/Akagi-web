@@ -1409,6 +1409,40 @@ impl MajsoulBridge {
     }
 }
 
+/// Only the final synchronized action may describe the pending operation.
+/// Earlier operations are history; no elapsed-time assumption is made here.
+fn restored_offered(payload: &JsonValue, seat: Option<Actor>) -> Vec<u32> {
+    let pending = || -> Option<Vec<u32>> {
+        if payload.get("is_end").and_then(JsonValue::as_bool) == Some(true) {
+            return None;
+        }
+        let action = payload
+            .pointer("/game_restore/actions")?
+            .as_array()?
+            .last()?;
+        let data =
+            parser::decode_restore_action(action["name"].as_str()?, action["data"].as_str()?)
+                .ok()?;
+        let operation = data.get("operation")?;
+        if operation.get("seat")?.as_u64()? != u64::from(seat?) {
+            return None;
+        }
+        Some(
+            operation
+                .get("operation_list")?
+                .as_array()?
+                .iter()
+                .filter_map(|op| {
+                    op["type"]
+                        .as_u64()
+                        .and_then(|kind| u32::try_from(kind).ok())
+                })
+                .collect(),
+        )
+    };
+    pending().unwrap_or_default()
+}
+
 fn validate_restore(payload: &JsonValue, seat: Option<Actor>, num_players: u8) -> Result<()> {
     let seat = seat.context("identity missing")?;
     anyhow::ensure!(
@@ -1994,7 +2028,27 @@ impl Bridge for MajsoulBridge {
                 } else {
                     events = self.dispatch(&msg);
                 }
+                let offered = if is_restore {
+                    restored_offered(&msg.payload, self.seat)
+                } else {
+                    msg.payload
+                        .pointer("/data/operation/operation_list")
+                        .and_then(JsonValue::as_array)
+                        .map(|list| {
+                            list.iter()
+                                .filter_map(|op| {
+                                    op["type"].as_u64().and_then(|k| u32::try_from(k).ok())
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
                 let context = crate::event_bus::EventContext {
+                    advisory_revision: self
+                        .recovery
+                        .as_ref()
+                        .filter(|_| is_restore && !offered.is_empty())
+                        .map(|r| r.window_revision()),
                     window: if is_restore {
                         None
                     } else {
@@ -2008,18 +2062,7 @@ impl Bridge for MajsoulBridge {
                         .filter(|r| r.owns(self.flow_id))
                         .map(|r| if is_restore { r.token() } else { r.stamp() }),
                     forced_tsumogiri: self.own_riichi,
-                    offered: msg
-                        .payload
-                        .pointer("/data/operation/operation_list")
-                        .and_then(JsonValue::as_array)
-                        .map(|list| {
-                            list.iter()
-                                .filter_map(|op| {
-                                    op["type"].as_u64().and_then(|k| u32::try_from(k).ok())
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default(),
+                    offered,
                 };
                 // Rotate before writing so the StartGame event itself lands
                 // in the freshly-opened file, not the previous game's file.
@@ -2287,6 +2330,60 @@ mod tests {
     /// melds/riichi/kan). This is exactly the JSON the parser produces for the
     /// response — each action `data` is still base64 (decoded during replay).
     const SYNC_GAME_SAMPLE: &str = r#"{"game_restore":{"actions":[{"data":"","name":"ActionMJStart","step":0},{"data":"CAAQABgAIgI0cCICMW0iAjNwIgI0eiICN3oiAjZ6IgIwcCICM3MiAjBtIgI0cyICMXMiAjlzIgIyejIMqMMBqMMBqMMBqMMBQABYAGhFcgIxenoCCAB6AggBegIIAnoCCAOaAUA1NWQ2NzQ3MTRjNjAzODFhNGJjOTJmYzBmOWIwNWVjNDU4OWZlMzI0NTQ4OWVmOGY3NTc5NTVmMzIzZWIzZTE1qgFAYzFmNmY1YTQwOGFjMzgyZGEyZGE1MTA3OTUzYmUzYTg1N2M5OTdmNGNkMjg2M2JlZjczY2M3ZjE3MDllMDA4Mw==","name":"ActionNewRound","step":1},{"data":"CAASAjR6GAAoADAASAA=","name":"ActionDiscardTile","step":2},{"data":"CAEYRDgA","name":"ActionDealTile","step":3},{"data":"CAESAjJwGAAoATAASAA=","name":"ActionDiscardTile","step":4},{"data":"CAIYQzgA","name":"ActionDealTile","step":5},{"data":"CAISAjlwGAAoADAASAA=","name":"ActionDiscardTile","step":6},{"data":"CAMSAjdwGEIiDAgDEgIIASAAKOCnEjgA","name":"ActionDealTile","step":7},{"data":"CAMSAjd6GAAoADAASAA=","name":"ActionDiscardTile","step":8},{"data":"CAAYQTgA","name":"ActionDealTile","step":9},{"data":"CAASAjN6GAAoATAASAA=","name":"ActionDiscardTile","step":10},{"data":"CAEYQDgA","name":"ActionDealTile","step":11},{"data":"CAESAjR6GAAoADAASAA=","name":"ActionDiscardTile","step":12},{"data":"CAIYPzgA","name":"ActionDealTile","step":13},{"data":"CAISAjRwGAAiEwgDEgkIAhIFM3B8MHAgACjgpxIoATAASAA=","name":"ActionDiscardTile","step":14},{"data":"CAMSAjZ6GD4iDAgDEgIIASAAKOCnEjgA","name":"ActionDealTile","step":15},{"data":"CAMSAjR6GAAoADAASAA=","name":"ActionDiscardTile","step":16},{"data":"CAAYPTgA","name":"ActionDealTile","step":17},{"data":"CAASAjV6GAAoADAASAA=","name":"ActionDiscardTile","step":18},{"data":"CAEYPDgA","name":"ActionDealTile","step":19},{"data":"CAESAjNzGAAoATAASAA=","name":"ActionDiscardTile","step":20},{"data":"CAIYOzgA","name":"ActionDealTile","step":21},{"data":"CAISAjlzGAAoADAASAA=","name":"ActionDiscardTile","step":22},{"data":"CAMSAjRtGDoiDAgDEgIIASAAKOCnEjgA","name":"ActionDealTile","step":23},{"data":"CAMSAjFtGAAoADAASAA=","name":"ActionDiscardTile","step":24},{"data":"CAAYOTgA","name":"ActionDealTile","step":25},{"data":"CAASAjd6GAAoADAASAA=","name":"ActionDiscardTile","step":26},{"data":"CAEYODgA","name":"ActionDealTile","step":27},{"data":"CAESAjZ6GAAiEwgDEgkIAxIFNnp8NnogACjgpxIoADAASAA=","name":"ActionDiscardTile","step":28},{"data":"CAIYNzgA","name":"ActionDealTile","step":29},{"data":"CAISAjF6GAAoADAASAA=","name":"ActionDiscardTile","step":30},{"data":"CAMSAjdzGDYiDAgDEgIIASAAKOCnEjgA","name":"ActionDealTile","step":31}],"game_state":1,"last_pause_time_ms":0,"passed_waiting_time":16,"start_time":0},"is_end":false,"step":32}"#;
+
+    #[test]
+    fn restored_offered_uses_only_the_final_owned_operation_for_four_and_three_player_games() {
+        let mut four_player: JsonValue = serde_json::from_str(SYNC_GAME_SAMPLE).unwrap();
+        assert_eq!(restored_offered(&four_player, Some(3)), vec![1]);
+        assert!(
+            restored_offered(&four_player, Some(2)).is_empty(),
+            "another seat must not receive the restored advisory"
+        );
+
+        // Earlier replay actions may also carry operations. Removing the
+        // final operation must therefore remove the advisory entirely.
+        four_player["game_restore"]["actions"]
+            .as_array_mut()
+            .unwrap()
+            .last_mut()
+            .unwrap()["data"] = json!("CAMSAjd6GAAoADAASAA=");
+        assert!(restored_offered(&four_player, Some(3)).is_empty());
+
+        // This plain ActionDealTile is a sanma-shaped operation addressed to
+        // seat 1, offering discard and tsumo. The helper is seat-count
+        // agnostic; authGame supplies the correct seat identity upstream.
+        let three_player = json!({
+            "game_restore": {
+                "actions": [{
+                    "name": "ActionDealTile",
+                    "data": "CAESAjdwGDYiDwgBEgIIARICCAggACiIJw=="
+                }]
+            },
+            "is_end": false
+        });
+        assert_eq!(restored_offered(&three_player, Some(1)), vec![1, 8]);
+        assert!(restored_offered(&three_player, Some(0)).is_empty());
+    }
+
+    #[test]
+    fn restored_offered_rejects_finished_or_malformed_sync_payloads() {
+        let mut payload = json!({
+            "game_restore": {
+                "actions": [{
+                    "name": "ActionDealTile",
+                    "data": "CAESAjdwGDYiDwgBEgIIARICCAggACiIJw=="
+                }]
+            },
+            "is_end": true
+        });
+        assert!(restored_offered(&payload, Some(1)).is_empty());
+
+        payload["is_end"] = json!(false);
+        payload["game_restore"]["actions"][0]["data"] = json!("not-base64");
+        assert!(restored_offered(&payload, Some(1)).is_empty());
+        payload["game_restore"]["actions"][0]["name"] = json!("UnknownAction");
+        assert!(restored_offered(&payload, Some(1)).is_empty());
+    }
 
     /// Resolve the bridge to seat 3 / 4 players via a real authGame exchange,
     /// matching `SYNC_GAME_SAMPLE` (our account_id 12345 sits at `seat_list[3]`).
@@ -5023,6 +5120,22 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(tracker.lock().await.our_seat(), Some(3));
+        let restored = responses
+            .try_recv()
+            .expect("the current window may emit one display-only advisory");
+        assert_eq!(
+            restored.meta.as_ref().unwrap()["advisory_only"],
+            true,
+            "restore responses must be display-only"
+        );
+        assert!(
+            restored.decision_started.is_none(),
+            "restore responses must not start an executable decision"
+        );
+        assert!(
+            !restored.decision_context.valid(),
+            "restore responses must not pass the executable context gate"
+        );
         assert!(
             responses.try_recv().is_err(),
             "historical decisions must never be emitted"

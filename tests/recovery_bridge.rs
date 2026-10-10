@@ -1,4 +1,5 @@
 //! Recovery integration checks for stale authenticated Majsoul flows.
+use akagi::autoplay::InputWatch;
 use akagi::bridge::{Bridge, Direction, MajsoulBridge};
 use akagi::capture::recovery::{RecoveryPhase, RecoveryState};
 use serde_json::Value as JsonValue;
@@ -63,7 +64,11 @@ fn superseded_flow_cannot_end_the_current_game() {
     let state = Arc::new(RecoveryState::default());
     let mut old_flow = MajsoulBridge::default().with_recovery(Some(state.clone()));
     authenticate(&mut old_flow, 100);
-    assert!(state.owns(1), "first flow should own the recovery state");
+    assert_eq!(
+        state.snapshot().phase,
+        RecoveryPhase::WaitingRound,
+        "first flow should establish the recovery state"
+    );
 
     let mut current_flow = MajsoulBridge::default().with_recovery(Some(state.clone()));
     authenticate(&mut current_flow, 100);
@@ -102,5 +107,51 @@ fn superseded_flow_cannot_end_the_current_game() {
         current.events.len(),
         1,
         "the current owner must still receive game-end notifications"
+    );
+}
+
+#[test]
+fn superseded_flow_cannot_count_a_shared_input() {
+    let state = Arc::new(RecoveryState::default());
+    let watch = Arc::new(InputWatch::default());
+    let mut old_flow = MajsoulBridge::default()
+        .with_recovery(Some(state.clone()))
+        .with_input_watch(Some(watch.clone()));
+    authenticate(&mut old_flow, 100);
+
+    let mut current_flow = MajsoulBridge::default()
+        .with_recovery(Some(state.clone()))
+        .with_input_watch(Some(watch.clone()));
+    authenticate(&mut current_flow, 100);
+
+    let ticket = watch.ticket();
+    let stale = old_flow.parse(
+        Direction::Up,
+        &wire(
+            2,
+            ".lq.FastTest.inputOperation",
+            "lq.ReqSelfOperation",
+            serde_json::json!({"type": 7, "index": 5, "timeuse": 3}),
+        ),
+    );
+    assert!(stale.events.is_empty());
+    assert!(
+        !watch.sent_since(ticket),
+        "a superseded flow must not mutate shared input evidence"
+    );
+
+    let current = current_flow.parse(
+        Direction::Up,
+        &wire(
+            2,
+            ".lq.FastTest.inputOperation",
+            "lq.ReqSelfOperation",
+            serde_json::json!({"type": 7, "index": 5, "timeuse": 3}),
+        ),
+    );
+    assert!(current.events.is_empty());
+    assert!(
+        watch.sent_since(ticket),
+        "the current owner must still count its input"
     );
 }

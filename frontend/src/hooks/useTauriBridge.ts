@@ -43,6 +43,9 @@ export function useTauriBridge() {
 
     const unlistens: Array<() => void> = []
     let cancelled = false
+    // Ready status and the advisory use different backend forwarding tasks.
+    // Keep only the matching recovery's advisory until its Ready event arrives.
+    let pendingAdvisory: BotResponse | null = null
 
     const refreshGame = async () => {
       const { epoch, phase } = useCaptureStore.getState().recovery
@@ -99,21 +102,37 @@ export function useTauriBridge() {
     })()
 
     const clearGame = () => {
+      pendingAdvisory = null
       useGameStore.getState().setGame(null)
       useGameStore.getState().setView(null)
       useAnalysisStore.getState().set(null)
       useNotifyStore.getState().clearGame()
     }
     const recoveryStatus = (s: GameRecoveryStatus) => {
+      const pending = pendingAdvisory
       useCaptureStore.getState().setRecovery(s)
       if (s.phase === 'ready') void refreshGame()
       else if (s.phase !== 'inactive') clearGame()
+      pendingAdvisory = null
+      if (pending) {
+        const epoch = pending.meta?.recovery_epoch
+        if (epoch === s.epoch && s.phase === 'ready') {
+          useNotifyStore.getState().pushResponse(pending)
+        } else if (typeof epoch === 'number' && (
+          epoch > s.epoch || (epoch === s.epoch && (
+            s.phase === 'recovering' || s.phase === 'waiting_round'
+          ))
+        )) {
+          pendingAdvisory = pending
+        }
+      }
     }
     invoke<GameRecoveryStatus>('get_game_recovery_status').then(s => { if (!cancelled) recoveryStatus(s) }).catch(() => {})
     listen<GameRecoveryStatus>('game-recovery-status', recoveryStatus).then(u => unlistens.push(u))
     listen('game-invalidated', clearGame).then(u => unlistens.push(u))
 
     listen<MjaiEvent>('mjai-event', (e) => {
+      pendingAdvisory = null
       useNotifyStore.getState().pushEvent(e)
       void refreshGame()
     }).then((u) => unlistens.push(u))
@@ -132,7 +151,17 @@ export function useTauriBridge() {
     }).then((u) => unlistens.push(u))
 
     listen<BotResponse>('bot-response', (r) => {
-      const phase = useCaptureStore.getState().recovery.phase
+      const { phase, epoch } = useCaptureStore.getState().recovery
+      if (r.meta?.advisory_only === true) {
+        const advisoryEpoch = r.meta.recovery_epoch
+        if (typeof advisoryEpoch !== 'number' || advisoryEpoch < epoch) return
+        if (advisoryEpoch === epoch && phase === 'ready') {
+          useNotifyStore.getState().pushResponse(r)
+        } else if (advisoryEpoch > epoch || phase === 'recovering' || phase === 'waiting_round') {
+          pendingAdvisory = r
+        }
+        return
+      }
       if (phase === 'ready' || phase === 'inactive') useNotifyStore.getState().pushResponse(r)
     }).then((u) => unlistens.push(u))
 

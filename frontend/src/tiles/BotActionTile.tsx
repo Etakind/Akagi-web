@@ -271,6 +271,11 @@ export function BotActionTile({ bp }: { bp: Breakpoint }) {
               <div className="text-base font-semibold text-foreground truncate">
                 {t(variant.labelKey)}
               </div>
+              {latest?.meta?.advisory_only === true && (
+                <div className="text-xs text-amber-600 dark:text-amber-400 truncate" title={t('recovery.advisory_only')}>
+                  {t('recovery.advisory_only')}
+                </div>
+              )}
               {extra && (
                 <div className="text-sm font-medium tabular-nums text-foreground/90 truncate">
                   {extra}

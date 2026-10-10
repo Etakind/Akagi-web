@@ -47,6 +47,7 @@ pub struct RecoveryState {
     pub attempt: tokio::sync::Mutex<()>,
     owner: Mutex<Option<u64>>,
     window: Mutex<Option<crate::autoplay::status::Window>>,
+    window_revision: AtomicU64,
     transition: Mutex<()>,
     lease: AtomicU64,
     page_available: AtomicBool,
@@ -71,6 +72,7 @@ impl Default for RecoveryState {
             attempt: tokio::sync::Mutex::new(()),
             owner: Mutex::new(None),
             window: Mutex::new(None),
+            window_revision: AtomicU64::new(0),
             transition: Mutex::new(()),
             lease: AtomicU64::new(0),
             page_available: AtomicBool::new(false),
@@ -124,7 +126,14 @@ impl RecoveryState {
         *self.owner.lock().unwrap() = Some(flow);
     }
     pub fn window(&self, window: Option<crate::autoplay::status::Window>) {
-        *self.window.lock().unwrap() = window;
+        let mut current = self.window.lock().unwrap();
+        *current = window;
+        // Even None -> None invalidates a restored advisory after a manual
+        // input or a new live event. It never grants an executable window.
+        self.window_revision.fetch_add(1, Ordering::SeqCst);
+    }
+    pub fn window_revision(&self) -> u64 {
+        self.window_revision.load(Ordering::SeqCst)
     }
     pub fn window_valid(&self, window: Option<crate::autoplay::status::Window>) -> bool {
         window.is_some_and(|window| window.unexpired()) && *self.window.lock().unwrap() == window
@@ -147,23 +156,63 @@ impl RecoveryState {
     }
     pub fn invalidate(&self, phase: RecoveryPhase, reason: Option<&str>) -> u64 {
         let _transition = self.transition.lock().unwrap();
+        self.invalidate_locked(phase, reason)
+    }
+    fn invalidate_locked(&self, phase: RecoveryPhase, reason: Option<&str>) -> u64 {
         self.window(None);
         let epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
         self.set_locked(phase, reason);
         epoch
     }
     pub fn reset(&self) {
+        let _transition = self.transition.lock().unwrap();
         *self.reload_navigation.lock().unwrap() = None;
         self.page_available.store(false, Ordering::SeqCst);
         self.lease.fetch_add(1, Ordering::SeqCst);
         *self.owner.lock().unwrap() = None;
-        self.invalidate(RecoveryPhase::Inactive, None);
+        self.invalidate_locked(RecoveryPhase::Inactive, None);
         self.changes.send_modify(|s| s.method = None);
         self.batch(0, None, None);
     }
-    pub fn expect_reload_navigation(&self) {
+    /// Serialize the lease check and action invalidation with capture reset.
+    /// The callback must not call back into recovery transitions.
+    pub fn begin_reload(&self, lease: u64, invalidate_actions: impl FnOnce()) -> bool {
+        let _transition = self.transition.lock().unwrap();
+        if self.lease() != lease || !self.snapshot().can_recover {
+            return false;
+        }
+        invalidate_actions();
+        self.invalidate_locked(RecoveryPhase::Recovering, None);
+        self.changes
+            .send_modify(|s| s.method = Some(RecoveryMethod::Reload));
+        true
+    }
+    /// A failed old attempt cannot invalidate the newly bound capture.
+    /// The callback must not call back into recovery transitions.
+    pub fn fail_reload(&self, lease: u64, reason: &str, invalidate_actions: impl FnOnce()) -> bool {
+        let _transition = self.transition.lock().unwrap();
+        if self.lease() != lease {
+            return false;
+        }
+        *self.reload_navigation.lock().unwrap() = None;
+        invalidate_actions();
+        self.invalidate_locked(RecoveryPhase::Error, Some(reason));
+        true
+    }
+    pub fn expect_reload_navigation(&self, lease: u64) -> bool {
+        let _transition = self.transition.lock().unwrap();
+        if self.lease() != lease {
+            return false;
+        }
         *self.reload_navigation.lock().unwrap() =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        true
+    }
+    pub fn clear_reload_navigation(&self, lease: u64) {
+        let _transition = self.transition.lock().unwrap();
+        if self.lease() == lease {
+            *self.reload_navigation.lock().unwrap() = None;
+        }
     }
     /// The one reload initiated by recovery may keep the capture lease;
     /// every other main-frame navigation cancels the attempt.
@@ -240,11 +289,72 @@ mod tests {
     fn only_the_expected_reload_preserves_the_lease() {
         let state = RecoveryState::default();
         let lease = state.lease();
-        state.expect_reload_navigation();
+        assert!(state.expect_reload_navigation(lease));
         assert!(!state.page_navigated());
         assert_eq!(state.lease(), lease);
         assert!(state.page_navigated());
         assert_ne!(state.lease(), lease);
+    }
+    #[test]
+    fn reload_begin_is_single_use_and_stale_failure_cannot_cross_a_reset() {
+        let state = RecoveryState::default();
+        state.page_available(true);
+        let lease = state.lease();
+        let mut invalidations = 0;
+        assert!(state.begin_reload(lease, || invalidations += 1));
+        assert_eq!(invalidations, 1);
+        assert_eq!(state.snapshot().phase, RecoveryPhase::Recovering);
+        assert_eq!(state.snapshot().method, Some(RecoveryMethod::Reload));
+        assert!(!state.begin_reload(lease, || invalidations += 1));
+        assert_eq!(
+            invalidations, 1,
+            "duplicate recovery must not invalidate again"
+        );
+
+        state.reset();
+        assert!(!state.fail_reload(lease, "stale_reload", || invalidations += 1));
+        assert_eq!(
+            invalidations, 1,
+            "stale failure must not touch the new lease"
+        );
+        assert_eq!(state.snapshot().phase, RecoveryPhase::Inactive);
+    }
+    #[test]
+    fn reload_failure_cleans_its_navigation_permit_and_reports_reason() {
+        let state = RecoveryState::default();
+        state.page_available(true);
+        let lease = state.lease();
+        assert!(state.begin_reload(lease, || {}));
+        assert!(state.expect_reload_navigation(lease));
+        let mut invalidations = 0;
+        assert!(state.fail_reload(lease, "reload_restore_timeout", || invalidations += 1));
+        assert_eq!(invalidations, 1);
+        assert_eq!(state.snapshot().phase, RecoveryPhase::Error);
+        assert_eq!(
+            state.snapshot().reason.as_deref(),
+            Some("reload_restore_timeout")
+        );
+        assert!(
+            state.page_navigated(),
+            "failed reload must clear its permit"
+        );
+    }
+    #[test]
+    fn stale_drop_cannot_clear_a_new_reload_navigation_permit() {
+        let state = RecoveryState::default();
+        let old_lease = state.lease();
+        assert!(state.expect_reload_navigation(old_lease));
+        state.reset();
+        let new_lease = state.lease();
+        assert!(state.expect_reload_navigation(new_lease));
+
+        state.clear_reload_navigation(old_lease);
+        assert!(
+            !state.page_navigated(),
+            "old cleanup must not clear new permit"
+        );
+        state.clear_reload_navigation(new_lease);
+        assert!(state.page_navigated());
     }
     #[test]
     fn page_and_capture_reset_control_recovery_availability() {

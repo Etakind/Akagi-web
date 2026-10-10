@@ -2,7 +2,8 @@
   "recovery": {
     "partial": "Partial capture",
     "button": "Recover and continue",
-    "description": "Reconnect briefly; refresh this page once if needed. Autoplay resumes according to its current switch.",
+    "advisory_only": "Restored suggestion · act manually",
+    "description": "Click to refresh this page once and restore the game. Autoplay resumes according to its current switch.",
     "phase": {
       "inactive": "No game connected",
       "missing": "Initial game state missing",
@@ -14,7 +15,9 @@
     "failed": "Recovery failed; automatic input is blocked. Check the reason and logs.",
     "reason": {
       "ambiguous_game_connections": "Multiple game connections detected. Keep only one game open.",
-      "reconnect_and_reload_failed": "Reconnect and one refresh could not restore this game. Automatic input remains blocked."
+      "reconnect_and_reload_failed": "Reconnect and one refresh could not restore this game. Automatic input remains blocked.",
+      "reload_failed": "This page could not be refreshed. Automatic input remains blocked.",
+      "reload_restore_timeout": "The game could not be restored after one refresh. Automatic input remains blocked."
     }
   },
   "autoplay_status": {
@@ -494,6 +497,7 @@
     "overlay_always_on_top_hint": "Turn this off to park the overlay on a second monitor. Note that a game running in exclusive fullscreen draws over every always-on-top window — use borderless or windowed mode.",
     "capture_enabled": "Enable browser capture",
     "attach_port": "Existing browser debug port",
+    "attach_port_invalid": "Save failed: invalid port. Enter an integer from 0 to 65535; 0 launches an isolated browser.",
     "attach_port_hint": "0 launches an isolated browser. A nonzero port attaches to an opted-in browser on 127.0.0.1."
   },
   "setup": {

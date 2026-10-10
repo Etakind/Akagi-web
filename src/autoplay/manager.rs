@@ -165,6 +165,12 @@ impl AutoplayManager {
         // toggled at runtime via the Settings UI without restarting.
         let cfg_guard = self.cfg.read().await;
         if !cfg_guard.autoplay.enabled
+            || resp
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("advisory_only"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
             || !self.ctx.accepts_decision(resp.decision_started)
             || !resp.decision_context.valid()
             || !resp.decision_context.permits(&resp.action)
@@ -1112,6 +1118,42 @@ mod tests {
         assert!(!*status.borrow_and_update());
         assert!(!m.cfg.read().await.autoplay.enabled);
         assert!(!m.plan_active(current).await);
+    }
+
+    #[tokio::test]
+    async fn restored_advisory_is_rejected_before_any_autoplay_input() {
+        let mut manager = make_manager();
+        manager.cfg.write().await.autoplay.enabled = true;
+        manager.ctx.set_enabled(true);
+        let generation = manager
+            .ctx
+            .generation
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let ticket = manager.ctx.input_watch.ticket();
+
+        manager
+            .handle_bot_response(BotResponse {
+                decision_context: Default::default(),
+                decision_started: Some(std::time::Instant::now()),
+                action: MjaiEvent::Dahai {
+                    actor: 0,
+                    pai: "5m".into(),
+                    tsumogiri: false,
+                },
+                meta: Some(serde_json::json!({ "advisory_only": true })),
+            })
+            .await;
+
+        assert_eq!(
+            manager
+                .ctx
+                .generation
+                .load(std::sync::atomic::Ordering::SeqCst),
+            generation,
+            "a display-only response must not start or cancel an action"
+        );
+        assert!(manager.state.acted_window.is_none());
+        assert!(!manager.ctx.input_watch.sent_since(ticket));
     }
 
     /// Regression: `cached_our_seat` must be populated immediately when

@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { HAS_TAURI, invoke } from '@/lib/tauri'
+import { parseAttachPort } from '@/lib/chromiumPort'
 import { AKAGI_GITHUB_URL, openExternal } from '@/lib/external'
 import { useSidebar } from '@/hooks/useSidebar'
 import { useAnnouncementStore } from '@/stores/announcementStore'
@@ -70,13 +71,17 @@ export function Settings() {
   const stored = useConfigStore((s) => s.config)
   const setStored = useConfigStore((s) => s.setConfig)
   const [draft, setDraft] = useState<AppConfig | null>(stored)
+  const [attachPort, setAttachPort] = useState(String(stored?.capture.chromium.attach_port ?? 0))
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
     // Sync the editable draft from the store when it (re)loads.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (stored) setDraft(stored)
+    if (stored) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setDraft(stored)
+      setAttachPort(String(stored.capture.chromium.attach_port ?? 0))
+    }
   }, [stored])
 
   useEffect(() => {
@@ -85,7 +90,10 @@ export function Settings() {
     }
   }, [stored, setStored])
 
-  const dirty = !!draft && !!stored && JSON.stringify(draft) !== JSON.stringify(stored)
+  const dirty = !!draft && !!stored && (
+    JSON.stringify(draft) !== JSON.stringify(stored) ||
+    attachPort !== String(stored.capture.chromium.attach_port ?? 0)
+  )
 
   const blocker = useBlocker(
     ({ currentLocation, nextLocation }) =>
@@ -106,11 +114,22 @@ export function Settings() {
     return <div className="p-6 text-muted-foreground">{t('settings.loading_config')}</div>
   }
 
+  const configForSave = (): AppConfig | null => {
+    const port = parseAttachPort(attachPort)
+    if (port === null) {
+      setErr(t('settings.attach_port_invalid'))
+      return null
+    }
+    return { ...draft, capture: { ...draft.capture, chromium: { ...draft.capture.chromium, attach_port: port } } }
+  }
+
   const save = async () => {
+    const next = configForSave()
+    if (!next) return
     setSaving(true)
     setErr(null)
     try {
-      await invoke('update_config', { newConfig: draft })
+      await invoke('update_config', { newConfig: next })
       setStored(await invoke<AppConfig>('get_config'))
     } catch (e) {
       setErr(String(e))
@@ -120,10 +139,15 @@ export function Settings() {
   }
 
   const saveAndLeave = async () => {
+    const next = configForSave()
+    if (!next) {
+      blocker.reset?.()
+      return
+    }
     setSaving(true)
     setErr(null)
     try {
-      await invoke('update_config', { newConfig: draft })
+      await invoke('update_config', { newConfig: next })
       setStored(await invoke<AppConfig>('get_config'))
       blocker.proceed?.()
     } catch (e) {
@@ -134,8 +158,14 @@ export function Settings() {
     }
   }
 
-  const discardAndLeave = () => {
+  const reset = () => {
     setDraft(stored)
+    setAttachPort(String(stored?.capture.chromium.attach_port ?? 0))
+    setErr(null)
+  }
+
+  const discardAndLeave = () => {
+    reset()
     blocker.proceed?.()
   }
 
@@ -147,7 +177,7 @@ export function Settings() {
           <Button variant="ghost" asChild>
             <Link to="/setup?rerun=1">{t('settings.rerun_setup')}</Link>
           </Button>
-          <Button variant="outline" onClick={() => setDraft(stored)} disabled={!dirty || saving}>
+          <Button variant="outline" onClick={reset} disabled={!dirty || saving}>
             {t('common.reset')}
           </Button>
           <Button onClick={save} disabled={!dirty || saving}>
@@ -157,7 +187,7 @@ export function Settings() {
       </header>
 
       {err && (
-        <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+        <div role="alert" className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-400">
           {err}
         </div>
       )}
@@ -195,7 +225,10 @@ export function Settings() {
 
       <OverlayCard draft={draft} setDraft={setDraft} />
 
-      <CaptureCard draft={draft} setDraft={setDraft} />
+      <CaptureCard draft={draft} setDraft={setDraft} attachPort={attachPort} setAttachPort={(value) => {
+        setAttachPort(value)
+        setErr(null)
+      }} />
 
       <Card>
         <CardHeader>
@@ -951,9 +984,13 @@ function defaultDelayModel(): DelayModelConfig {
 function CaptureCard({
   draft,
   setDraft,
+  attachPort,
+  setAttachPort,
 }: {
   draft: AppConfig
   setDraft: (c: AppConfig) => void
+  attachPort: string
+  setAttachPort: (value: string) => void
 }) {
   const { t } = useTranslation()
   const chromium = draft.capture?.chromium ?? {
@@ -1032,11 +1069,10 @@ function CaptureCard({
               </Button>
             </div>
             <Field label={t('settings.attach_port')} hint={t('settings.attach_port_hint')}>
-              <Input type="number" min={0} max={65535} step={1}
-                value={chromium.attach_port ?? 0}
-                onChange={(e) => setChromium({ attach_port: Math.max(0, Math.min(65535, Math.trunc(Number(e.target.value) || 0))) })} />
+              <Input type="text" inputMode="numeric" aria-label={t('settings.attach_port')}
+                value={attachPort} onChange={(e) => setAttachPort(e.target.value)} />
             </Field>
-            <Field label={t('settings.user_data_dir')} hint={t(chromium.attach_port ? 'settings.user_data_dir_attach_hint' : 'settings.user_data_dir_hint')}>
+            <Field label={t('settings.user_data_dir')} hint={t(parseAttachPort(attachPort) ? 'settings.user_data_dir_attach_hint' : 'settings.user_data_dir_hint')}>
               <Input
                 value={chromium.user_data_dir}
                 onChange={(e) => setChromium({ user_data_dir: e.target.value })}

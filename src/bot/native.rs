@@ -65,6 +65,9 @@ impl BotRunner for NativeBot {
     async fn restore(&mut self, events: &[MjaiEvent]) -> Result<()> {
         self.feed_events(events)
     }
+    async fn suggest_restored(&mut self) -> Result<BotResponse> {
+        self.decide(&[])
+    }
     async fn react(&mut self, events: &[MjaiEvent]) -> Result<BotResponse> {
         self.feed_events(events)?;
         self.decide(events)
@@ -440,6 +443,19 @@ mod tests {
             MjaiEvent::Ankan { .. } | MjaiEvent::Kakan { .. } | MjaiEvent::Hora { .. } => {}
             other => panic!("unexpected reply on own turn: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn restored_suggestion_decides_from_fed_history_without_feeding_it_again() {
+        let events = opening();
+        let mut restored = bot_with(cfg_off(), crate::event_bus::notify_bus()).await;
+        restored.restore(&events).await.unwrap();
+        let suggestion = restored.suggest_restored().await.unwrap();
+
+        let mut ordinary = bot_with(cfg_off(), crate::event_bus::notify_bus()).await;
+        let reaction = ordinary.react(&events).await.unwrap();
+        assert_eq!(suggestion.action, reaction.action);
+        assert_eq!(suggestion.meta, reaction.meta);
     }
 
     #[tokio::test]

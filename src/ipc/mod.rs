@@ -160,7 +160,7 @@ fn spawn_forwarders<R: Runtime>(app: AppHandle<R>, state: AppState) {
         tauri::async_runtime::spawn(async move {
             loop {
                 match rx.recv().await {
-                    Ok(response) if response.decision_context.valid() => {
+                    Ok(response) if response.decision_context.valid_for_display() => {
                         let _ = response_app.emit("bot-response", response);
                     }
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}

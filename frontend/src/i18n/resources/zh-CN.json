@@ -2,7 +2,8 @@
   "recovery": {
     "partial": "中途采集",
     "button": "恢复并继续",
-    "description": "先尝试短暂重连；失败时刷新本页一次。自动操作按当前开关恢复。",
+    "advisory_only": "恢复建议 · 请手动操作",
+    "description": "点击后刷新本页一次以恢复对局。自动操作按当前开关恢复。",
     "phase": {
       "inactive": "未接入对局",
       "missing": "缺少初始局面",
@@ -14,7 +15,9 @@
     "failed": "恢复失败，自动操作已阻断；请查看失败原因和日志。",
     "reason": {
       "ambiguous_game_connections": "检测到多个游戏连接，请只保留一场对局。",
-      "reconnect_and_reload_failed": "重连和一次刷新后仍无法恢复；自动操作已阻断。"
+      "reconnect_and_reload_failed": "重连和一次刷新后仍无法恢复；自动操作已阻断。",
+      "reload_failed": "无法刷新本页；自动操作已阻断。",
+      "reload_restore_timeout": "刷新一次后仍未能恢复对局；自动操作已阻断。"
     }
   },
   "autoplay_status": {
@@ -494,6 +497,7 @@
     "overlay_always_on_top_hint": "如果想把悬浮窗放到第二个显示器，可以关掉这个选项。另请注意：游戏若使用“独占全屏”，会盖住所有置顶窗口，请改用无边框或窗口模式。",
     "capture_enabled": "启动浏览器采集",
     "attach_port": "常用浏览器调试端口",
+    "attach_port_invalid": "保存失败：端口不正确。请输入 0–65535 的整数；0 表示启动独立浏览器。",
     "attach_port_hint": "0：启动独立浏览器；9222 等非零端口：连接已开启调试的常用浏览器，仅使用 127.0.0.1。"
   },
   "setup": {

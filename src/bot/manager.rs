@@ -7,7 +7,7 @@ use crate::schema::{BotReaction, BotStatus, InspectorEntry, MjaiEvent, Notificat
 use anyhow::{bail, Context, Result};
 use chrono::Local;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -184,6 +184,17 @@ impl BotManager {
                     token.ack(crate::capture::recovery::BOT);
                 } else {
                     token.fail("bot_restore_failed");
+                }
+            }
+            if result.is_ok() && can_act == Some(true) && context.advisory_revision.is_some() {
+                if let Err(error) = self.show_restored_suggestion(&events, &context).await {
+                    // A display-only inference failure must not discard the
+                    // successfully restored model or disable later live play.
+                    warn!("restored suggestion unavailable: {error:#}");
+                    self.emit_notify(
+                        Notification::warn("Recovery suggestion unavailable")
+                            .body("State is restored. Complete the current action manually; new live windows keep the normal decision behavior."),
+                    );
                 }
             }
             return result;
@@ -406,6 +417,86 @@ impl BotManager {
         Ok(())
     }
 
+    async fn show_restored_suggestion(
+        &mut self,
+        events: &[MjaiEvent],
+        context: &crate::event_bus::EventContext,
+    ) -> Result<()> {
+        let Some(token) = &context.token else {
+            return Ok(());
+        };
+        let Some(revision) = context.advisory_revision else {
+            return Ok(());
+        };
+        let mut changes = token.state.changes.subscribe();
+        let ready = tokio::time::timeout(Duration::from_secs(60), async {
+            loop {
+                if !token.current() || token.state.window_revision() != revision {
+                    return false;
+                }
+                let phase = changes.borrow_and_update().phase;
+                match phase {
+                    crate::capture::recovery::RecoveryPhase::Ready => {
+                        return context.valid_for_display();
+                    }
+                    crate::capture::recovery::RecoveryPhase::Error
+                    | crate::capture::recovery::RecoveryPhase::Inactive => return false,
+                    _ => {}
+                }
+                if changes.changed().await.is_err() {
+                    return false;
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        if !ready {
+            return Ok(());
+        }
+
+        let started = Instant::now();
+        let mut response = self
+            .runner
+            .as_mut()
+            .context("No restored model available")?
+            .suggest_restored()
+            .await?;
+        if !context.valid_for_display() || !context.permits(&response.action) {
+            return Ok(());
+        }
+        if matches!(response.action, MjaiEvent::None) && response.meta.is_none() {
+            return Ok(());
+        }
+        let meta = response.meta.get_or_insert_with(|| serde_json::json!({}));
+        let meta = meta
+            .as_object_mut()
+            .context("Suggestion metadata is not an object")?;
+        meta.insert("advisory_only".into(), serde_json::Value::Bool(true));
+        meta.insert(
+            "recovery_epoch".into(),
+            serde_json::json!(token.state.epoch()),
+        );
+        // Independent gates: the context is non-executable, and no input
+        // start ticket is issued. In particular, do not feed a fake reach.
+        response.decision_context = context.clone();
+        response.decision_started = None;
+        if let (Some(actor_id), Some(trigger)) = (self.actor_id, events.last().cloned()) {
+            self.inspector.record(InspectorEntry::BotReaction {
+                ts_ms: Local::now().timestamp_millis(),
+                reaction: BotReaction {
+                    bot: self.active_name.clone(),
+                    actor_id,
+                    trigger,
+                    action: response.action.clone(),
+                    meta: response.meta.clone(),
+                    reaction_ms: started.elapsed().as_millis() as u64,
+                },
+            });
+        }
+        let _ = self.out_tx.send(response);
+        Ok(())
+    }
+
     /// Two-phase spawn so the IPC layer can show a "Syncing deps…" spinner
     /// during the slow first-run path before the subprocess actually
     /// starts. Each branch publishes status + notification before
@@ -586,6 +677,45 @@ mod tests {
                 Ok(q.remove(0))
             }
         }
+        async fn reset(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct AdvisoryCalls {
+        restores: Arc<Mutex<Vec<Vec<MjaiEvent>>>>,
+        suggestions: Arc<Mutex<usize>>,
+        reactions: Arc<Mutex<Vec<Vec<MjaiEvent>>>>,
+    }
+
+    struct AdvisoryMockRunner {
+        calls: AdvisoryCalls,
+        suggestion: BotResponse,
+    }
+
+    #[async_trait]
+    impl BotRunner for AdvisoryMockRunner {
+        async fn restore(&mut self, events: &[MjaiEvent]) -> Result<()> {
+            self.calls.restores.lock().await.push(events.to_vec());
+            Ok(())
+        }
+
+        async fn suggest_restored(&mut self) -> Result<BotResponse> {
+            *self.calls.suggestions.lock().await += 1;
+            Ok(self.suggestion.clone())
+        }
+
+        async fn react(&mut self, events: &[MjaiEvent]) -> Result<BotResponse> {
+            self.calls.reactions.lock().await.push(events.to_vec());
+            Ok(BotResponse {
+                decision_context: Default::default(),
+                decision_started: None,
+                action: MjaiEvent::None,
+                meta: None,
+            })
+        }
+
         async fn reset(&mut self) -> Result<()> {
             Ok(())
         }
@@ -1298,5 +1428,234 @@ mod tests {
             !mgr.drop_next_own_reach,
             "a kyoku boundary clears a stale drop flag"
         );
+    }
+
+    fn advisory_manager(
+        suggestion: BotResponse,
+    ) -> (BotManager, AdvisoryCalls, broadcast::Receiver<BotResponse>) {
+        let bus = bot_response_bus();
+        let status = bot_status_bus();
+        let notify = notify_bus();
+        let response_rx = bus.subscribe();
+        let calls = AdvisoryCalls::default();
+        let runner = AdvisoryMockRunner {
+            calls: calls.clone(),
+            suggestion,
+        };
+        let mut manager = BotManager::new(cfg_with("mock"), bus, status, notify, dummy_inspector());
+        manager.actor_id = Some(2);
+        manager.active_name = "mock".into();
+        manager.runner = Some(Box::new(runner));
+        (manager, calls, response_rx)
+    }
+
+    fn ready_advisory_context(
+        state: &Arc<crate::capture::recovery::RecoveryState>,
+        offered: Vec<u32>,
+    ) -> crate::event_bus::EventContext {
+        state.set(crate::capture::recovery::RecoveryPhase::Ready, None);
+        let token = state.stamp();
+        token.ack(crate::capture::recovery::TRACKER);
+        crate::event_bus::EventContext {
+            token: Some(token),
+            offered,
+            advisory_revision: Some(state.window_revision()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn restored_advisory_suggests_once_without_refeeding_history_and_live_reacts_normally() {
+        let suggestion = BotResponse {
+            decision_context: Default::default(),
+            decision_started: None,
+            action: MjaiEvent::Dahai {
+                actor: 2,
+                pai: "5m".into(),
+                tsumogiri: false,
+            },
+            meta: None,
+        };
+        let (mut manager, calls, mut responses) = advisory_manager(suggestion);
+        let state = Arc::new(crate::capture::recovery::RecoveryState::default());
+        let context = ready_advisory_context(&state, vec![1]);
+        let history = Arc::new(vec![MjaiEvent::Tsumo {
+            actor: 2,
+            pai: "5m".into(),
+        }]);
+
+        manager
+            .handle_tracked(TrackedEvent {
+                event: history[0].clone(),
+                can_act: Some(true),
+                context: context.clone(),
+                restore: Some(history.clone()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(calls.restores.lock().await.as_slice(), &[history.to_vec()]);
+        assert_eq!(*calls.suggestions.lock().await, 1);
+        assert!(calls.reactions.lock().await.is_empty());
+        let restored = responses.try_recv().expect("restored advisory is emitted");
+        assert!(matches!(restored.action, MjaiEvent::Dahai { actor: 2, .. }));
+        assert_eq!(restored.decision_started, None);
+        assert_eq!(restored.meta.as_ref().unwrap()["advisory_only"], true);
+        assert_eq!(
+            restored.decision_context.advisory_revision,
+            context.advisory_revision
+        );
+        assert!(!restored.decision_context.valid());
+        assert!(restored.decision_context.valid_for_display());
+
+        // The first new live window uses the normal react path and does not
+        // consume the restored history or inherit the advisory marker.
+        manager
+            .handle_tracked(TrackedEvent {
+                event: MjaiEvent::Tsumo {
+                    actor: 2,
+                    pai: "9p".into(),
+                },
+                can_act: Some(true),
+                context: Default::default(),
+                restore: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(calls.reactions.lock().await.len(), 1);
+        let live = responses
+            .try_recv()
+            .expect("normal live response is emitted");
+        assert!(live.decision_context.advisory_revision.is_none());
+        assert!(live.decision_started.is_some());
+    }
+
+    #[tokio::test]
+    async fn restored_advisory_waits_for_ready_and_rejects_expired_revision_or_wrong_turn() {
+        let suggestion = BotResponse {
+            decision_context: Default::default(),
+            decision_started: None,
+            action: MjaiEvent::Dahai {
+                actor: 2,
+                pai: "5m".into(),
+                tsumogiri: false,
+            },
+            meta: None,
+        };
+
+        // A recovery token that has not reached the all-consumer Ready
+        // barrier cannot produce a display suggestion.
+        let (mut manager, calls, mut responses) = advisory_manager(suggestion.clone());
+        let not_ready = Arc::new(crate::capture::recovery::RecoveryState::default());
+        let not_ready_context = crate::event_bus::EventContext {
+            token: Some(not_ready.stamp()),
+            offered: vec![1],
+            advisory_revision: Some(not_ready.window_revision()),
+            ..Default::default()
+        };
+        manager
+            .handle_tracked(TrackedEvent {
+                event: MjaiEvent::Tsumo {
+                    actor: 2,
+                    pai: "5m".into(),
+                },
+                can_act: Some(true),
+                context: not_ready_context,
+                restore: Some(Arc::new(vec![MjaiEvent::Tsumo {
+                    actor: 2,
+                    pai: "5m".into(),
+                }])),
+            })
+            .await
+            .unwrap();
+        assert_eq!(*calls.suggestions.lock().await, 0);
+        assert!(responses.try_recv().is_err());
+
+        // A stale revision is rejected even if the token is otherwise Ready.
+        let (mut manager, calls, mut responses) = advisory_manager(suggestion.clone());
+        let state = Arc::new(crate::capture::recovery::RecoveryState::default());
+        let stale = ready_advisory_context(&state, vec![1]);
+        state.window(None);
+        manager
+            .handle_tracked(TrackedEvent {
+                event: MjaiEvent::Tsumo {
+                    actor: 2,
+                    pai: "5m".into(),
+                },
+                can_act: Some(true),
+                context: stale,
+                restore: Some(Arc::new(vec![MjaiEvent::Tsumo {
+                    actor: 2,
+                    pai: "5m".into(),
+                }])),
+            })
+            .await
+            .unwrap();
+        assert_eq!(*calls.suggestions.lock().await, 0);
+        assert!(responses.try_recv().is_err());
+
+        // A restore that is not the engine's own decision point never asks
+        // the runner, even when the wire operation marker is present.
+        let (mut manager, calls, mut responses) = advisory_manager(suggestion);
+        let state = Arc::new(crate::capture::recovery::RecoveryState::default());
+        let context = ready_advisory_context(&state, vec![1]);
+        manager
+            .handle_tracked(TrackedEvent {
+                event: MjaiEvent::Tsumo {
+                    actor: 2,
+                    pai: "5m".into(),
+                },
+                can_act: Some(false),
+                context,
+                restore: Some(Arc::new(vec![MjaiEvent::Tsumo {
+                    actor: 2,
+                    pai: "5m".into(),
+                }])),
+            })
+            .await
+            .unwrap();
+        assert_eq!(*calls.suggestions.lock().await, 0);
+        assert!(responses.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn restored_advisory_reach_never_runs_autoplay_followup() {
+        let suggestion = BotResponse {
+            decision_context: Default::default(),
+            decision_started: None,
+            action: MjaiEvent::Reach {
+                actor: 2,
+                pai: None,
+            },
+            meta: None,
+        };
+        let (mut manager, calls, mut responses) = advisory_manager(suggestion);
+        manager.config.write().await.autoplay.enabled = true;
+        let state = Arc::new(crate::capture::recovery::RecoveryState::default());
+        let context = ready_advisory_context(&state, vec![7]);
+        manager
+            .handle_tracked(TrackedEvent {
+                event: MjaiEvent::Tsumo {
+                    actor: 2,
+                    pai: "5m".into(),
+                },
+                can_act: Some(true),
+                context,
+                restore: Some(Arc::new(vec![MjaiEvent::Tsumo {
+                    actor: 2,
+                    pai: "5m".into(),
+                }])),
+            })
+            .await
+            .unwrap();
+        assert_eq!(*calls.suggestions.lock().await, 1);
+        assert!(calls.reactions.lock().await.is_empty());
+        let response = responses.try_recv().expect("reach recommendation is shown");
+        assert!(matches!(
+            response.action,
+            MjaiEvent::Reach { pai: None, .. }
+        ));
+        assert_eq!(response.meta.as_ref().unwrap()["advisory_only"], true);
+        assert!(!manager.drop_next_own_reach);
     }
 }

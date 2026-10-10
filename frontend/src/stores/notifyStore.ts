@@ -31,7 +31,10 @@ export const useNotifyStore = create<NotifyStore>((set) => ({
   notifications: [],
 
   pushEvent: (e) =>
-    set((s) => ({ events: trim([...s.events, tag(e)], MAX_EVENTS) })),
+    set((s) => ({
+      events: trim([...s.events, tag(e)], MAX_EVENTS),
+      responses: s.responses.filter((r) => r.meta?.advisory_only !== true),
+    })),
 
   pushResponse: (r) =>
     set((s) => ({ responses: trim([...s.responses, tag(r)], MAX_RESPONSES) })),
