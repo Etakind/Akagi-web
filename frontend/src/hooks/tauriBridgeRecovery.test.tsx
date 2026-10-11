@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import { useNotifyStore } from '@/stores/notifyStore'
 import { useCaptureStore } from '@/stores/captureStore'
+import { pickShow } from '@/lib/botShow'
 
 const tauri = vi.hoisted(() => ({
   listen: vi.fn(),
@@ -135,6 +136,27 @@ describe('useTauriBridge recovery advisory ordering', () => {
     listeners.get('bot-response')?.(advisory(7))
     listeners.get('game-recovery-status')?.(recovery('ready', 8))
     await waitFor(() => expect(useNotifyStore.getState().responses).toHaveLength(0))
+    unmount()
+  })
+
+  it('retains each live riichi draw through its automatic discard and then accepts Hora', async () => {
+    const { unmount } = render(<Harness />)
+    await waitFor(() => expect(listeners.has('bot-response')).toBe(true))
+    listeners.get('game-recovery-status')?.(recovery('ready', 7))
+    for (const pai of ['E', '7p', '1s']) {
+      listeners.get('mjai-event')?.({ type: 'tsumo', actor: 2, pai })
+      listeners.get('bot-response')?.({
+        type: 'dahai', actor: 2, pai, tsumogiri: true,
+        meta: { show: { title: 'Akagi · Local', items: [{ label: 'Discard', pais: [pai], value: '100%' }] } },
+      })
+      listeners.get('mjai-event')?.({ type: 'dahai', actor: 2, pai, tsumogiri: true })
+      expect(pickShow(useNotifyStore.getState().responses.at(-1)?.meta)?.items[0].pais).toEqual([pai])
+    }
+    listeners.get('bot-response')?.({
+      type: 'hora', actor: 2, target: 1,
+      meta: { show: { title: 'Akagi · Local', items: [{ label: 'Hora', value: '100%' }] } },
+    })
+    expect(useNotifyStore.getState().responses.at(-1)?.type).toBe('hora')
     unmount()
   })
 })

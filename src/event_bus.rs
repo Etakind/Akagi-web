@@ -38,13 +38,22 @@ pub struct EventContext {
     pub token: Option<std::sync::Arc<crate::capture::recovery::RestoreToken>>,
     pub offered: Vec<u32>,
     pub forced_tsumogiri: bool,
+    /// A live riichi draw with no operation to answer. It may update the HUD,
+    /// but the game client already discards it and must not receive a click.
+    pub automatic_tsumogiri: Option<AutomaticTsumogiri>,
     /// A synchronized operation can support a manual-only recommendation,
     /// but its unverified elapsed time must never authorize automatic input.
     pub advisory_revision: Option<u64>,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutomaticTsumogiri {
+    pub revision: u64,
+    pub actor: u8,
+    pub pai: String,
+}
 impl EventContext {
     pub fn valid(&self) -> bool {
-        if self.advisory_revision.is_some() {
+        if self.advisory_revision.is_some() || self.automatic_tsumogiri.is_some() {
             return false;
         }
         self.token.as_ref().is_none_or(|token| {
@@ -52,7 +61,12 @@ impl EventContext {
         })
     }
     pub fn valid_for_display(&self) -> bool {
-        match self.advisory_revision {
+        match self
+            .automatic_tsumogiri
+            .as_ref()
+            .map(|draw| draw.revision)
+            .or(self.advisory_revision)
+        {
             Some(revision) => self.token.as_ref().is_some_and(|token| {
                 token.current()
                     && token.state.snapshot().phase == RecoveryPhase::Ready
@@ -62,6 +76,10 @@ impl EventContext {
         }
     }
     pub fn permits(&self, event: &MjaiEvent) -> bool {
+        if let Some(draw) = &self.automatic_tsumogiri {
+            return matches!(event, MjaiEvent::Dahai { actor, pai, tsumogiri: true }
+                if *actor == draw.actor && *pai == draw.pai);
+        }
         if self.token.is_none() {
             return true;
         }
@@ -252,6 +270,63 @@ mod recovery_tests {
     use super::*;
     use crate::capture::recovery::{RecoveryPhase, RecoveryState};
     use std::sync::Arc;
+    #[test]
+    fn automatic_riichi_draw_is_display_only_and_bound_to_its_tile_and_revision() {
+        let state = Arc::new(RecoveryState::default());
+        state.set(RecoveryPhase::Ready, None);
+        let context = EventContext {
+            token: Some(state.stamp()),
+            forced_tsumogiri: true,
+            automatic_tsumogiri: Some(AutomaticTsumogiri {
+                revision: state.window_revision(),
+                actor: 2,
+                pai: "5mr".into(),
+            }),
+            ..Default::default()
+        };
+        let discard = MjaiEvent::Dahai {
+            actor: 2,
+            pai: "5mr".into(),
+            tsumogiri: true,
+        };
+        assert!(context.valid_for_display());
+        assert!(
+            !context.valid(),
+            "automatic draws must never authorize input"
+        );
+        assert!(context.permits(&discard));
+        for wrong in [
+            MjaiEvent::Dahai {
+                actor: 1,
+                pai: "5mr".into(),
+                tsumogiri: true,
+            },
+            MjaiEvent::Dahai {
+                actor: 2,
+                pai: "5m".into(),
+                tsumogiri: true,
+            },
+            MjaiEvent::Dahai {
+                actor: 2,
+                pai: "5mr".into(),
+                tsumogiri: false,
+            },
+            MjaiEvent::None,
+        ] {
+            assert!(!context.permits(&wrong));
+        }
+        state.window(None);
+        assert!(
+            !context.valid_for_display(),
+            "a later event expires the display"
+        );
+        let mut current = context.clone();
+        current.automatic_tsumogiri.as_mut().unwrap().revision = state.window_revision();
+        assert!(current.valid_for_display());
+        state.invalidate(RecoveryPhase::Error, Some("disconnected"));
+        assert!(!current.valid_for_display());
+    }
+
     #[test]
     fn decision_keeps_original_window_and_capture_generation() {
         let state = Arc::new(RecoveryState::default());

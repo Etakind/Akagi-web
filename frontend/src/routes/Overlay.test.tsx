@@ -155,6 +155,32 @@ describe('Overlay autoplay records', () => {
     expect(document.body.style.fontSize).toBe('')
   })
 
+  it('updates riichi draw tiles, keeps the auto-discard visible, then shows Hora', async () => {
+    const listeners = new Map<string, (payload: unknown) => void>()
+    tauri.listen.mockImplementation(async (event: string, callback: (payload: unknown) => void) => {
+      listeners.set(event, callback)
+      return () => listeners.delete(event)
+    })
+    const { container } = render(<Overlay />)
+    await waitFor(() => expect(listeners.has('bot-response')).toBe(true))
+    for (const [pai, seq] of [['E', '1z'], ['7p', '7p'], ['1s', '1s']]) {
+      listeners.get('mjai-event')?.({ type: 'tsumo', actor: 2, pai })
+      listeners.get('bot-response')?.({
+        type: 'dahai', actor: 2, pai, tsumogiri: true,
+        meta: { show: { title: 'Akagi · Local', items: [{ label: 'Discard', pais: [pai], value: '100%' }] } },
+      })
+      await waitFor(() => expect(container.querySelector('[data-seq]')?.getAttribute('data-seq')).toBe(seq))
+      listeners.get('mjai-event')?.({ type: 'dahai', actor: 2, pai, tsumogiri: true })
+      expect(screen.getByText('Discard')).toBeTruthy()
+    }
+    listeners.get('bot-response')?.({
+      type: 'hora', actor: 2, target: 1,
+      meta: { show: { title: 'Akagi · Local', items: [{ label: 'Hora', value: '100%' }] } },
+    })
+    await waitFor(() => expect(screen.getByText('Hora')).toBeTruthy())
+    expect(screen.queryByText('Discard')).toBeNull()
+  })
+
   it('clears a restored advisory when the next live MJAI event arrives', async () => {
     const listeners = new Map<string, (payload: unknown) => void>()
     tauri.listen.mockImplementation(async (event: string, callback: (payload: unknown) => void) => {

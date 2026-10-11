@@ -2043,6 +2043,22 @@ impl Bridge for MajsoulBridge {
                         })
                         .unwrap_or_default()
                 };
+                let automatic_tsumogiri = self
+                    .recovery
+                    .as_ref()
+                    .filter(|r| {
+                        !is_restore && r.owns(self.flow_id) && self.own_riichi && offered.is_empty()
+                    })
+                    .and_then(|r| match events.last() {
+                        Some(MjaiEvent::Tsumo { actor, pai }) if Some(*actor) == self.seat => {
+                            Some(crate::event_bus::AutomaticTsumogiri {
+                                revision: r.window_revision(),
+                                actor: *actor,
+                                pai: pai.clone(),
+                            })
+                        }
+                        _ => None,
+                    });
                 let context = crate::event_bus::EventContext {
                     advisory_revision: self
                         .recovery
@@ -2062,6 +2078,7 @@ impl Bridge for MajsoulBridge {
                         .filter(|r| r.owns(self.flow_id))
                         .map(|r| if is_restore { r.token() } else { r.stamp() }),
                     forced_tsumogiri: self.own_riichi,
+                    automatic_tsumogiri,
                     offered,
                 };
                 // Rotate before writing so the StartGame event itself lands

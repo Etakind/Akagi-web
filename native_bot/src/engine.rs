@@ -84,9 +84,10 @@ pub struct Decision {
     pub action: BotAction,
     /// Top legal actions ranked by policy probability (best first). `action`
     /// is `candidates[0].0`; the rest are the runner-up recommendations the HUD
-    /// shows as a top-N card. Probabilities are a softmax over the legal set.
+    /// shows as a top-N card. Policy probabilities use a softmax over the legal
+    /// set; a mandatory riichi win has one candidate with probability 1.
     pub candidates: Vec<(BotAction, f32)>,
-    /// Raw action logits (indexed by the mode's action space).
+    /// Raw policy logits; empty when a legal riichi win is selected directly.
     pub logits: Vec<f32>,
     /// The full legal set (before the top-N cut in `candidates`) held exactly
     /// one action, so this "decision" is forced — any policy, local or remote,
@@ -234,6 +235,14 @@ impl Engine {
                 if legal.is_empty() {
                     return Ok(None);
                 }
+                if let Some(win) = riichi_win(
+                    &legal,
+                    state.players[seat as usize].riichi_declared,
+                    seat,
+                    last_discarder,
+                ) {
+                    return Ok(Some(win));
+                }
                 // Forced ⇔ the *legal* set is a singleton — `ranked` is cut to
                 // SHOW_TOP_N below, so its length can't be used for this.
                 let forced = legal.len() == 1;
@@ -255,6 +264,14 @@ impl Engine {
                 let (obs, legal) = obs_and_legal_3p(state, seat);
                 if legal.is_empty() {
                     return Ok(None);
+                }
+                if let Some(win) = riichi_win(
+                    &legal,
+                    state.players[seat as usize].riichi_declared,
+                    seat,
+                    last_discarder,
+                ) {
+                    return Ok(Some(win));
                 }
                 let forced = legal.len() == 1;
                 let logits = model.forward_logits(&obs)?;
@@ -309,6 +326,33 @@ impl Engine {
             }
         }
     }
+}
+
+/// Always take a legal riichi win. Legality still enforces furiten and hand
+/// completion; autoplay independently checks the server's operation window.
+fn riichi_win(
+    legal: &[Action],
+    in_riichi: bool,
+    seat: u8,
+    last_discarder: Option<u8>,
+) -> Option<Decision> {
+    if !in_riichi {
+        return None;
+    }
+    let win = legal
+        .iter()
+        .find(|a| matches!(a.action_type, ActionType::Ron | ActionType::Tsumo))?;
+    let target = match win.action_type {
+        ActionType::Tsumo => seat,
+        _ => last_discarder?,
+    };
+    let action = BotAction::Hora { target };
+    Some(Decision {
+        action: action.clone(),
+        candidates: vec![(action, 1.0)],
+        logits: Vec::new(),
+        forced: legal.len() == 1,
+    })
 }
 
 /// Map a ranked `(Action, prob)` list into displayable `(BotAction, prob)`
@@ -425,6 +469,26 @@ fn build_bot_action(
 mod tests {
     use super::*;
     use riichienv_core::replay::MjaiEvent;
+    #[test]
+    fn legal_riichi_win_has_priority_over_pass_and_discard() {
+        let legal = vec![
+            Action::new(ActionType::Pass, None, vec![], Some(2)),
+            Action::new(ActionType::Discard, Some(0), vec![], Some(2)),
+            Action::new(ActionType::Ron, Some(0), vec![], Some(2)),
+        ];
+        let win = riichi_win(&legal, true, 2, Some(1)).unwrap();
+        assert_eq!(win.action, BotAction::Hora { target: 1 });
+        assert_eq!(win.candidates, vec![(BotAction::Hora { target: 1 }, 1.0)]);
+        assert!(!win.forced, "legal alternatives still exist");
+        assert!(riichi_win(&legal, false, 2, Some(1)).is_none());
+        assert!(riichi_win(&legal[..2], true, 2, Some(1)).is_none());
+        assert!(riichi_win(&legal, true, 2, None).is_none());
+        let tsumo = vec![Action::new(ActionType::Tsumo, Some(0), vec![], Some(2))];
+        assert_eq!(
+            riichi_win(&tsumo, true, 2, None).unwrap().action,
+            BotAction::Hora { target: 2 }
+        );
+    }
 
     fn ev(line: &str) -> MjaiEvent {
         serde_json::from_str(line).expect("valid mjai event")

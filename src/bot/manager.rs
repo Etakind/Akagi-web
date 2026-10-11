@@ -275,7 +275,7 @@ impl BotManager {
         if !self.is_decision_point(&event, can_act) {
             return Ok(());
         }
-        if !context.valid() {
+        if !context.valid_for_display() {
             return Ok(());
         }
 
@@ -305,7 +305,7 @@ impl BotManager {
             }
         };
         let reaction_ms = started.elapsed().as_millis() as u64;
-        if !context.valid() {
+        if !context.valid_for_display() {
             return Ok(());
         }
         if !context.permits(&resp.action) {
@@ -366,7 +366,7 @@ impl BotManager {
         if did_reach_followup {
             self.drop_next_own_reach = true;
         }
-        if !context.valid() {
+        if !context.valid_for_display() {
             if did_reach_followup {
                 self.runner = None;
                 self.pending.clear();
@@ -401,7 +401,7 @@ impl BotManager {
         }
         // MjaiEvent::None still goes on the bus — downstream consumers
         // decide whether to render. Centralizes the "skip" decision.
-        resp.decision_started = Some(started);
+        resp.decision_started = context.automatic_tsumogiri.is_none().then_some(started);
         resp.decision_context = context;
         let _ = self.out_tx.send(resp);
 
