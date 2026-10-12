@@ -48,6 +48,32 @@ fn fake_login_never_reaches_any_observation_sink() {
     let mut logs = session.subscribe();
     let mut frames = session.subscribe_inspector();
     let writer = session.inspector();
+    let audit = std::sync::Arc::new(akagi::autoplay::status::AutoplayStatus::default());
+    audit.set_audit_logger(session.autoplay_logger().unwrap());
+    audit.bind_game(1, 1);
+    audit.set_enabled(true);
+    audit.window(
+        1,
+        10,
+        Some(SECRET.into()),
+        Some(&json!({"seat":0,"time_fixed":10000})),
+        0,
+    );
+    let press = audit.begin(
+        &MjaiEvent::Reach {
+            actor: 0,
+            pai: Some(SECRET.into()),
+        },
+        audit.current_window(),
+        0,
+    );
+    press.preparing(SECRET, 0);
+    let attempt = press.pressed();
+    press.press_accepted(attempt);
+    press.released_for(attempt);
+    audit.request(1, 42, &json!({"type":7,"password":SECRET,"token":SECRET}));
+    audit.response(1, 42, &json!({"error":{"code":77,"message":SECRET}}));
+    press.finish();
     // Exercise real protobuf decoding and bridge logging, not only the writer.
     use akagi::bridge::{Bridge, Direction, MajsoulBridge};
     let flow = session

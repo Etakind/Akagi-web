@@ -8,3 +8,7 @@
 
 新目录经 private_fs 创建；Unix 目录 0700、文件 0600，拒绝不安全链接及所有者。Windows 等效 ACL 保护尚待专项验收。
 旧日志不会自动清理或改写，用户导出的副本也不受追溯保护。测试以虚构凭据检查所有输出文件及广播，参见 `tests/privacy_outputs.rs`。
+
+`majsoul/autoplay.log` 使用专用固定格式，逐事件记录本地操作/窗口编号、点击尝试、CDP 接收按下/释放、匹配的客户端请求和服务器确认；不包含牌、坐标、账号、游戏 UUID、原始载荷或任意文本。每次点击有独立 `attempt`，重试的证据不能混用。事件直接写入文件，不依赖界面状态轮询。
+
+`operation_verified` 仅在同一次点击已收到按下/释放的 CDP 成功结果，并匹配客户端请求及服务器动作确认后产生。单独的模型建议、点击尝试、RPC 成功回复或人工请求不算自动和牌成功。运行 `python3 scripts/audit_autoplay.py logs/<session>/majsoul/autoplay.log` 可统计经过完整证据链确认的荣和/自摸；旧的 `{}` 日志无法补回缺失证据。

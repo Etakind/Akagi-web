@@ -91,6 +91,9 @@ impl Game {
             .with_recovery(Some(recovery.clone()))
             .with_autoplay_status(Some(status.clone()));
         let dir = tempfile::tempdir().unwrap();
+        status.set_audit_logger(Arc::new(
+            akagi::logger::autoplay::AutoplayAuditLogger::new(dir.path()).unwrap(),
+        ));
         let inspector = InspectorWriter::open(&dir.path().join("inspector.jsonl"), 128)
             .unwrap()
             .0;
@@ -323,8 +326,9 @@ async fn riichi_draws_then_win(players: u8, tsumo: bool, empty_operation: bool) 
         .status
         .begin(&response.action, response.decision_context.window, 2);
     assert!(observation.can_press());
-    observation.pressed();
-    observation.released();
+    let attempt = observation.pressed();
+    observation.press_accepted(attempt);
+    observation.released_for(attempt);
     observation.finish();
     let (method, message) = if tsumo {
         (".lq.FastTest.inputOperation", "lq.ReqSelfOperation")
@@ -342,6 +346,28 @@ async fn riichi_draws_then_win(players: u8, tsumo: bool, empty_operation: bool) 
         "succeeded"
     );
     assert_eq!(game.recovery.snapshot().phase, RecoveryPhase::Ready);
+    let rows: Vec<Value> = std::fs::read_to_string(game._dir.path().join("majsoul/autoplay.log"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for event in [
+        "press_accepted",
+        "release_accepted",
+        "client_request_matched",
+        "server_feedback_matched",
+        "operation_verified",
+    ] {
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["event"] == event
+                    && row["attempt"] == attempt
+                    && row["action"] == if tsumo { "tsumo" } else { "ron" })
+                .count(),
+            1,
+            "the real protobuf bridge must preserve {event} after riichi"
+        );
+    }
 }
 
 #[tokio::test]

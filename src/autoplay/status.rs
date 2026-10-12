@@ -1,5 +1,8 @@
 //! Observational Majsoul telemetry. Input counters remain retry hints, never proof.
 //! All writers (including the synchronous protocol bridge) share this store.
+use crate::logger::autoplay::{
+    AuditAction, AuditEvent, AuditReason, AutoplayAuditLogger, AutoplayAuditRecord,
+};
 use crate::schema::MjaiEvent;
 use serde::Serialize;
 use serde_json::Value;
@@ -68,6 +71,7 @@ impl Window {
 }
 
 struct Entry {
+    audit_logger: Option<Arc<AutoplayAuditLogger>>,
     record: OperationRecord,
     window: Option<Window>,
     deadline: Option<Instant>,
@@ -76,14 +80,108 @@ struct Entry {
     finished: bool,
     request: bool,
     request_press: Option<Instant>,
+    attempt: u32,
+    request_attempt: Option<u32>,
+    clicks: HashMap<u32, ClickEvidence>,
+}
+
+#[derive(Default)]
+struct ClickEvidence {
+    press_accepted: bool,
+    release_accepted: bool,
+    request_matched: bool,
+    server_confirmed: bool,
+    failed: bool,
+    verified: bool,
 }
 
 impl Entry {
+    fn audit(
+        &self,
+        logger: &Option<Arc<AutoplayAuditLogger>>,
+        event: AuditEvent,
+        attempt: u32,
+        msg_id: Option<u16>,
+        operation_type: Option<u8>,
+        error_code: Option<i64>,
+    ) {
+        let Some(logger) = logger else {
+            return;
+        };
+        let seat = |key| {
+            self.record.action[key]
+                .as_u64()
+                .filter(|seat| *seat < 4)
+                .map(|seat| seat as u8)
+        };
+        logger.record(&AutoplayAuditRecord {
+            schema_version: 1,
+            ts_ms: chrono::Utc::now().timestamp_millis(),
+            operation_id: self.record.id,
+            attempt,
+            retry: self.record.retry,
+            action: AuditAction::from_action(&self.record.action),
+            actor: seat("actor"),
+            target: seat("target"),
+            flow_id: self.window.map(|w| w.flow),
+            window_step: self.window.map(|w| w.step),
+            event,
+            phase: self.record.phase,
+            reason: self.record.reason.as_deref().map(AuditReason::from_reason),
+            msg_id,
+            operation_type,
+            error_code,
+        });
+    }
+    fn verify_clicks(&mut self, logger: &Option<Arc<AutoplayAuditLogger>>) {
+        if self.record.phase != Phase::Succeeded {
+            return;
+        }
+        let verified: Vec<_> = self
+            .clicks
+            .iter_mut()
+            .filter_map(|(&attempt, evidence)| {
+                if !evidence.verified
+                    && !evidence.failed
+                    && evidence.press_accepted
+                    && evidence.release_accepted
+                    && evidence.request_matched
+                    && evidence.server_confirmed
+                {
+                    evidence.verified = true;
+                    Some(attempt)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for attempt in verified {
+            self.audit(
+                logger,
+                AuditEvent::OperationVerified,
+                attempt,
+                None,
+                None,
+                None,
+            );
+        }
+    }
     fn conclude(&mut self, phase: Phase, reason: &str) {
+        let changed = self.record.phase != phase || self.record.reason.as_deref() != Some(reason);
         self.record.phase = phase;
         self.record.reason = Some(reason.into());
         self.deadline = None;
         self.record.remaining_ms = None;
+        if changed {
+            self.audit(
+                &self.audit_logger,
+                AuditEvent::StateChanged,
+                self.attempt,
+                None,
+                None,
+                None,
+            );
+        }
     }
     fn view(&self, now: Instant) -> OperationRecord {
         let mut record = self.record.clone();
@@ -100,6 +198,7 @@ impl Entry {
 
 #[derive(Default)]
 struct State {
+    audit: Option<Arc<AutoplayAuditLogger>>,
     version: u64,
     next_id: u64,
     reset: bool,
@@ -121,6 +220,11 @@ pub struct AutoplayStatus {
 }
 
 impl AutoplayStatus {
+    /// Attach once before capture/input starts. Events are written immediately,
+    /// independently of the lossy/coalesced UI status polling.
+    pub fn set_audit_logger(&self, logger: Arc<AutoplayAuditLogger>) {
+        self.state.lock().unwrap().audit = Some(logger);
+    }
     pub fn set_enabled(&self, enabled: bool) {
         let mut state = self.state.lock().unwrap();
         if state.enabled != enabled {
@@ -275,7 +379,9 @@ impl AutoplayStatus {
             remaining_ms: None,
             reason: None,
         };
+        let audit_logger = state.audit.clone();
         state.entries.push(Entry {
+            audit_logger,
             record,
             window,
             deadline: None,
@@ -284,7 +390,18 @@ impl AutoplayStatus {
             finished: false,
             request: false,
             request_press: None,
+            attempt: 0,
+            request_attempt: None,
+            clicks: HashMap::new(),
         });
+        state.entries.last().unwrap().audit(
+            &state.audit,
+            AuditEvent::OperationStarted,
+            0,
+            None,
+            None,
+            None,
+        );
         state.dirty.insert(id);
         state.version += 1;
         Observation {
@@ -295,10 +412,41 @@ impl AutoplayStatus {
 
     fn edit(&self, id: u64, edit: impl FnOnce(&mut Entry)) {
         let mut state = self.state.lock().unwrap();
+        let audit = state.audit.clone();
         if let Some(entry) = state.entries.iter_mut().find(|entry| entry.record.id == id) {
+            let phase = entry.record.phase;
             edit(entry);
+            if entry.record.phase != phase && entry.record.phase.active() {
+                entry.audit(
+                    &audit,
+                    AuditEvent::StateChanged,
+                    entry.attempt,
+                    None,
+                    None,
+                    None,
+                );
+            }
+            entry.verify_clicks(&audit);
             state.dirty.insert(id);
             state.version += 1;
+        }
+    }
+
+    fn evidence(
+        &self,
+        id: u64,
+        attempt: u32,
+        event: AuditEvent,
+        edit: impl FnOnce(&mut ClickEvidence),
+    ) {
+        let mut state = self.state.lock().unwrap();
+        let audit = state.audit.clone();
+        if let Some(entry) = state.entries.iter_mut().find(|entry| entry.record.id == id) {
+            if let Some(click) = entry.clicks.get_mut(&attempt) {
+                edit(click);
+                entry.audit(&audit, event, attempt, None, None, None);
+                entry.verify_clicks(&audit);
+            }
         }
     }
 
@@ -306,6 +454,11 @@ impl AutoplayStatus {
     /// observation nor a non-error response proves a discard/meld succeeded.
     pub fn request(&self, flow: u64, id: u16, payload: &Value) {
         let mut state = self.state.lock().unwrap();
+        let audit = state.audit.clone();
+        let operation_type = payload["type"]
+            .as_u64()
+            .filter(|kind| *kind <= 11)
+            .map(|kind| kind as u8);
         let key = (flow, id);
         if let Some(old) = state.requests.remove(&key) {
             state.ambiguous_requests.insert(key);
@@ -318,6 +471,14 @@ impl AutoplayStatus {
                 if entry.record.phase.accepts_feedback() {
                     entry.conclude(Phase::Unconfirmed, "request_id_reused");
                 }
+                entry.audit(
+                    &audit,
+                    AuditEvent::ClientRequestRejected,
+                    entry.request_attempt.unwrap_or(entry.attempt),
+                    Some(id),
+                    operation_type,
+                    None,
+                );
                 state.dirty.insert(old);
             }
             state.version += 1;
@@ -363,6 +524,10 @@ impl AutoplayStatus {
             } else if request_matches(&entry.record.action, payload) {
                 entry.request = true;
                 entry.request_press = Some(pressed);
+                entry.request_attempt = Some(entry.attempt);
+                if let Some(click) = entry.clicks.get_mut(&entry.attempt) {
+                    click.request_matched = true;
+                }
                 bound = Some((entry.record.id, true));
             } else {
                 entry.conclude(Phase::Failed, "input_conflict");
@@ -371,6 +536,20 @@ impl AutoplayStatus {
             break;
         }
         if let Some((record, accepted)) = bound {
+            if let Some(entry) = state.entries.iter().find(|entry| entry.record.id == record) {
+                entry.audit(
+                    &audit,
+                    if accepted {
+                        AuditEvent::ClientRequestMatched
+                    } else {
+                        AuditEvent::ClientRequestRejected
+                    },
+                    entry.attempt,
+                    Some(id),
+                    operation_type,
+                    None,
+                );
+            }
             if accepted {
                 state.requests.insert(key, record);
             }
@@ -381,6 +560,7 @@ impl AutoplayStatus {
 
     pub fn response(&self, flow: u64, id: u16, payload: &Value) {
         let mut state = self.state.lock().unwrap();
+        let audit = state.audit.clone();
         if state.ambiguous_requests.remove(&(flow, id)) {
             return;
         }
@@ -408,9 +588,38 @@ impl AutoplayStatus {
                 .unwrap_or(0);
             if code != 0 {
                 entry.conclude(Phase::Failed, &format!("server_error:{code}"));
+                entry.audit(
+                    &audit,
+                    AuditEvent::ClientResponseRejected,
+                    entry.request_attempt.unwrap_or(entry.attempt),
+                    Some(id),
+                    None,
+                    Some(code),
+                );
             } else if entry.record.action["type"] == "none" {
                 entry.conclude(Phase::Succeeded, "server_confirmed");
+                let attempt = entry.request_attempt.unwrap_or(entry.attempt);
+                if let Some(click) = entry.clicks.get_mut(&attempt) {
+                    click.server_confirmed = true;
+                }
+                entry.audit(
+                    &audit,
+                    AuditEvent::ClientResponseAccepted,
+                    attempt,
+                    Some(id),
+                    None,
+                    Some(0),
+                );
+                entry.verify_clicks(&audit);
             } else {
+                entry.audit(
+                    &audit,
+                    AuditEvent::ClientResponseAccepted,
+                    entry.request_attempt.unwrap_or(entry.attempt),
+                    Some(id),
+                    None,
+                    Some(0),
+                );
                 return;
             }
             state.dirty.insert(record);
@@ -422,6 +631,7 @@ impl AutoplayStatus {
     /// adjacency isolates an echo from later identical decisions in the round.
     pub fn feedback(&self, flow: u64, step: u64, name: &str, data: &Value, events: &[MjaiEvent]) {
         let mut state = self.state.lock().unwrap();
+        let audit = state.audit.clone();
         if state.flow != Some(flow) {
             return;
         }
@@ -467,6 +677,19 @@ impl AutoplayStatus {
             };
             if matches {
                 entry.conclude(Phase::Succeeded, "server_confirmed");
+                let attempt = entry.request_attempt.unwrap_or(entry.attempt);
+                if let Some(click) = entry.clicks.get_mut(&attempt) {
+                    click.server_confirmed = true;
+                }
+                entry.audit(
+                    &audit,
+                    AuditEvent::ServerFeedbackMatched,
+                    attempt,
+                    None,
+                    None,
+                    None,
+                );
+                entry.verify_clicks(&audit);
                 changed.push(entry.record.id);
             } else if events.iter().any(|event| {
                 let actual = serde_json::to_value(event).unwrap();
@@ -486,6 +709,14 @@ impl AutoplayStatus {
                     )
             }) {
                 entry.conclude(Phase::Failed, "feedback_conflict");
+                entry.audit(
+                    &audit,
+                    AuditEvent::ServerFeedbackConflict,
+                    entry.request_attempt.unwrap_or(entry.attempt),
+                    None,
+                    None,
+                    None,
+                );
                 changed.push(entry.record.id);
             }
         }
@@ -620,17 +851,66 @@ impl Observation {
             }
         });
     }
-    pub fn pressed(&self) {
+    pub fn pressed(&self) -> u32 {
+        let mut attempt = 0;
         self.status.edit(self.id, |entry| {
             if entry.record.phase.active() {
+                entry.attempt = entry.attempt.saturating_add(1);
+                attempt = entry.attempt;
+                entry.clicks.insert(attempt, ClickEvidence::default());
                 entry.record.phase = Phase::Executing;
                 entry.deadline = None;
                 entry.pressed = Some(Instant::now());
             }
         });
+        if attempt > 0 {
+            self.status
+                .evidence(self.id, attempt, AuditEvent::PressAttempt, |_| {});
+        }
+        attempt
+    }
+    /// CDP accepted mousePressed. This is separate from the provisional press
+    /// timestamp used to bind a request that can arrive before the CDP reply.
+    pub fn press_accepted(&self, attempt: u32) {
+        self.status
+            .evidence(self.id, attempt, AuditEvent::PressAccepted, |click| {
+                click.press_accepted = true
+            });
+    }
+    pub fn press_rejected(&self, attempt: u32) {
+        self.status
+            .evidence(self.id, attempt, AuditEvent::PressRejected, |click| {
+                click.failed = true
+            });
+    }
+    pub fn release_rejected(&self, attempt: u32) {
+        self.status
+            .evidence(self.id, attempt, AuditEvent::ReleaseRejected, |click| {
+                click.failed = true
+            });
     }
     pub fn released(&self) {
+        let attempt = self
+            .status
+            .state
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .find(|entry| entry.record.id == self.id)
+            .map(|entry| entry.attempt)
+            .unwrap_or(0);
+        self.released_for(attempt);
+    }
+    pub fn released_for(&self, attempt: u32) {
+        self.status
+            .evidence(self.id, attempt, AuditEvent::ReleaseAccepted, |click| {
+                click.release_accepted = true
+            });
         self.status.edit(self.id, |entry| {
+            if entry.attempt != attempt {
+                return;
+            }
             entry.released = Some(Instant::now());
             if entry.record.phase.active() {
                 entry.record.phase = Phase::AwaitingFeedback;
@@ -640,6 +920,9 @@ impl Observation {
     pub fn failed(&self) {
         self.status.edit(self.id, |entry| {
             if entry.record.phase.active() {
+                if let Some(click) = entry.clicks.get_mut(&entry.attempt) {
+                    click.failed = true;
+                }
                 entry.conclude(Phase::Failed, "cdp_failed");
             }
         });

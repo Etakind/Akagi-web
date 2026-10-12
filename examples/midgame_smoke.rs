@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
     config.autoplay.enabled = true;
     let config = Arc::new(RwLock::new(config));
     let ctx = Arc::new(autoplay::AutoplayContext::new());
+    ctx.status.set_audit_logger(session.autoplay_logger()?);
     ctx.set_enabled(true);
     ctx.recovery.register(BOT | AUTOPLAY);
     let bus = event_bus::mjai_bus();
@@ -70,7 +71,6 @@ async fn main() -> anyhow::Result<()> {
     let mut recovery_task = None;
     let mut succeeded = std::collections::HashSet::new();
     let mut last_status = None;
-    let ledger = session.flow_logger("majsoul", "autoplay.log", "acceptance input confirmation")?;
     let lifecycle = session.flow_logger("majsoul", "recovery.log", "acceptance recovery")?;
     let mut timer = tokio::time::interval(Duration::from_millis(100));
     let end = tokio::time::Instant::now() + Duration::from_secs(seconds);
@@ -116,7 +116,6 @@ async fn main() -> anyhow::Result<()> {
             );
         }
         if let Some(update) = ctx.status.poll() {
-            ledger.writeln(&serde_json::json!({"ts_ms": chrono::Utc::now().timestamp_millis(), "status": &update}).to_string());
             for record in update.records {
                 if record.phase == autoplay::status::Phase::Succeeded && succeeded.insert(record.id)
                 {

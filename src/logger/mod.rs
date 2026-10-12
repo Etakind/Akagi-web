@@ -1,3 +1,4 @@
+pub mod autoplay;
 mod binary;
 mod flow;
 mod session;

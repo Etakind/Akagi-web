@@ -64,10 +64,6 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, state: AppState) -> Result<()> {
 fn spawn_forwarders<R: Runtime>(app: AppHandle<R>, state: AppState) {
     let status_state = state.clone();
     let status_app = app.clone();
-    let action_log = state
-        .log_session
-        .flow_logger("majsoul", "autoplay.log", "validated autoplay lifecycle")
-        .ok();
     tauri::async_runtime::spawn(async move {
         let mut timer = tokio::time::interval(std::time::Duration::from_millis(100));
         let mut geometry = None;
@@ -94,9 +90,6 @@ fn spawn_forwarders<R: Runtime>(app: AppHandle<R>, state: AppState) {
             }
             drop(config);
             if let Some(update) = status.poll() {
-                if let Some(log) = &action_log {
-                    log.writeln(&serde_json::json!({"ts_ms": chrono::Utc::now().timestamp_millis(), "status": &update}).to_string());
-                }
                 let _ = status_app.emit("autoplay-status", update);
             }
         }

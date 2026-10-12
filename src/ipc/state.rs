@@ -120,6 +120,11 @@ impl AppState {
         history_store: Arc<HistoryStore>,
         history_platform: SharedPlatform,
     ) -> Self {
+        let autoplay_context = Arc::new(AutoplayContext::new());
+        match log_session.autoplay_logger() {
+            Ok(logger) => autoplay_context.status.set_audit_logger(logger),
+            Err(_) => tracing::warn!("automatic action evidence logging is unavailable"),
+        }
         Self {
             config: Arc::new(RwLock::new(config)),
             config_path: Arc::new(config_path),
@@ -139,7 +144,7 @@ impl AppState {
             history_store,
             history_platform,
             bot_manager_started: Arc::new(AtomicBool::new(false)),
-            autoplay_context: Arc::new(AutoplayContext::new()),
+            autoplay_context,
             autoplay_manager_started: Arc::new(AtomicBool::new(false)),
             updater_lock: Arc::new(Mutex::new(())),
         }

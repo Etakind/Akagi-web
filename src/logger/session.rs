@@ -98,6 +98,7 @@ impl LogTarget {
 /// flushing).
 pub struct Session {
     dir: PathBuf,
+    autoplay_audit: RwLock<Option<Arc<super::autoplay::AutoplayAuditLogger>>>,
     binary_loggers: RwLock<HashMap<String, Arc<BinaryLogger>>>,
     _guards: Vec<WorkerGuard>,
     /// Handle to the JSONL + broadcast layer. Kept on `Session` so the
@@ -217,6 +218,7 @@ impl Session {
 
         Ok(Self {
             dir,
+            autoplay_audit: RwLock::new(None),
             binary_loggers: RwLock::new(HashMap::new()),
             _guards: guards,
             stream: stream_handle,
@@ -276,6 +278,20 @@ impl Session {
         Ok(Arc::new(FlowLogger::new(
             &self.dir, subdir, file_name, label,
         )?))
+    }
+
+    /// Dedicated closed-schema sink, separate from raw flow metadata filtering.
+    pub fn autoplay_logger(&self) -> Result<Arc<super::autoplay::AutoplayAuditLogger>> {
+        if let Some(logger) = self.autoplay_audit.read().unwrap().as_ref() {
+            return Ok(logger.clone());
+        }
+        let mut slot = self.autoplay_audit.write().unwrap();
+        if let Some(logger) = slot.as_ref() {
+            return Ok(logger.clone());
+        }
+        let logger = Arc::new(super::autoplay::AutoplayAuditLogger::new(&self.dir)?);
+        *slot = Some(logger.clone());
+        Ok(logger)
     }
 
     /// Get-or-create a binary logger by name. The file lives at

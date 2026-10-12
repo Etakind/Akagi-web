@@ -83,10 +83,11 @@ pub async fn dispatch_click_observed(
     if observer.is_some_and(|observer| !observer.can_press()) {
         return Err(anyhow!("autoplay decision cancelled before mousePressed"));
     }
-    if let Some(observer) = observer {
-        observer.pressed();
-    }
-    page.execute(press).await.context("CDP mousePressed")?;
+    let attempt = observed_press(observer, async {
+        page.execute(press).await.context("CDP mousePressed")?;
+        Ok(())
+    })
+    .await?;
 
     if jiggle {
         // Split the hold around the nudge so its total stays what the
@@ -119,11 +120,46 @@ pub async fn dispatch_click_observed(
         .click_count(1)
         .build()
         .map_err(|e| anyhow!("build mouseReleased: {e}"))?;
-    page.execute(release).await.context("CDP mouseReleased")?;
-    if let Some(observer) = observer {
-        observer.released();
-    }
+    observed_release(observer, attempt, async {
+        page.execute(release).await.context("CDP mouseReleased")?;
+        Ok(())
+    })
+    .await?;
 
+    Ok(())
+}
+
+async fn observed_press(
+    observer: Option<&crate::autoplay::status::Observation>,
+    dispatch: impl std::future::Future<Output = Result<()>>,
+) -> Result<Option<u32>> {
+    let attempt = observer.map(|observer| observer.pressed());
+    if let Err(error) = dispatch.await {
+        if let (Some(observer), Some(attempt)) = (observer, attempt) {
+            observer.press_rejected(attempt);
+        }
+        return Err(error);
+    }
+    if let (Some(observer), Some(attempt)) = (observer, attempt) {
+        observer.press_accepted(attempt);
+    }
+    Ok(attempt)
+}
+
+async fn observed_release(
+    observer: Option<&crate::autoplay::status::Observation>,
+    attempt: Option<u32>,
+    dispatch: impl std::future::Future<Output = Result<()>>,
+) -> Result<()> {
+    if let Err(error) = dispatch.await {
+        if let (Some(observer), Some(attempt)) = (observer, attempt) {
+            observer.release_rejected(attempt);
+        }
+        return Err(error);
+    }
+    if let (Some(observer), Some(attempt)) = (observer, attempt) {
+        observer.released_for(attempt);
+    }
     Ok(())
 }
 
@@ -276,6 +312,77 @@ pub async fn discard_tile(page: &Page, tile_index: u32) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn dispatch_acknowledgements_are_logged_only_after_successful_cdp_results() {
+        use crate::{
+            autoplay::status::AutoplayStatus, logger::autoplay::AutoplayAuditLogger,
+            schema::MjaiEvent,
+        };
+        use serde_json::json;
+        use std::sync::Arc;
+        for fail_press in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let status = Arc::new(AutoplayStatus::default());
+            status.set_audit_logger(Arc::new(AutoplayAuditLogger::new(dir.path()).unwrap()));
+            status.bind_game(1, 1);
+            status.set_enabled(true);
+            status.window(1, 10, None, Some(&json!({"seat":0,"time_fixed":10000})), 0);
+            let action = MjaiEvent::Hora {
+                actor: 0,
+                target: 1,
+                deltas: None,
+                ura_markers: None,
+            };
+            let observation = status.begin(&action, status.current_window(), 0);
+            let press = observed_press(Some(&observation), async {
+                // Game input/feedback may beat the CDP acknowledgement.
+                status.request(1, 42, &json!({"type":9}));
+                status.feedback(
+                    1,
+                    11,
+                    "ActionHule",
+                    &json!({}),
+                    std::slice::from_ref(&action),
+                );
+                if fail_press {
+                    Err(anyhow!("FAKE-private-CDP-error"))
+                } else {
+                    Ok(())
+                }
+            })
+            .await;
+            if let Ok(attempt) = press {
+                assert!(observed_release(Some(&observation), attempt, async {
+                    Err(anyhow!("FAKE-private-CDP-error"))
+                })
+                .await
+                .is_err());
+            }
+            let log = std::fs::read_to_string(dir.path().join("majsoul/autoplay.log")).unwrap();
+            assert!(!log.contains("FAKE-private-CDP-error"));
+            let rows: Vec<serde_json::Value> = log
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row["event"] == "press_accepted")
+                    .count(),
+                usize::from(!fail_press)
+            );
+            assert!(rows.iter().any(|row| row["event"]
+                == if fail_press {
+                    "press_rejected"
+                } else {
+                    "release_rejected"
+                }));
+            assert!(!rows
+                .iter()
+                .any(|row| row["event"] == "release_accepted"
+                    || row["event"] == "operation_verified"));
+        }
+    }
 
     #[test]
     fn selector_names_the_menu_slot() {
