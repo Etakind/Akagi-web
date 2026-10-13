@@ -53,31 +53,42 @@ sudo dnf install ./akagi-*.rpm
 
 For Linux ZIPs, install your system's GTK/WebKitGTK dependencies listed under source installation below.
 
-## First use
+## First-time setup
 
-1. Open Akagi, choose your game, browser and capture options in the setup wizard, then click **Save**.
-2. Log in to Mahjong Soul or Tenhou in the game browser, keeping one tab for the selected game open.
-3. Start a game and view suggestions in **Game** or the overlay. Enable automatic play in **Settings** if desired.
+When you open Akagi for the first time, complete these steps in the setup wizard:
 
-The independent browser can reuse your login session; sign in again when it expires. Keep the `chrome-profile` directory when moving the application.
-Adjust the overlay and browser options, or rerun the setup wizard, from **Settings**.
+1. **Choose how to open the game.** With an external browser, Akagi connects to Edge or Chrome that you open yourself. With an independent browser, Akagi opens a separate game window automatically, without requiring you to configure a debugging port.
+2. **Choose your game platform.** Select Mahjong Soul or Tenhou. Akagi automatically locates installed browsers, so you can usually leave **Browser executable** blank. If no usable browser is found, download Chrome for Testing in the wizard.
+3. **Configure the connection.** For an external browser, open `edge://inspect/#remote-debugging` in Edge or `chrome://inspect/#remote-debugging` in Chrome. Enable remote debugging, note the port, and enter it in Akagi's **Existing browser debug port** field. For an independent browser, keep the port at `0` and leave **User data dir** blank.
+4. **Save the configuration.** Click **Save** to enter Akagi's main interface. Akagi opens the independent browser automatically. If your external browser prompts for permission to debug, click **Allow**.
 
-If you start Akagi during a Mahjong Soul game, start capture, click **Recover and continue**, and follow the recovery panel's instructions.
+You can adjust browser and overlay options, or rerun the setup wizard, from **Settings**.
 
-## Browser setup
+## Everyday use
 
-**Independent browser (default):** set **Existing browser debug port** to `0`, select an installed Edge or Chrome, and leave **User data dir** blank.
-You can also download Chrome for Testing through Settings. Akagi opens a separate game window.
+1. **Start the browser and Akagi.** With an independent browser, simply start Akagi. With an external browser, follow the steps for your startup order:
+   - Browser first: enable remote debugging, then start Akagi. Akagi connects to the browser and starts capture.
+   - Akagi first: Capture on the overview page may show `error`. Open the browser and enable remote debugging, then open **Game → Capture** and click **Restart**. If the browser prompts for permission to debug, click **Allow**.
+2. **Check capture status.** Log in to the selected game in the browser and keep one game tab open. Before starting a game, confirm that **Capture (Chromium)** on Akagi's overview page is `running`.
+3. **View the game and suggestions.** After entering a game, open Akagi's **Game** page to view the current game state and model suggestions. Suggestions are also available in the overlay.
+4. **Enable automatic play if desired.** Turn it on in **Settings**. If automatic play does not resume after reconnecting, discard one tile manually, then confirm that automatic play resumes.
 
-**Existing browser:** enable local remote debugging in Edge/Chrome and note its port.
-Enter the port in **Existing browser debug port** in Akagi Settings (for example, `9222`), restart capture, and approve the browser's debugging prompt.
-For a custom browser profile, enter its user-data root directory.
+## If suggestions are missing during a game
+
+If Akagi misses the start of a game, it cannot analyze the current game correctly. Mahjong Soul users can recover as follows:
+
+1. Confirm that Capture is `running`, then open Akagi's **Game** page.
+2. Click **Recover and continue** in the Capture card.
+3. The browser reloads the Mahjong Soul game page. Wait for the game to return to your ongoing match automatically.
+4. Wait for Akagi to restore the game state and model suggestions before continuing.
+
+You may miss actions for 1–2 turns during recovery. Use the same steps if you start Akagi during a game.
 
 ## Install from source
 
 Building requires Git, current stable Rust, Node.js/npm, `protoc`, and a C/C++ toolchain.
 Use Node.js **24 LTS**; the minimum is **22.12**. Expand your system, check the existing environment, then add missing tools. A version means the tool is available; check PATH first if a command is missing.
-After launching, follow **First use** above; browser options are in **Settings**.
+After launching, follow **First-time setup** above; browser options are in **Settings**.
 
 <details>
 <summary>macOS (Intel / Apple Silicon)</summary>
